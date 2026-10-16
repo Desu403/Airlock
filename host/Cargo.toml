@@ -1,0 +1,20 @@
+[package]
+name = "airlock"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "airlock_core"
+path = "src/lib.rs"
+
+[[bin]]
+name = "airlock"
+path = "src/main.rs"
+
+[dependencies]
+airlock-proto = { path = "../proto" }
+anyhow = "1"
+flate2 = "1"
+png = "0.17"
+serde_json = "1"
+libc = "0.2"

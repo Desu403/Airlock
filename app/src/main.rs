@@ -1,0 +1,218 @@
+//! airlock desktop app. The webview never sees document bytes: it gets PNGs
+//! encoded here from validated pixels, numbers, and sanitised text.
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use airlock_core::live::LiveSession;
+use airlock_core::proto::MAX_DOC_BYTES;
+use airlock_core::{analysis, report};
+use serde::Serialize;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tauri::ipc::Response;
+use tauri::State;
+use tauri_plugin_dialog::DialogExt;
+
+struct Doc {
+    name: String,
+    bytes: Arc<Vec<u8>>,
+    session: LiveSession,
+}
+
+#[derive(Default)]
+struct AppState {
+    doc: Arc<Mutex<Option<Doc>>>,
+    initial: Mutex<Option<PathBuf>>,
+}
+
+#[derive(Serialize)]
+struct OpenInfo {
+    name: String,
+    /// [width, height] in points.
+    pages: Vec<[f32; 2]>,
+    ready_ms: u64,
+}
+
+#[derive(Serialize)]
+struct HitOut {
+    page: u32,
+    rect: [f32; 4],
+}
+
+type R<T> = Result<T, String>;
+
+fn err(e: impl std::fmt::Display) -> String {
+    format!("{e:#}")
+}
+
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> R<T> + Send + 'static) -> R<T> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(err)?
+}
+
+fn open_impl(doc: Arc<Mutex<Option<Doc>>>, path: PathBuf) -> R<OpenInfo> {
+    let meta = std::fs::metadata(&path).map_err(err)?;
+    if !meta.is_file() || meta.len() > MAX_DOC_BYTES {
+        return Err("not a file, or larger than 256 MiB".into());
+    }
+    let bytes = std::fs::read(&path).map_err(err)?;
+    // Close the previous VM before booting a new one.
+    if let Some(old) = doc.lock().unwrap().take() {
+        old.session.close();
+    }
+    let session = LiveSession::open(&bytes).map_err(err)?;
+    let info = OpenInfo {
+        name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        pages: session.pages.iter().map(|p| [p.width, p.height]).collect(),
+        ready_ms: session.boot_time.as_millis() as u64,
+    };
+    *doc.lock().unwrap() = Some(Doc { name: info.name.clone(), bytes: Arc::new(bytes), session });
+    Ok(info)
+}
+
+#[tauri::command]
+async fn pick_and_open(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Option<OpenInfo>> {
+    let doc = state.doc.clone();
+    blocking(move || {
+        let picked = app
+            .dialog()
+            .file()
+            .set_title("Open a document in airlock")
+            .add_filter("Documents", &["pdf", "doc", "docx", "docm", "xls", "xlsx", "xlsm", "ppt", "pptx", "pptm", "odt", "ods", "odp", "rtf"])
+            .add_filter("All files", &["*"])
+            .blocking_pick_file();
+        match picked {
+            None => Ok(None),
+            Some(p) => open_impl(doc, p.into_path().map_err(err)?).map(Some),
+        }
+    })
+    .await
+}
+
+#[tauri::command]
+async fn open_path(path: String, state: State<'_, AppState>) -> R<OpenInfo> {
+    let doc = state.doc.clone();
+    blocking(move || open_impl(doc, PathBuf::from(path))).await
+}
+
+#[tauri::command]
+fn initial_path(state: State<'_, AppState>) -> Option<String> {
+    state.initial.lock().unwrap().take().map(|p| p.to_string_lossy().into_owned())
+}
+
+/// Test hook: AIRLOCK_DEMO="search=word;analyze" drives the UI after opening.
+#[tauri::command]
+fn demo_script() -> Option<String> {
+    std::env::var("AIRLOCK_DEMO").ok()
+}
+
+#[tauri::command]
+async fn render_page(page: u32, dpi: u32, state: State<'_, AppState>) -> R<Response> {
+    let doc = state.doc.clone();
+    blocking(move || {
+        let mut g = doc.lock().unwrap();
+        let d = g.as_mut().ok_or("no document open")?;
+        let img = d.session.render(page, dpi).map_err(err)?;
+        let mut out = Vec::with_capacity(img.rgb.len() / 4);
+        {
+            let mut enc = png::Encoder::new(&mut out, img.width, img.height);
+            enc.set_color(png::ColorType::Rgb);
+            enc.set_depth(png::BitDepth::Eight);
+            enc.set_compression(png::Compression::Fast);
+            enc.write_header().map_err(err)?.write_image_data(&img.rgb).map_err(err)?;
+        }
+        Ok(Response::new(out))
+    })
+    .await
+}
+
+#[tauri::command]
+async fn search(query: String, state: State<'_, AppState>) -> R<Vec<HitOut>> {
+    let doc = state.doc.clone();
+    blocking(move || {
+        let mut g = doc.lock().unwrap();
+        let d = g.as_mut().ok_or("no document open")?;
+        Ok(d.session.search(&query).map_err(err)?.into_iter().map(|h| HitOut { page: h.page, rect: h.rect }).collect())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn page_text(page: u32, state: State<'_, AppState>) -> R<String> {
+    let doc = state.doc.clone();
+    blocking(move || {
+        let mut g = doc.lock().unwrap();
+        let d = g.as_mut().ok_or("no document open")?;
+        d.session.text(page).map_err(err)
+    })
+    .await
+}
+
+/// Findings from the in-VM monitor while *viewing* (normally empty).
+#[tauri::command]
+fn viewing_findings(state: State<'_, AppState>) -> serde_json::Value {
+    match state.doc.lock().unwrap().as_ref() {
+        Some(d) if !d.session.indicators.is_empty() => report::Report::build(&d.session.indicators, None, &[]).to_json(),
+        _ => serde_json::Value::Null,
+    }
+}
+
+/// Full behavioural analysis in separate microVMs; viewing continues meanwhile.
+#[tauri::command]
+async fn analyze(state: State<'_, AppState>) -> R<serde_json::Value> {
+    let (name, bytes) = {
+        let g = state.doc.lock().unwrap();
+        let d = g.as_ref().ok_or("no document open")?;
+        (d.name.clone(), d.bytes.clone())
+    };
+    blocking(move || {
+        let started = std::time::Instant::now();
+        let a = analysis::run(&bytes, "analyze", false, &|_| {}).map_err(err)?;
+        let mut j = a.report.to_json();
+        j["document"] = name.into();
+        j["seconds"] = (started.elapsed().as_secs_f32() as f64).into();
+        Ok(j)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn close_document(state: State<'_, AppState>) -> R<()> {
+    let doc = state.doc.clone();
+    blocking(move || {
+        if let Some(d) = doc.lock().unwrap().take() {
+            d.session.close();
+        }
+        Ok(())
+    })
+    .await
+}
+
+fn main() {
+    let state = AppState::default();
+    *state.initial.lock().unwrap() = std::env::args_os().nth(1).map(PathBuf::from);
+    let doc = state.doc.clone();
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .manage(state)
+        .invoke_handler(tauri::generate_handler![
+            pick_and_open,
+            open_path,
+            initial_path,
+            demo_script,
+            render_page,
+            search,
+            page_text,
+            viewing_findings,
+            analyze,
+            close_document
+        ])
+        .on_window_event(move |_w, e| {
+            if let tauri::WindowEvent::Destroyed = e {
+                if let Some(d) = doc.lock().unwrap().take() {
+                    d.session.close();
+                }
+            }
+        })
+        .run(tauri::generate_context!())
+        .expect("error while running airlock");
+}

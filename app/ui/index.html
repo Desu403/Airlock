@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>airlock</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="bar">
+    <div class="brand"><span class="logo" aria-hidden="true"></span>airlock</div>
+    <button id="open" title="Open a document (Ctrl+O)">Open…</button>
+    <div class="doc" id="doc" hidden>
+      <span class="doc-name" id="docname"></span>
+      <span class="seal" id="seal" title="The document is open inside a disposable Firecracker microVM with no network device. Only pixels, page sizes, search positions and cleaned text come out. The VM is destroyed when you close the document.">
+        <span class="dot"></span><span class="label">Sealed · microVM · no network</span>
+      </span>
+    </div>
+    <div class="spacer"></div>
+    <div class="group search" id="searchbox" hidden>
+      <input id="q" type="search" placeholder="Search" autocomplete="off" spellcheck="false" title="Search (Ctrl+F)">
+      <span class="count" id="qcount"></span>
+      <button id="qprev" class="icon" title="Previous match (Shift+Enter)" aria-label="Previous match">‹</button>
+      <button id="qnext" class="icon" title="Next match (Enter)" aria-label="Next match">›</button>
+    </div>
+    <div class="group" id="zoombox" hidden>
+      <button id="zout" class="icon" title="Zoom out (-)" aria-label="Zoom out">−</button>
+      <span class="zoom" id="zlabel">100%</span>
+      <button id="zin" class="icon" title="Zoom in (+)" aria-label="Zoom in">+</button>
+      <button id="zfit" title="Fit width">Fit</button>
+    </div>
+    <button id="textbtn" hidden title="Show the text of the current page">Text</button>
+    <button id="analyze" class="primary" hidden title="Detonate in a separate microVM wired to a fake internet and report what the document tries to do">Analyze</button>
+  </header>
+
+  <div class="banner" id="banner" hidden>
+    <span id="banner-text"></span>
+    <button id="banner-more">Details</button>
+  </div>
+
+  <main>
+    <section class="viewer" id="viewer">
+      <div class="empty" id="empty">
+        <div class="porthole" aria-hidden="true"></div>
+        <h1>Open documents you don't trust.</h1>
+        <p>Drop a PDF or Office file here, or press <kbd>Ctrl</kbd>+<kbd>O</kbd>.</p>
+        <ul class="promises">
+          <li><strong>Sealed.</strong> The file is opened inside a throwaway microVM with no network card.</li>
+          <li><strong>Pixels only.</strong> Your computer never parses the document — it only receives validated images.</li>
+          <li><strong>Watched.</strong> <em>Analyze</em> shows what the file tries to do: contact servers, run programs, drop files.</li>
+        </ul>
+      </div>
+      <div class="pages" id="pages"></div>
+      <div class="busy" id="busy" hidden><div class="spinner"></div><span id="busy-text"></span></div>
+    </section>
+    <aside class="panel" id="panel" hidden>
+      <div class="panel-head">
+        <h2 id="panel-title"></h2>
+        <button id="panel-close" class="icon" aria-label="Close panel" title="Close (Esc)">×</button>
+      </div>
+      <div class="panel-body" id="panel-body"></div>
+    </aside>
+  </main>
+  <footer class="status" id="status">Ready</footer>
+</body>
+</html>

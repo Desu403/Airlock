@@ -29,6 +29,7 @@ able to touch the host, and *see* what it tries to do.
 | 9 | Sinkhole: no capabilities + seccomp allowlist (no open/exec/socket/connect) on all threads | done |
 | 10 | Hardened guest kernel 6.1 LTS: no modules/BPF/io_uring/userns/IPv6/AF_PACKET/32-bit ABI, KASLR, init_on_alloc/free, panic on oops | done |
 | 11 | Unexpected VM death (e.g. kernel panic) reported as an outside finding | done |
+| 12 | VMM runs as a spare uid from the user's /etc/subuid range (a different one per VM; rootless equivalent of Firecracker's jailer); run dir granted to that uid only by ACL; sandbox built from file descriptors; no further user namespaces | done (falls back to the user's uid where unsupported — `airlock doctor` says so) |
 
 ## Roadmap
 
@@ -83,8 +84,9 @@ able to touch the host, and *see* what it tries to do.
   viewing continues.
 - **M7 — hardening** — partly done: sinkhole seccomp, hardened guest kernel
   (`guest/build-kernel.sh`, fragment `guest/kernel-hardening.config`),
-  VM-death detection. Open: Firecracker jailer (needs a one-time root
-  setup), Landlock + seccomp on the host process, gVisor inside the guest.
+  VM-death detection, spare-uid VMM (wall 12; replaces the jailer, which
+  must be started as root for every VM). Open: Landlock + seccomp on the
+  host process, fuzzing the protocol, gVisor inside the guest.
   PERF_EVENTS cannot be disabled on x86; the renderer monitor denies it.
 - **Phase 2 — Windows detonation**: QEMU/KVM Windows guest with real Office,
   snapshot revert, sinkhole, time acceleration, out-of-VM introspection

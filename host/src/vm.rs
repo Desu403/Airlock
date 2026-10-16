@@ -1,7 +1,12 @@
 //! Boots one disposable Firecracker microVM.
 //!
 //! Isolation layers, outermost first:
-//!  * bwrap: fresh user/pid/net/ipc/uts/cgroup namespaces, near-empty FS.
+//!  * spare uid: Firecracker runs as one of the user's subordinate uids
+//!    (/etc/subuid, mapped by newuidmap as in rootless Podman), so an escape
+//!    lands in an account that owns nothing — the rootless equivalent of
+//!    Firecracker's jailer. Falls back to the user's uid where unavailable.
+//!  * bwrap: fresh user/pid/net/ipc/uts/cgroup namespaces, near-empty FS
+//!    built only from file descriptors we opened, no further user namespaces.
 //!    Plain VMs get no capabilities at all. Analysis VMs get a private netns
 //!    whose only interfaces are `lo` and `tap0` (wired to the sinkhole);
 //!    Firecracker itself is started with every capability dropped.
@@ -10,9 +15,125 @@
 
 use anyhow::{bail, Context, Result};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::io::AsRawFd;
+use std::os::unix::net::UnixListener;
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::OnceLock;
+
+/// Spare-uid isolation, when this machine supports it: the user has a
+/// /etc/subuid + /etc/subgid range that newuidmap accepts (`unshare
+/// --map-auto` maps it from inner uid 0), the devices Firecracker opens are
+/// usable by any uid (systemd's default 0666), and the run-dir filesystem
+/// takes POSIX ACLs.
+struct Shift {
+    /// Host uid of inner uid 0.
+    start: u32,
+    /// Usable inner uids: 1..count.
+    count: u32,
+    /// Holds the run dirs: 0711, so a VM's spare uid can reach its own run
+    /// dir by name (granted by ACL) but nobody can list or enter the others.
+    base: PathBuf,
+}
+
+fn shift() -> Option<&'static Shift> {
+    static S: OnceLock<Option<Shift>> = OnceLock::new();
+    S.get_or_init(detect_shift).as_ref()
+}
+
+pub fn uid_shift() -> bool {
+    shift().is_some()
+}
+
+fn detect_shift() -> Option<Shift> {
+    let world_rw = |p: &str| fs::metadata(p).is_ok_and(|m| m.permissions().mode() & 0o006 == 0o006);
+    if std::env::var_os("AIRLOCK_NO_UIDSHIFT").is_some() || !world_rw("/dev/kvm") || !world_rw("/dev/net/tun") {
+        return None;
+    }
+    let uid = unsafe { libc::getuid() };
+    let name = user_name(uid)?;
+    // `--map-auto` uses the first range listed for the user.
+    let range = |file: &str| {
+        fs::read_to_string(file).ok()?.lines().find_map(|l| {
+            let mut f = l.split(':');
+            let who = f.next()?;
+            let (start, count) = (f.next()?.parse::<u32>().ok()?, f.next()?.parse::<u32>().ok()?);
+            (who == name || who == uid.to_string()).then_some((start, count))
+        })
+    };
+    let (start, ucount) = range("/etc/subuid")?;
+    let (_, gcount) = range("/etc/subgid")?;
+    let count = ucount.min(gcount).min(65536);
+    if count < 2 {
+        return None;
+    }
+    let mapped = Command::new("unshare")
+        .args(["--map-auto", "--setuid", "1", "--setgid", "1", "true"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if !mapped {
+        return None;
+    }
+    let base = std::env::temp_dir().join(format!("airlock-{uid}"));
+    private_dir(&base, 0o711).ok()?;
+    let probe = base.join(format!("probe-{}", std::process::id()));
+    let _ = fs::create_dir(&probe);
+    let acl = grant(&probe, start + 1).is_ok();
+    let _ = fs::remove_dir(&probe);
+    acl.then_some(Shift { start, count, base })
+}
+
+fn user_name(uid: u32) -> Option<String> {
+    let mut pw: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut buf = vec![0 as libc::c_char; 16384];
+    let mut res = std::ptr::null_mut();
+    let r = unsafe { libc::getpwuid_r(uid, &mut pw, buf.as_mut_ptr(), buf.len(), &mut res) };
+    if r != 0 || res.is_null() {
+        return None;
+    }
+    Some(unsafe { std::ffi::CStr::from_ptr(pw.pw_name) }.to_string_lossy().into_owned())
+}
+
+/// Creates (or reuses) a directory that must be ours and not a symlink —
+/// the shift base lives in the shared temp dir.
+fn private_dir(p: &Path, mode: u32) -> Result<()> {
+    match fs::create_dir(p) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e.into()),
+    }
+    let m = fs::symlink_metadata(p)?;
+    if !m.is_dir() || m.uid() != unsafe { libc::getuid() } {
+        bail!("{} is not a directory owned by you", p.display());
+    }
+    fs::set_permissions(p, fs::Permissions::from_mode(mode))?;
+    Ok(())
+}
+
+/// Sets the ACL of `dir` to: owner rwx, host uid `uid` rwx, nobody else.
+fn grant(dir: &Path, uid: u32) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    const UNDEFINED: u32 = u32::MAX;
+    // Linux xattr ACL format: version, then (tag, perm, id) sorted by tag:
+    // USER_OBJ, USER, GROUP_OBJ, MASK, OTHER.
+    let mut acl = 2u32.to_le_bytes().to_vec();
+    for (tag, perm, id) in [(0x01u16, 7u16, UNDEFINED), (0x02, 7, uid), (0x04, 0, UNDEFINED), (0x10, 7, UNDEFINED), (0x20, 0, UNDEFINED)] {
+        acl.extend(tag.to_le_bytes());
+        acl.extend(perm.to_le_bytes());
+        acl.extend(id.to_le_bytes());
+    }
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes())?;
+    let r = unsafe { libc::setxattr(path.as_ptr(), c"system.posix_acl_access".as_ptr(), acl.as_ptr().cast(), acl.len(), 0) };
+    if r == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
 
 pub struct Assets {
     pub firecracker: PathBuf,
@@ -51,20 +172,42 @@ impl Assets {
 
 pub struct RunDir {
     pub path: PathBuf,
+    /// Inner uid (under `unshare --map-auto`) this VM runs as, if shifted.
+    uid: Option<u32>,
 }
 
 impl RunDir {
     pub fn create(tag: &str) -> Result<Self> {
-        let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_nanos();
-        sweep_stale(&base.join("airlock"));
-        let path = base.join("airlock").join(format!("{}-{nanos}-{tag}", std::process::id()));
-        fs::create_dir_all(&path)?;
+        let root = match shift() {
+            Some(s) => s.base.clone(),
+            None => std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir).join("airlock"),
+        };
+        private_dir(&root, if shift().is_some() { 0o711 } else { 0o700 })?;
+        sweep_stale(&root);
+        let path = root.join(format!("{}-{nanos}-{tag}", std::process::id()));
+        fs::create_dir(&path)?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
-        Ok(RunDir { path })
+        let mut uid = None;
+        if let Some(s) = shift() {
+            // A different spare uid per VM: concurrent VMs cannot signal or
+            // reach each other. Only that uid is granted this directory.
+            let inner = 1 + (nanos % (s.count as u128 - 1)) as u32;
+            grant(&path, s.start + inner).context("granting the VM's spare uid its run dir")?;
+            uid = Some(inner);
+        }
+        Ok(RunDir { path, uid })
     }
     pub fn vsock(&self) -> PathBuf {
         self.path.join("v.sock")
+    }
+    /// Listens where the guest's vsock connections arrive (as the spare uid).
+    pub fn listen(&self) -> Result<UnixListener> {
+        let p = format!("{}_{}", self.vsock().display(), airlock_proto::FRAME_PORT);
+        let l = UnixListener::bind(&p)?;
+        fs::set_permissions(&p, fs::Permissions::from_mode(0o666))?;
+        l.set_nonblocking(true)?;
+        Ok(l)
     }
 }
 
@@ -111,6 +254,8 @@ pub fn make_scratch_disk(dir: &Path) -> Result<PathBuf> {
     if !st.success() {
         bail!("mke2fs failed");
     }
+    // Written by the VM's spare uid; the run dir keeps everyone else out.
+    fs::set_permissions(&p, fs::Permissions::from_mode(0o666))?;
     Ok(p)
 }
 
@@ -157,23 +302,33 @@ pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<C
 
     let log_file = fs::File::create(log)?;
     let run_s = run.path.to_str().context("non-utf8 run dir")?;
-    let mut cmd = Command::new("bwrap");
-    cmd.args(["--unshare-all", "--die-with-parent", "--new-session", "--clearenv", "--setenv", "PATH", SANDBOX_PATH])
-        .args(["--dev", "/dev", "--dev-bind", "/dev/kvm", "/dev/kvm", "--proc", "/proc", "--tmpfs", "/tmp"])
-        .arg("--ro-bind").arg(&assets.firecracker).arg("/vm/firecracker")
-        .arg("--ro-bind").arg(&assets.kernel).arg("/vm/vmlinux")
-        .arg("--ro-bind").arg(&assets.rootfs).arg("/vm/rootfs.ext4")
-        .arg("--ro-bind").arg(&cfg_path).arg("/vm/vm.json");
+    let mut cmd = if let Some(uid) = run.uid {
+        let uid = uid.to_string();
+        let mut c = Command::new("unshare");
+        c.args(["--map-auto", "--setuid", &uid, "--setgid", &uid, "--", "bwrap"]);
+        c
+    } else {
+        Command::new("bwrap")
+    };
+    cmd.args(["--unshare-all", "--unshare-user", "--die-with-parent", "--new-session", "--clearenv", "--setenv", "PATH", SANDBOX_PATH])
+        .args(["--dev", "/dev", "--dev-bind", "/dev/kvm", "/dev/kvm", "--proc", "/proc", "--tmpfs", "/tmp"]);
+    // Everything from the host is bound from a descriptor we opened: the
+    // spare uid needs no access to the paths (home dirs, $XDG_RUNTIME_DIR).
+    let mut fds = Vec::new();
+    bind_fd(&mut cmd, &mut fds, "--ro-bind-fd", &assets.firecracker, "/vm/firecracker")?;
+    bind_fd(&mut cmd, &mut fds, "--ro-bind-fd", &assets.kernel, "/vm/vmlinux")?;
+    bind_fd(&mut cmd, &mut fds, "--ro-bind-fd", &assets.rootfs, "/vm/rootfs.ext4")?;
+    bind_fd(&mut cmd, &mut fds, "--ro-bind-fd", &cfg_path, "/vm/vm.json")?;
     for d in &spec.drives {
-        cmd.arg(if d.read_only { "--ro-bind" } else { "--bind" }).arg(&d.path).arg(format!("/vm/{}.img", d.id));
+        bind_fd(&mut cmd, &mut fds, if d.read_only { "--ro-bind-fd" } else { "--bind-fd" }, &d.path, &format!("/vm/{}.img", d.id))?;
     }
     // The vsock socket must live at the same path inside and outside.
-    cmd.args(["--bind", run_s, run_s]);
+    bind_fd(&mut cmd, &mut fds, "--bind-fd", &run.path, run_s)?;
     let fc = "/vm/firecracker --no-api --config-file /vm/vm.json --level Warning";
 
     match &spec.sinkhole_events {
         None => {
-            cmd.args(["--cap-drop", "ALL", "--", "/vm/firecracker", "--no-api", "--config-file", "/vm/vm.json", "--level", "Warning"]);
+            cmd.args(["--disable-userns", "--cap-drop", "ALL", "--", "/vm/firecracker", "--no-api", "--config-file", "/vm/vm.json", "--level", "Warning"]);
         }
         Some(events) => {
             // Network jail: root *inside a fresh user namespace* (no host
@@ -189,6 +344,9 @@ pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<C
             }
             let script = format!(
                 r#"set -eu
+# Same effect as bwrap --disable-userns, which cannot be used here: its extra
+# namespace layer would not own this network namespace.
+echo 0 > /proc/sys/user/max_user_namespaces
 ip link set lo up
 echo 1 > /proc/sys/net/ipv6/conf/all/disable_ipv6 || true
 echo 1 > /proc/sys/net/ipv6/conf/default/disable_ipv6 || true
@@ -210,17 +368,41 @@ exec setpriv --bounding-set=-all --inh-caps=-all --no-new-privs -- {fc}
 "#
             );
             cmd.args(["--uid", "0", "--gid", "0"])
-                .args(["--cap-drop", "ALL", "--cap-add", "CAP_NET_ADMIN", "--cap-add", "CAP_NET_RAW", "--cap-add", "CAP_NET_BIND_SERVICE", "--cap-add", "CAP_SETPCAP"])
+                .args(["--cap-drop", "ALL", "--cap-add", "CAP_NET_ADMIN", "--cap-add", "CAP_NET_RAW", "--cap-add", "CAP_NET_BIND_SERVICE", "--cap-add", "CAP_SETPCAP", "--cap-add", "CAP_SYS_RESOURCE"])
                 .args(if trace_dir.is_some() { &["--cap-add", "CAP_SYS_PTRACE"][..] } else { &[][..] })
                 .args(["--dev-bind", "/dev/net/tun", "/dev/net/tun"])
                 .args(["--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin"])
                 .args(["--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64"])
-                .arg("--ro-bind").arg(&assets.sinkhole).arg("/vm/sinkhole")
-                .args(["--", "/bin/sh", "-c", &script]);
+                ;
+            bind_fd(&mut cmd, &mut fds, "--ro-bind-fd", &assets.sinkhole, "/vm/sinkhole")?;
+            cmd.args(["--", "/bin/sh", "-c", &script]);
         }
     }
     cmd.stdin(Stdio::null()).stdout(log_file.try_clone()?).stderr(log_file);
-    cmd.spawn().context("starting bwrap/firecracker")
+    let raw: Vec<i32> = fds.iter().map(|f: &fs::File| f.as_raw_fd()).collect();
+    // SAFETY: only async-signal-safe fcntl calls between fork and exec.
+    unsafe {
+        cmd.pre_exec(move || {
+            for &fd in &raw {
+                if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+            }
+            Ok(())
+        });
+    }
+    let child = cmd.spawn().context("starting bwrap/firecracker")?;
+    drop(fds);
+    Ok(child)
+}
+
+/// Opens `src` and passes it to bwrap as `flag FD dest`; the descriptor is
+/// inherited across exec (see `spawn`).
+fn bind_fd(cmd: &mut Command, fds: &mut Vec<fs::File>, flag: &str, src: &Path, dest: &str) -> Result<()> {
+    let f = fs::File::open(src).with_context(|| format!("opening {}", src.display()))?;
+    cmd.arg(flag).arg(f.as_raw_fd().to_string()).arg(dest);
+    fds.push(f);
+    Ok(())
 }
 
 /// Guest console output is attacker-controlled text: strip anything that

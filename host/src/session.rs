@@ -2,7 +2,7 @@
 //! deviation from the protocol is treated as a hostile guest.
 
 use crate::{pdf, vm};
-use airlock_proto::{valid_text, Error, Header, Ind, Kind, FRAME_PORT, HEADER_LEN};
+use airlock_proto::{valid_text, Error, Header, Ind, Kind, HEADER_LEN};
 use anyhow::{bail, Context, Result};
 use std::io::Read;
 use std::os::unix::net::{UnixListener, UnixStream};
@@ -36,21 +36,23 @@ impl Session {
 }
 
 pub fn run(assets: &vm::Assets, run: &vm::RunDir, spec: &vm::Spec, verbose: bool, progress: bool) -> Result<Session> {
-    let listener = UnixListener::bind(format!("{}_{FRAME_PORT}", run.vsock().display()))?;
-    listener.set_nonblocking(true)?;
+    let listener = run.listen()?;
     let log = run.path.join("console.log");
     let started = Instant::now();
     let mut child = vm::spawn(assets, run, spec, &log)?;
 
     let mut session = Session::default();
-    let result = accept(&listener, &mut child).and_then(|s| receive(s, &mut session, progress));
+    let stream = accept(&listener, &mut child);
+    let connected = stream.is_ok();
+    let result = stream.and_then(|s| receive(s, &mut session, progress));
     if let Err(e) = &result {
         if format!("{e:#}").starts_with("protocol violation") {
             session.protocol_violation = Some(format!("{e:#}"));
         }
     }
 
-    if result.is_err() && session.protocol_violation.is_none() {
+    // A VM that never connected failed to start: that is an error, not a finding.
+    if connected && result.is_err() && session.protocol_violation.is_none() {
         // Did the VM die by itself while we were talking to it?
         std::thread::sleep(Duration::from_millis(200));
         if child.try_wait()?.is_some() {

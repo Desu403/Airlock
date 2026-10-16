@@ -4,10 +4,10 @@
 //! sees it.
 
 use crate::{pdf, vm};
-use airlock_proto::{valid_text, Cmd, Error, Header, Ind, Kind, FRAME_PORT, HEADER_LEN, MAX_DPI, MAX_QUERY, MIN_DPI};
+use airlock_proto::{valid_text, Cmd, Error, Header, Ind, Kind, HEADER_LEN, MAX_DPI, MAX_QUERY, MIN_DPI};
 use anyhow::{anyhow, bail, Context, Result};
 use std::io::{Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(150);
@@ -74,8 +74,7 @@ impl LiveSession {
         let assets = vm::Assets::locate()?;
         let run = vm::RunDir::create("live")?;
         let doc_disk = vm::write_doc_disk(&run.path, doc)?;
-        let listener = UnixListener::bind(format!("{}_{FRAME_PORT}", run.vsock().display()))?;
-        listener.set_nonblocking(true)?;
+        let listener = run.listen()?;
         let spec = vm::Spec { mode: "live", drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }], sinkhole_events: None };
         let mut child = vm::spawn(&assets, &run, &spec, &run.path.join("console.log"))?;
 

@@ -28,7 +28,9 @@ network to send anything to:
 2. hardened guest kernel (no modules, BPF, io_uring, user namespaces, IPv6,
    raw sockets; panics on any oops)
 3. Firecracker VMM (minimal Rust device model, its own seccomp)
-4. bubblewrap jail around the VMM (all namespaces, no capabilities)
+4. bubblewrap jail around the VMM (all namespaces, no capabilities),
+   running as a **spare user ID** that owns nothing on your system (from
+   your `/etc/subuid` range, like rootless Podman — no root needed)
 5. a strict, tested host protocol: fixed-size headers, pixels and numbers;
    the only text channel is size-capped and sanitised
 6. the fake-internet process is jailed, capability-less and seccomp-locked
@@ -91,6 +93,11 @@ fonts or embedded files survive.
   AppArmor. Either `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`
   or install an AppArmor profile that grants `userns` to `bwrap`.
 - **Debian older kernels** — `sudo sysctl kernel.unprivileged_userns_clone=1`.
+- **"VMs run as your own uid" (doctor warning)** — airlock still works, minus
+  one wall. Give your user a spare ID range:
+  `sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $USER`,
+  and make sure `/dev/kvm` and `/dev/net/tun` are mode 0666 (systemd's
+  default).
 - **Anything else** — run `airlock doctor`; each failed check prints a fix.
   `-v` on any command prints the (sanitised) VM console.
 
@@ -101,8 +108,7 @@ triage (VBA incl. stomping, XLM, DDE, Follina, remote templates, RTF
 exploits), desktop app, regression suite (`tests/run.sh`).
 
 Not yet: packaged installers (run from the source tree for now), Windows
-and macOS hosts, executing Office macros (needs a Windows guest — planned),
-Firecracker's jailer (needs a one-time root setup). The guest image is
+and macOS hosts, executing Office macros (needs a Windows guest — planned). The guest image is
 ~1.1 GB because of LibreOffice.
 
 Guest packages (MuPDF, LibreOffice, …) come from Alpine's 3.24 branch at

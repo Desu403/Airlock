@@ -204,6 +204,15 @@ fn doctor() -> Result<()> {
         "allow them, e.g. Ubuntu 24.04+: sysctl kernel.apparmor_restrict_unprivileged_userns=0 (or an AppArmor profile for bwrap); Debian: sysctl kernel.unprivileged_userns_clone=1",
     );
     check(rw("/dev/net/tun"), "read/write access to /dev/net/tun (analysis mode)", "load the tun module (modprobe tun)");
+    if vm::uid_shift() {
+        eprintln!("  ok    VMs run as a spare uid from /etc/subuid (rootless jail)");
+    } else {
+        eprintln!(
+            "  warn  VMs run as your own uid (no spare-uid isolation)\n        fix: give your user a range in /etc/subuid and /etc/subgid \
+             (sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $USER) and make sure \
+             /dev/kvm and /dev/net/tun are mode 0666 (systemd's default)"
+        );
+    }
     for (cmd, pkg) in [("ip", "iproute2"), ("nft", "nftables"), ("setpriv", "util-linux"), ("mke2fs", "e2fsprogs")] {
         check(has(cmd), &format!("{cmd}"), &format!("install {pkg}"));
     }

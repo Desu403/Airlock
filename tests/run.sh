@@ -54,6 +54,24 @@ for f in testdata/text.pdf testdata/office/harmless-clean.docx; do
         echo "FAIL live mode $(basename "$f")"; fail=$((fail+1))
     fi
 done
+# Rootless jail: where the machine supports it, Firecracker must not run as us.
+if $AIRLOCK doctor 2>&1 | grep -q "ok    VMs run as a spare uid"; then
+    $AIRLOCK livecheck testdata/text.pdf >/dev/null 2>&1 &
+    lc=$!
+    uids=""
+    while kill -0 $lc 2>/dev/null; do
+        uids="$uids $(ps -o uid= -C firecracker 2>/dev/null | tr -d ' ')"
+        sleep 0.05
+    done
+    seen=$(echo $uids | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')
+    if [ -n "$seen" ] && ! echo " $seen" | grep -qw "$(id -u)"; then
+        echo "ok   VMs run as a spare uid ($seen)"
+    else
+        echo "FAIL VMs run as a spare uid (saw: ${seen:-no VM})"; fail=$((fail+1))
+    fi
+else
+    echo "skip VMs run as a spare uid (not supported here; see airlock doctor)"
+fi
 if $AIRLOCK selftest --out "$OUT/selftest" >"$OUT/selftest.log" 2>&1; then
     echo "ok   selftest ($(grep -c PASS "$OUT/selftest.log") detectors)"
 else

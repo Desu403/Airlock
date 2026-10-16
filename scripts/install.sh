@@ -34,7 +34,7 @@ DESKTOP=$DATA/applications/airlock.desktop
 ICON=$DATA/icons/hicolor/512x512/apps/airlock.png
 MIMEAPPS=${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list
 # One line per type: "<type> <explicit default or -> <effective default or ->",
-# recorded on first install.
+# recorded the first time a type is registered.
 DEFAULTS=$LIB/previous-defaults
 # Everything airlock can open (type is still sniffed from content inside the VM).
 TYPES="application/pdf
@@ -51,7 +51,12 @@ application/vnd.oasis.opendocument.text
 application/vnd.oasis.opendocument.spreadsheet
 application/vnd.oasis.opendocument.presentation
 application/rtf
-text/rtf"
+text/rtf
+application/vnd.openxmlformats-officedocument.wordprocessingml.template
+application/vnd.ms-word.template.macroEnabled.12
+application/vnd.ms-excel.addin.macroEnabled.12
+application/vnd.ms-excel.template.macroEnabled.12
+application/vnd.ms-powerpoint.slideshow.macroEnabled.12"
 
 die() { echo "error: $*" >&2; exit 1; }
 refresh() {
@@ -72,9 +77,10 @@ drop_default() {
 # Records the current state, then pins today's effective defaults so the
 # new launcher does not silently take over.
 pin_defaults() {
-    [ -f "$DEFAULTS" ] && return 0
     mkdir -p "$LIB"
     for type in $TYPES; do
+        # Each type is recorded once, the first time airlock sees it.
+        grep -q "^$type " "$DEFAULTS" 2>/dev/null && continue
         explicit=$(explicit_default "$type")
         effective=$(xdg-mime query default "$type" 2>/dev/null || true)
         echo "$type ${explicit:--} ${effective:--}" >> "$DEFAULTS"

@@ -70,10 +70,36 @@ async function openWith(promise, label) {
     const secs = ((performance.now() - t0) / 1000).toFixed(1);
     status(`${info.pages.length} page(s) · VM ready in ${(info.ready_ms / 1000).toFixed(1)}s · opened in ${secs}s`);
   } catch (e) {
+    resetDocument();
     status(`Could not open: ${e}`, true);
+    // The file was read but cannot be shown: it can still be analyzed.
+    const name = await invoke("chosen_name").catch(() => null);
+    if (name) showUndisplayable(name, String(e));
   } finally {
     busy(null);
   }
+}
+
+// Back to the empty state (the previous document's VM is already gone).
+function resetDocument() {
+  for (const p of state.pages) if (p.url) URL.revokeObjectURL(p.url);
+  if (state.observer) state.observer.disconnect();
+  Object.assign(state, { pages: [], hits: [], hitIndex: -1, queue: [], findings: null, docOpen: false });
+  $("pages").replaceChildren();
+  for (const id of ["doc", "searchbox", "zoombox", "textbtn", "pixels", "analyze", "banner"]) $(id).hidden = true;
+  $("empty").hidden = false;
+  closePanel();
+}
+
+function showUndisplayable(name, why) {
+  const body = openPanel("Cannot display");
+  const go = el("button", "primary", "Analyze anyway");
+  go.onclick = () => analyze(name);
+  body.replaceChildren(
+    el("p", "", `${name}: ${why}.`),
+    el("p", "note", "Analysis does not need anything visible: it detonates the file in a separate microVM wired to a fake internet and inspects its macros and structure."),
+    go,
+  );
 }
 
 function openDialog() {
@@ -402,10 +428,10 @@ function renderReport(body, report, title) {
   body.replaceChildren(...nodes);
 }
 
-async function analyze() {
+async function analyze(name) {
   const btn = $("analyze");
   btn.disabled = true;
-  const body = openPanel("Analysis");
+  const body = openPanel(typeof name === "string" ? `Analysis · ${name}` : "Analysis");
   const wait = el("div", "row");
   wait.append(el("div", "spinner"), el("span", "note", "Detonating in a separate microVM wired to a fake internet, then examining its disk in a second VM. You can keep reading meanwhile."));
   body.replaceChildren(wait);

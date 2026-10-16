@@ -15,8 +15,6 @@ use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 struct Doc {
-    name: String,
-    bytes: Arc<Vec<u8>>,
     session: LiveSession,
 }
 
@@ -26,6 +24,9 @@ struct AppState {
     initial: Mutex<Option<PathBuf>>,
     /// Pixels only: no document text leaves the VM (no text layer, no Text panel).
     pixels_only: Arc<AtomicBool>,
+    /// The last file chosen, even if it could not be displayed: it can
+    /// still be analyzed (e.g. an Excel add-in has nothing to show).
+    chosen: Arc<Mutex<Option<(String, Arc<Vec<u8>>)>>>,
 }
 
 #[derive(Serialize)]
@@ -58,41 +59,57 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> R<T> + Send + 'static) 
     tauri::async_runtime::spawn_blocking(f).await.map_err(err)?
 }
 
-fn open_impl(doc: Arc<Mutex<Option<Doc>>>, path: PathBuf) -> R<OpenInfo> {
+/// Plain-language reasons for a document that cannot be displayed.
+fn open_error(e: impl std::fmt::Display) -> String {
+    let s = format!("{e:#}");
+    if s.contains("RenderFailed") {
+        "nothing to display: the file has no visible content (an Excel add-in, for example) or is damaged".into()
+    } else if s.contains("UnsupportedType") {
+        "not a PDF or Office document".into()
+    } else if s.contains("TooManyPages") {
+        "too many pages (more than 2000)".into()
+    } else {
+        s
+    }
+}
+
+fn open_impl(doc: Arc<Mutex<Option<Doc>>>, chosen: Arc<Mutex<Option<(String, Arc<Vec<u8>>)>>>, path: PathBuf) -> R<OpenInfo> {
     let meta = std::fs::metadata(&path).map_err(err)?;
     if !meta.is_file() || meta.len() > MAX_DOC_BYTES {
         return Err("not a file, or larger than 256 MiB".into());
     }
-    let bytes = std::fs::read(&path).map_err(err)?;
+    let bytes = Arc::new(std::fs::read(&path).map_err(err)?);
+    // File names are attacker-chosen too ("invoice\u{202E}fdp.exe").
+    let name = path.file_name().map(|n| text::sanitize_line(n.as_encoded_bytes())).unwrap_or_default();
+    *chosen.lock().unwrap() = Some((name.clone(), bytes.clone()));
     // Close the previous VM before booting a new one.
     if let Some(old) = doc.lock().unwrap().take() {
         old.session.close();
     }
-    let session = LiveSession::open(&bytes).map_err(err)?;
+    let session = LiveSession::open(&bytes).map_err(open_error)?;
     let info = OpenInfo {
-        // File names are attacker-chosen too ("invoice\u{202E}fdp.exe").
-        name: path.file_name().map(|n| text::sanitize_line(n.as_encoded_bytes())).unwrap_or_default(),
+        name,
         pages: session.pages.iter().map(|p| [p.width, p.height]).collect(),
         ready_ms: session.boot_time.as_millis() as u64,
     };
-    *doc.lock().unwrap() = Some(Doc { name: info.name.clone(), bytes: Arc::new(bytes), session });
+    *doc.lock().unwrap() = Some(Doc { session });
     Ok(info)
 }
 
 #[tauri::command]
 async fn pick_and_open(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Option<OpenInfo>> {
-    let doc = state.doc.clone();
+    let (doc, chosen) = (state.doc.clone(), state.chosen.clone());
     blocking(move || {
         let picked = app
             .dialog()
             .file()
             .set_title("Open a document in airlock")
-            .add_filter("Documents", &["pdf", "doc", "docx", "docm", "xls", "xlsx", "xlsm", "ppt", "pptx", "pptm", "odt", "ods", "odp", "rtf"])
+            .add_filter("Documents", &["pdf", "doc", "docx", "docm", "xls", "xlsx", "xlsm", "ppt", "pptx", "pptm", "odt", "ods", "odp", "rtf", "dotm", "dotx", "xlam", "xltm", "xltx", "potm", "ppsm", "ppsx"])
             .add_filter("All files", &["*"])
             .blocking_pick_file();
         match picked {
             None => Ok(None),
-            Some(p) => open_impl(doc, p.into_path().map_err(err)?).map(Some),
+            Some(p) => open_impl(doc, chosen, p.into_path().map_err(err)?).map(Some),
         }
     })
     .await
@@ -100,8 +117,14 @@ async fn pick_and_open(app: tauri::AppHandle, state: State<'_, AppState>) -> R<O
 
 #[tauri::command]
 async fn open_path(path: String, state: State<'_, AppState>) -> R<OpenInfo> {
-    let doc = state.doc.clone();
-    blocking(move || open_impl(doc, PathBuf::from(path))).await
+    let (doc, chosen) = (state.doc.clone(), state.chosen.clone());
+    blocking(move || open_impl(doc, chosen, PathBuf::from(path))).await
+}
+
+/// Name of the file that can be analyzed (also after a failed open).
+#[tauri::command]
+fn chosen_name(state: State<'_, AppState>) -> Option<String> {
+    state.chosen.lock().unwrap().as_ref().map(|(n, _)| n.clone())
 }
 
 #[tauri::command]
@@ -200,11 +223,7 @@ fn viewing_findings(state: State<'_, AppState>) -> serde_json::Value {
 /// Full behavioural analysis in separate microVMs; viewing continues meanwhile.
 #[tauri::command]
 async fn analyze(state: State<'_, AppState>) -> R<serde_json::Value> {
-    let (name, bytes) = {
-        let g = state.doc.lock().unwrap();
-        let d = g.as_ref().ok_or("no document open")?;
-        (d.name.clone(), d.bytes.clone())
-    };
+    let (name, bytes) = state.chosen.lock().unwrap().clone().ok_or("no document chosen")?;
     blocking(move || {
         let started = std::time::Instant::now();
         let a = analysis::run(&bytes, "analyze", false, &|_| {}).map_err(err)?;
@@ -285,6 +304,7 @@ fn main() {
             page_text,
             page_lines,
             pixels_only,
+            chosen_name,
             set_pixels_only,
             viewing_findings,
             analyze,

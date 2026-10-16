@@ -216,6 +216,11 @@ fn doctor() -> Result<()> {
     for (cmd, pkg) in [("ip", "iproute2"), ("nft", "nftables"), ("setpriv", "util-linux"), ("mke2fs", "e2fsprogs")] {
         check(has(cmd), &format!("{cmd}"), &format!("install {pkg}"));
     }
+    if has("xdg-dbus-proxy") {
+        eprintln!("  ok    xdg-dbus-proxy (desktop app: web view runs in WebKit's sandbox)");
+    } else {
+        eprintln!("  warn  xdg-dbus-proxy missing: the desktop app's web view would run unsandboxed\n        fix: install xdg-dbus-proxy");
+    }
     match vm::Assets::locate() {
         Ok(a) => {
             check(true, &format!("firecracker {}", a.firecracker.display()), "");

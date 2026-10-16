@@ -31,6 +31,7 @@ able to touch the host, and *see* what it tries to do.
 | 11 | Unexpected VM death (e.g. kernel panic) reported as an outside finding | done |
 | 12 | VMM runs as a spare uid from the user's /etc/subuid range (a different one per VM; rootless equivalent of Firecracker's jailer); run dir granted to that uid only by ACL; sandbox built from file descriptors; no further user namespaces | done (falls back to the user's uid where unsupported — `airlock doctor` says so) |
 | 13 | Page text and file names narrowed to plain visible characters before any UI; optional pixels-only mode | done |
+| 15 | App web view (where text is drawn) in WebKitGTK's bubblewrap + seccomp sandbox (forced on), own data dir, airlock-only cache dir — no home, no `.ssh`, no capabilities | done |
 | 14 | Every host-side parser fuzzed with hostile streams (`cargo test`; `AIRLOCK_FUZZ_ITERS` for long runs) | done |
 
 ## Roadmap
@@ -94,8 +95,10 @@ able to touch the host, and *see* what it tries to do.
   VM-death detection, spare-uid VMM (wall 12; replaces the jailer, which
   must be started as root for every VM). Text-channel hardening (wall 13)
   and fuzzing (wall 14; stable-Rust randomised tests, no coverage guidance —
-  found and fixed two text-limit bypasses). Open: Landlock + seccomp on the
-  host processes, gVisor inside the guest.
+  found and fixed two text-limit bypasses). Web view sandboxed (wall 15). Open: Landlock
+  on the app's main process — it runs only our (fuzzed) Rust, and Landlock
+  forbids the mounts bwrap needs, so it first needs VM launching split into
+  a helper started before the restriction; gVisor inside the guest.
   PERF_EVENTS cannot be disabled on x86; the renderer monitor denies it.
 - **Phase 2 — Windows detonation**: QEMU/KVM Windows guest with real Office,
   snapshot revert, sinkhole, time acceleration, out-of-VM introspection

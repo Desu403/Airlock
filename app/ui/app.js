@@ -220,10 +220,10 @@ async function loadTextLayer(p, i) {
   p.textState = "ready";
 }
 
-async function setPixelsOnly(on) {
+async function setPixelsOnly(on, remember = true) {
   await invoke("set_pixels_only", { on });
   state.pixelsOnly = on;
-  try { localStorage.setItem("airlock.pixelsOnly", on ? "1" : "0"); } catch {}
+  if (remember) try { localStorage.setItem("airlock.pixelsOnly", on ? "1" : "0"); } catch {}
   $("pixels").setAttribute("aria-pressed", String(on));
   $("textbtn").hidden = on || !state.docOpen;
   if (on) {
@@ -500,7 +500,8 @@ async function runDemo() {
 const pixelsReady = invoke("pixels_only").then(async (on) => {
   let saved = null;
   try { saved = localStorage.getItem("airlock.pixelsOnly"); } catch {}
-  await setPixelsOnly(on || saved === "1");
+  // Only the user's own toggling is remembered, not the environment's default.
+  await setPixelsOnly(on || saved === "1", false);
   status("Ready");
 });
 

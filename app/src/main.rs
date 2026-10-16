@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::Response;
-use tauri::State;
+use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 struct Doc {
@@ -228,7 +228,34 @@ async fn close_document(state: State<'_, AppState>) -> R<()> {
     .await
 }
 
+/// Puts WebKit's web-content process (where document text is drawn) in
+/// WebKitGTK's own bubblewrap + seccomp sandbox, which the 4.1 API leaves
+/// off by default. Skipped only if its helpers are missing, so the app
+/// still starts; `airlock doctor` reports that case.
+fn sandbox_web_content() {
+    let has = |cmd: &str| std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()));
+    if std::env::var_os("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS").is_some() {
+        eprintln!("airlock: WARNING: web-content sandbox disabled by the environment");
+    } else if has("bwrap") && has("xdg-dbus-proxy") {
+        // Single-threaded here: nothing else reads the environment yet.
+        std::env::set_var("WEBKIT_FORCE_SANDBOX", "1");
+        // The sandbox mounts the user cache dir read-write (shader caches);
+        // give it an airlock-only one instead of all of ~/.cache.
+        let base = std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")));
+        if let Some(dir) = base.map(|b| b.join("airlock")) {
+            if std::fs::create_dir_all(&dir).is_ok() {
+                std::env::set_var("XDG_CACHE_HOME", dir);
+            }
+        }
+    } else {
+        eprintln!("airlock: WARNING: install bubblewrap and xdg-dbus-proxy to sandbox the web view");
+    }
+}
+
 fn main() {
+    sandbox_web_content();
     let state = AppState::default();
     *state.initial.lock().unwrap() = std::env::args_os().nth(1).map(PathBuf::from);
     state.pixels_only.store(std::env::var_os("AIRLOCK_PIXELS_ONLY").is_some(), Ordering::SeqCst);
@@ -236,6 +263,18 @@ fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
+        .setup(|app| {
+            // Its own data directory: otherwise WebKit uses (and its sandbox
+            // mounts read-write) the whole ~/.cache.
+            let data = app.path().app_local_data_dir()?.join("webview");
+            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
+                .title("airlock")
+                .inner_size(1280.0, 860.0)
+                .min_inner_size(720.0, 480.0)
+                .data_directory(data)
+                .build()?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             pick_and_open,
             open_path,

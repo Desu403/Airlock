@@ -70,7 +70,8 @@ if $AIRLOCK doctor 2>&1 | grep -q "ok    VMs run as a spare uid"; then
     lc=$!
     uids=""
     while kill -0 $lc 2>/dev/null; do
-        uids="$uids $(ps -o uid= -C firecracker 2>/dev/null | tr -d ' ')"
+        # Firecracker runs from an inherited fd, so match its arguments, not its name.
+        uids="$uids $(ps -eo uid=,args= | awk '/--config-file \/vm\/vm.json/ && !/awk/ {print $1}')"
         sleep 0.05
     done
     seen=$(echo $uids | tr ' ' '\n' | grep . | sort -u | tr '\n' ' ')

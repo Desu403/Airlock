@@ -143,12 +143,13 @@ pub struct Assets {
 }
 
 impl Assets {
+    /// Finds the VM assets: `$AIRLOCK_HOME` (a source tree), then an
+    /// installed layout next to the binary (`<prefix>/bin/airlock` ->
+    /// `<prefix>/lib/airlock/`, see scripts/install.sh), then the source tree
+    /// this binary was built from.
     pub fn locate() -> Result<Self> {
-        let base = std::env::var_os("AIRLOCK_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join(".."));
         let exe_dir = std::env::current_exe()?.parent().map(Path::to_path_buf).unwrap_or_default();
-        let a = Assets {
+        let source_tree = |base: PathBuf| Assets {
             firecracker: base.join("vendor/bin/firecracker"),
             // Prefer the hardened kernel (guest/build-kernel.sh); fall back to stock.
             kernel: [base.join("vendor/bin/vmlinux-airlock"), base.join("vendor/bin/vmlinux")]
@@ -161,12 +162,29 @@ impl Assets {
                 .find(|p| p.exists())
                 .unwrap_or_else(|| exe_dir.join("sinkhole")),
         };
-        for p in [&a.firecracker, &a.kernel, &a.rootfs, &a.sinkhole] {
-            if !p.exists() {
-                bail!("missing {} (run guest/build-rootfs.sh, fetch vendor binaries, cargo build)", p.display());
+        let installed = |lib: PathBuf| Assets {
+            firecracker: lib.join("firecracker"),
+            kernel: lib.join("vmlinux"),
+            rootfs: lib.join("rootfs.ext4"),
+            sinkhole: lib.join("sinkhole"),
+        };
+        let candidates = match std::env::var_os("AIRLOCK_HOME") {
+            Some(home) => vec![source_tree(PathBuf::from(home))],
+            None => vec![installed(exe_dir.join("../lib/airlock")), source_tree(Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))],
+        };
+        let complete = |a: &Assets| [&a.firecracker, &a.kernel, &a.rootfs, &a.sinkhole].iter().all(|p| p.exists());
+        let n = candidates.len();
+        for (i, a) in candidates.into_iter().enumerate() {
+            if complete(&a) || i + 1 == n {
+                for p in [&a.firecracker, &a.kernel, &a.rootfs, &a.sinkhole] {
+                    if !p.exists() {
+                        bail!("missing {} (run scripts/bootstrap.sh, or scripts/install.sh for an installed copy)", p.display());
+                    }
+                }
+                return Ok(a);
             }
         }
-        Ok(a)
+        unreachable!()
     }
 }
 
@@ -286,12 +304,20 @@ pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<C
         boot_args.push_str(" ip=10.0.0.2::10.0.0.1:255.255.255.0::eth0:off");
         net_ifaces.push(serde_json::json!({ "iface_id": "eth0", "host_dev_name": "tap0", "guest_mac": "06:00:0a:00:00:02" }));
     }
-    let mut drives = vec![serde_json::json!({ "drive_id": "rootfs", "path_on_host": "/vm/rootfs.ext4", "is_root_device": true, "is_read_only": true })];
+    // The assets may sit under a private home dir that the spare uid cannot
+    // traverse, and bwrap resolves bind sources by path. So they are not
+    // mounted at all: they are inherited as descriptors and opened through
+    // /proc/self/fd inside, which checks only the files' own permissions.
+    let mut fds: Vec<fs::File> = Vec::new();
+    let firecracker = pass_fd(&mut fds, &assets.firecracker)?;
+    let kernel = pass_fd(&mut fds, &assets.kernel)?;
+    let rootfs = pass_fd(&mut fds, &assets.rootfs)?;
+    let mut drives = vec![serde_json::json!({ "drive_id": "rootfs", "path_on_host": rootfs, "is_root_device": true, "is_read_only": true })];
     for d in &spec.drives {
         drives.push(serde_json::json!({ "drive_id": d.id, "path_on_host": format!("/vm/{}.img", d.id), "is_root_device": false, "is_read_only": d.read_only }));
     }
     let cfg = serde_json::json!({
-        "boot-source": { "kernel_image_path": "/vm/vmlinux", "boot_args": boot_args },
+        "boot-source": { "kernel_image_path": kernel, "boot_args": boot_args },
         "drives": drives,
         "machine-config": { "vcpu_count": 2, "mem_size_mib": 2048, "smt": false },
         "vsock": { "guest_cid": 3, "uds_path": run.vsock() },
@@ -314,26 +340,23 @@ pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<C
         .args(["--dev", "/dev", "--dev-bind", "/dev/kvm", "/dev/kvm", "--proc", "/proc", "--tmpfs", "/tmp"]);
     // Everything from the host is bound from a descriptor we opened: the
     // spare uid needs no access to the paths (home dirs, $XDG_RUNTIME_DIR).
-    let mut fds = Vec::new();
-    bind_fd(&mut cmd, &mut fds, "--ro-bind-fd", &assets.firecracker, "/vm/firecracker")?;
-    bind_fd(&mut cmd, &mut fds, "--ro-bind-fd", &assets.kernel, "/vm/vmlinux")?;
-    bind_fd(&mut cmd, &mut fds, "--ro-bind-fd", &assets.rootfs, "/vm/rootfs.ext4")?;
     bind_fd(&mut cmd, &mut fds, "--ro-bind-fd", &cfg_path, "/vm/vm.json")?;
     for d in &spec.drives {
         bind_fd(&mut cmd, &mut fds, if d.read_only { "--ro-bind-fd" } else { "--bind-fd" }, &d.path, &format!("/vm/{}.img", d.id))?;
     }
     // The vsock socket must live at the same path inside and outside.
     bind_fd(&mut cmd, &mut fds, "--bind-fd", &run.path, run_s)?;
-    let fc = "/vm/firecracker --no-api --config-file /vm/vm.json --level Warning";
+    let fc = format!("{firecracker} --no-api --config-file /vm/vm.json --level Warning");
 
     match &spec.sinkhole_events {
         None => {
-            cmd.args(["--disable-userns", "--cap-drop", "ALL", "--", "/vm/firecracker", "--no-api", "--config-file", "/vm/vm.json", "--level", "Warning"]);
+            cmd.args(["--disable-userns", "--cap-drop", "ALL", "--", &firecracker, "--no-api", "--config-file", "/vm/vm.json", "--level", "Warning"]);
         }
         Some(events) => {
             // Network jail: root *inside a fresh user namespace* (no host
             // privilege), with just enough capability to build tap0 + nft.
             let events = events.to_str().context("non-utf8 path")?;
+            let sinkhole = pass_fd(&mut fds, &assets.sinkhole)?;
             let ready = format!("{run_s}/sinkhole.ready");
             // Debug aid for maintaining the sinkhole's seccomp allowlist:
             // AIRLOCK_TRACE_SINKHOLE=<dir> records its syscalls with strace.
@@ -362,7 +385,7 @@ table ip airlock {{
   }}
 }}
 EOF
-{trace}/vm/sinkhole '{events}' '{ready}' &
+{trace}{sinkhole} '{events}' '{ready}' &
 i=0; while [ ! -e '{ready}' ]; do i=$((i+1)); [ $i -lt 200 ] || exit 3; sleep 0.02; done
 exec setpriv --bounding-set=-all --inh-caps=-all --no-new-privs -- {fc}
 "#
@@ -374,7 +397,6 @@ exec setpriv --bounding-set=-all --inh-caps=-all --no-new-privs -- {fc}
                 .args(["--ro-bind", "/usr", "/usr", "--symlink", "usr/bin", "/bin", "--symlink", "usr/bin", "/sbin"])
                 .args(["--symlink", "usr/lib", "/lib", "--symlink", "usr/lib", "/lib64"])
                 ;
-            bind_fd(&mut cmd, &mut fds, "--ro-bind-fd", &assets.sinkhole, "/vm/sinkhole")?;
             cmd.args(["--", "/bin/sh", "-c", &script]);
         }
     }
@@ -394,6 +416,14 @@ exec setpriv --bounding-set=-all --inh-caps=-all --no-new-privs -- {fc}
     let child = cmd.spawn().context("starting bwrap/firecracker")?;
     drop(fds);
     Ok(child)
+}
+
+/// Opens `src` for the sandbox to inherit; returns its path inside.
+fn pass_fd(fds: &mut Vec<fs::File>, src: &Path) -> Result<String> {
+    let f = fs::File::open(src).with_context(|| format!("opening {}", src.display()))?;
+    let path = format!("/proc/self/fd/{}", f.as_raw_fd());
+    fds.push(f);
+    Ok(path)
 }
 
 /// Opens `src` and passes it to bwrap as `flag FD dest`; the descriptor is

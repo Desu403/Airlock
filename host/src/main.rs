@@ -224,7 +224,7 @@ fn doctor() -> Result<()> {
     match vm::Assets::locate() {
         Ok(a) => {
             check(true, &format!("firecracker {}", a.firecracker.display()), "");
-            let hardened = a.kernel.ends_with("vmlinux-airlock");
+            let hardened = a.kernel.ends_with("vmlinux-airlock") || a.kernel.ends_with("lib/airlock/vmlinux");
             check(hardened, &format!("guest kernel {}", a.kernel.display()), "run guest/build-kernel.sh for the hardened kernel");
             check(true, &format!("guest image {}", a.rootfs.display()), "");
             check(true, &format!("sinkhole {}", a.sinkhole.display()), "");

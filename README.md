@@ -73,16 +73,32 @@ the Alpine root filesystem and the Linux kernel source, builds a hardened
 guest kernel and the guest image without root, then builds the CLI and app.
 Add `--tests` to also run the regression suite.
 
+## Install
+
+```sh
+scripts/install.sh              # for your user, no root: ~/.local/bin + launcher
+scripts/install.sh --default    # ... and open PDF/Office files with airlock by default
+scripts/install.sh --uninstall  # remove, and restore your previous default apps
+```
+
+The installer puts `airlock` and `airlock-app` in `~/.local/bin`, the VM
+image and kernel in `~/.local/lib/airlock`, and adds an **airlock** launcher
+with "Open with airlock" for PDF and Office files. A plain install changes
+none of your default apps. Re-run it after rebuilding to update.
+
 ## Usage
 
 ```sh
-app/target/release/airlock-app [file]           # desktop app (drag & drop works)
+airlock-app [file]           # desktop app (drag & drop works)
 
-host/target/release/airlock view file.pdf       # safe copy: file.airlock/safe.pdf + PNGs
-host/target/release/airlock analyze file.docx   # behaviour report + report.json
-host/target/release/airlock selftest            # prove every detector fires
-host/target/release/airlock doctor              # check this machine
+airlock view file.pdf        # safe copy: file.airlock/safe.pdf + PNGs
+airlock analyze file.docx    # behaviour report + report.json
+airlock selftest             # prove every detector fires
+airlock doctor               # check this machine
 ```
+
+Without installing, run them from the source tree:
+`app/target/release/airlock-app`, `host/target/release/airlock`.
 
 `safe.pdf` contains only images of the pages — no scripts, links, forms,
 fonts or embedded files survive.
@@ -109,8 +125,8 @@ Working: view (live), analyze, PDF JavaScript emulation, Office static
 triage (VBA incl. stomping, XLM, DDE, Follina, remote templates, RTF
 exploits), desktop app, regression suite (`tests/run.sh`).
 
-Not yet: packaged installers (run from the source tree for now), Windows
-and macOS hosts, executing Office macros (needs a Windows guest — planned). The guest image is
+Not yet: distribution packages (AppImage/.deb — waiting on a slimmer guest
+image; `scripts/install.sh` does a per-user install), Windows and macOS hosts, executing Office macros (needs a Windows guest — planned). The guest image is
 ~1.1 GB because of LibreOffice.
 
 Guest packages (MuPDF, LibreOffice, …) come from Alpine's 3.24 branch at

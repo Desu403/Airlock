@@ -5,12 +5,13 @@
 
 use airlock_core::live::LiveSession;
 use airlock_core::proto::MAX_DOC_BYTES;
-use airlock_core::{analysis, report};
+use airlock_core::{analysis, report, text};
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::Response;
-use tauri::State;
+use tauri::{Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 struct Doc {
@@ -23,6 +24,8 @@ struct Doc {
 struct AppState {
     doc: Arc<Mutex<Option<Doc>>>,
     initial: Mutex<Option<PathBuf>>,
+    /// Pixels only: no document text leaves the VM (no text layer, no Text panel).
+    pixels_only: Arc<AtomicBool>,
 }
 
 #[derive(Serialize)]
@@ -31,6 +34,12 @@ struct OpenInfo {
     /// [width, height] in points.
     pages: Vec<[f32; 2]>,
     ready_ms: u64,
+}
+
+#[derive(Serialize)]
+struct LineOut {
+    rect: [f32; 4],
+    text: String,
 }
 
 #[derive(Serialize)]
@@ -61,7 +70,8 @@ fn open_impl(doc: Arc<Mutex<Option<Doc>>>, path: PathBuf) -> R<OpenInfo> {
     }
     let session = LiveSession::open(&bytes).map_err(err)?;
     let info = OpenInfo {
-        name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        // File names are attacker-chosen too ("invoice\u{202E}fdp.exe").
+        name: path.file_name().map(|n| text::sanitize_line(n.as_encoded_bytes())).unwrap_or_default(),
         pages: session.pages.iter().map(|p| [p.width, p.height]).collect(),
         ready_ms: session.boot_time.as_millis() as u64,
     };
@@ -137,12 +147,43 @@ async fn search(query: String, state: State<'_, AppState>) -> R<Vec<HitOut>> {
 }
 
 #[tauri::command]
+fn pixels_only(state: State<'_, AppState>) -> bool {
+    state.pixels_only.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+fn set_pixels_only(on: bool, state: State<'_, AppState>) {
+    state.pixels_only.store(on, Ordering::SeqCst);
+}
+
+fn text_allowed(state: &AppState) -> R<()> {
+    if state.pixels_only.load(Ordering::SeqCst) {
+        return Err("pixels-only mode: no text leaves the VM".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn page_text(page: u32, state: State<'_, AppState>) -> R<String> {
+    text_allowed(&state)?;
     let doc = state.doc.clone();
     blocking(move || {
         let mut g = doc.lock().unwrap();
         let d = g.as_mut().ok_or("no document open")?;
         d.session.text(page).map_err(err)
+    })
+    .await
+}
+
+/// Text lines + boxes for the invisible, selectable layer over a page.
+#[tauri::command]
+async fn page_lines(page: u32, state: State<'_, AppState>) -> R<Vec<LineOut>> {
+    text_allowed(&state)?;
+    let doc = state.doc.clone();
+    blocking(move || {
+        let mut g = doc.lock().unwrap();
+        let d = g.as_mut().ok_or("no document open")?;
+        Ok(d.session.lines(page).map_err(err)?.into_iter().map(|l| LineOut { rect: l.rect, text: l.text }).collect())
     })
     .await
 }
@@ -187,13 +228,53 @@ async fn close_document(state: State<'_, AppState>) -> R<()> {
     .await
 }
 
+/// Puts WebKit's web-content process (where document text is drawn) in
+/// WebKitGTK's own bubblewrap + seccomp sandbox, which the 4.1 API leaves
+/// off by default. Skipped only if its helpers are missing, so the app
+/// still starts; `airlock doctor` reports that case.
+fn sandbox_web_content() {
+    let has = |cmd: &str| std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()));
+    if std::env::var_os("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS").is_some() {
+        eprintln!("airlock: WARNING: web-content sandbox disabled by the environment");
+    } else if has("bwrap") && has("xdg-dbus-proxy") {
+        // Single-threaded here: nothing else reads the environment yet.
+        std::env::set_var("WEBKIT_FORCE_SANDBOX", "1");
+        // The sandbox mounts the user cache dir read-write (shader caches);
+        // give it an airlock-only one instead of all of ~/.cache.
+        let base = std::env::var_os("XDG_CACHE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")));
+        if let Some(dir) = base.map(|b| b.join("airlock")) {
+            if std::fs::create_dir_all(&dir).is_ok() {
+                std::env::set_var("XDG_CACHE_HOME", dir);
+            }
+        }
+    } else {
+        eprintln!("airlock: WARNING: install bubblewrap and xdg-dbus-proxy to sandbox the web view");
+    }
+}
+
 fn main() {
+    sandbox_web_content();
     let state = AppState::default();
     *state.initial.lock().unwrap() = std::env::args_os().nth(1).map(PathBuf::from);
+    state.pixels_only.store(std::env::var_os("AIRLOCK_PIXELS_ONLY").is_some(), Ordering::SeqCst);
     let doc = state.doc.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
+        .setup(|app| {
+            // Its own data directory: otherwise WebKit uses (and its sandbox
+            // mounts read-write) the whole ~/.cache.
+            let data = app.path().app_local_data_dir()?.join("webview");
+            tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::default())
+                .title("airlock")
+                .inner_size(1280.0, 860.0)
+                .min_inner_size(720.0, 480.0)
+                .data_directory(data)
+                .build()?;
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             pick_and_open,
             open_path,
@@ -202,6 +283,9 @@ fn main() {
             render_page,
             search,
             page_text,
+            page_lines,
+            pixels_only,
+            set_pixels_only,
             viewing_findings,
             analyze,
             close_document

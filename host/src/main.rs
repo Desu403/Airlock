@@ -154,7 +154,7 @@ fn selftest(out_dir: PathBuf, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-/// Smoke test for live mode: boot, render, search, extract text, quit.
+/// Smoke test for live mode: boot, render, search, extract text + layout, quit.
 fn livecheck(doc: &[u8]) -> Result<()> {
     let mut s = live::LiveSession::open(doc)?;
     eprintln!("live: {} page(s), ready in {:.1}s", s.pages.len(), s.boot_time.as_secs_f32());
@@ -169,6 +169,8 @@ fn livecheck(doc: &[u8]) -> Result<()> {
     if let Some(h) = hits.first() {
         eprintln!("live: first hit page {} at {:?}", h.page + 1, h.rect);
     }
+    let lines = s.lines(0)?;
+    eprintln!("live: page 1 layout {} line(s){}", lines.len(), lines.first().map(|l| format!(", first {:?} at {:?}", l.text, l.rect)).unwrap_or_default());
     if !s.indicators.is_empty() {
         report::Report::build(&s.indicators, None, &[]).print();
     }
@@ -202,13 +204,27 @@ fn doctor() -> Result<()> {
         "allow them, e.g. Ubuntu 24.04+: sysctl kernel.apparmor_restrict_unprivileged_userns=0 (or an AppArmor profile for bwrap); Debian: sysctl kernel.unprivileged_userns_clone=1",
     );
     check(rw("/dev/net/tun"), "read/write access to /dev/net/tun (analysis mode)", "load the tun module (modprobe tun)");
+    if vm::uid_shift() {
+        eprintln!("  ok    VMs run as a spare uid from /etc/subuid (rootless jail)");
+    } else {
+        eprintln!(
+            "  warn  VMs run as your own uid (no spare-uid isolation)\n        fix: give your user a range in /etc/subuid and /etc/subgid \
+             (sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $USER) and make sure \
+             /dev/kvm and /dev/net/tun are mode 0666 (systemd's default)"
+        );
+    }
     for (cmd, pkg) in [("ip", "iproute2"), ("nft", "nftables"), ("setpriv", "util-linux"), ("mke2fs", "e2fsprogs")] {
         check(has(cmd), &format!("{cmd}"), &format!("install {pkg}"));
+    }
+    if has("xdg-dbus-proxy") {
+        eprintln!("  ok    xdg-dbus-proxy (desktop app: web view runs in WebKit's sandbox)");
+    } else {
+        eprintln!("  warn  xdg-dbus-proxy missing: the desktop app's web view would run unsandboxed\n        fix: install xdg-dbus-proxy");
     }
     match vm::Assets::locate() {
         Ok(a) => {
             check(true, &format!("firecracker {}", a.firecracker.display()), "");
-            let hardened = a.kernel.ends_with("vmlinux-airlock");
+            let hardened = a.kernel.ends_with("vmlinux-airlock") || a.kernel.ends_with("lib/airlock/vmlinux");
             check(hardened, &format!("guest kernel {}", a.kernel.display()), "run guest/build-kernel.sh for the hardened kernel");
             check(true, &format!("guest image {}", a.rootfs.display()), "");
             check(true, &format!("sinkhole {}", a.sinkhole.display()), "");

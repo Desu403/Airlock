@@ -28,9 +28,12 @@ network to send anything to:
 2. hardened guest kernel (no modules, BPF, io_uring, user namespaces, IPv6,
    raw sockets; panics on any oops)
 3. Firecracker VMM (minimal Rust device model, its own seccomp)
-4. bubblewrap jail around the VMM (all namespaces, no capabilities)
-5. a strict, tested host protocol: fixed-size headers, pixels and numbers;
-   the only text channel is size-capped and sanitised
+4. bubblewrap jail around the VMM (all namespaces, no capabilities),
+   running as a **spare user ID** that owns nothing on your system (from
+   your `/etc/subuid` range, like rootless Podman — no root needed)
+5. a strict, fuzzed host protocol: fixed-size headers, pixels and numbers;
+   the only text channel is narrowed to plain visible characters — or
+   switched off entirely with **Pixels only**
 6. the fake-internet process is jailed, capability-less and seccomp-locked
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). No sandbox is
@@ -48,12 +51,13 @@ Packages:
 
 | Distro | Command |
 |---|---|
-| Arch | `sudo pacman -S --needed rust bubblewrap iproute2 nftables util-linux e2fsprogs curl xz python file webkit2gtk-4.1 gtk3 libsoup3 librsvg` |
-| Debian 12 / Ubuntu 24.04 | `sudo apt install bubblewrap iproute2 nftables util-linux e2fsprogs curl xz-utils python3 file build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev` and Rust via [rustup](https://rustup.rs) (distro Rust is too old) |
-| Fedora | `sudo dnf install rust cargo bubblewrap iproute nftables util-linux e2fsprogs curl xz python3 file webkit2gtk4.1-devel gtk3-devel libsoup3-devel librsvg2-devel` |
+| Arch | `sudo pacman -S --needed rust bubblewrap iproute2 nftables util-linux e2fsprogs curl xz python file xdg-dbus-proxy webkit2gtk-4.1 gtk3 libsoup3 librsvg` |
+| Debian 12 / Ubuntu 24.04 | `sudo apt install bubblewrap iproute2 nftables util-linux e2fsprogs curl xz-utils python3 file xdg-dbus-proxy build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev` and Rust via [rustup](https://rustup.rs) (distro Rust is too old) |
+| Fedora | `sudo dnf install rust cargo bubblewrap iproute nftables util-linux e2fsprogs curl xz python3 file xdg-dbus-proxy webkit2gtk4.1-devel gtk3-devel libsoup3-devel librsvg2-devel` |
 
-The webkit/gtk packages are only needed for the desktop app
-(`--no-app` skips it).
+The webkit/gtk packages and `xdg-dbus-proxy` are only needed for the
+desktop app (`--no-app` skips it). The app runs its web view in WebKit's
+own bubblewrap + seccomp sandbox, with an airlock-only cache directory.
 
 ## Setup
 
@@ -69,16 +73,32 @@ the Alpine root filesystem and the Linux kernel source, builds a hardened
 guest kernel and the guest image without root, then builds the CLI and app.
 Add `--tests` to also run the regression suite.
 
+## Install
+
+```sh
+scripts/install.sh              # for your user, no root: ~/.local/bin + launcher
+scripts/install.sh --default    # ... and open PDF/Office files with airlock by default
+scripts/install.sh --uninstall  # remove, and restore your previous default apps
+```
+
+The installer puts `airlock` and `airlock-app` in `~/.local/bin`, the VM
+image and kernel in `~/.local/lib/airlock`, and adds an **airlock** launcher
+with "Open with airlock" for PDF and Office files. A plain install changes
+none of your default apps. Re-run it after rebuilding to update.
+
 ## Usage
 
 ```sh
-app/target/release/airlock-app [file]           # desktop app (drag & drop works)
+airlock-app [file]           # desktop app (drag & drop works)
 
-host/target/release/airlock view file.pdf       # safe copy: file.airlock/safe.pdf + PNGs
-host/target/release/airlock analyze file.docx   # behaviour report + report.json
-host/target/release/airlock selftest            # prove every detector fires
-host/target/release/airlock doctor              # check this machine
+airlock view file.pdf        # safe copy: file.airlock/safe.pdf + PNGs
+airlock analyze file.docx    # behaviour report + report.json
+airlock selftest             # prove every detector fires
+airlock doctor               # check this machine
 ```
+
+Without installing, run them from the source tree:
+`app/target/release/airlock-app`, `host/target/release/airlock`.
 
 `safe.pdf` contains only images of the pages — no scripts, links, forms,
 fonts or embedded files survive.
@@ -91,6 +111,11 @@ fonts or embedded files survive.
   AppArmor. Either `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`
   or install an AppArmor profile that grants `userns` to `bwrap`.
 - **Debian older kernels** — `sudo sysctl kernel.unprivileged_userns_clone=1`.
+- **"VMs run as your own uid" (doctor warning)** — airlock still works, minus
+  one wall. Give your user a spare ID range:
+  `sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $USER`,
+  and make sure `/dev/kvm` and `/dev/net/tun` are mode 0666 (systemd's
+  default).
 - **Anything else** — run `airlock doctor`; each failed check prints a fix.
   `-v` on any command prints the (sanitised) VM console.
 
@@ -100,9 +125,8 @@ Working: view (live), analyze, PDF JavaScript emulation, Office static
 triage (VBA incl. stomping, XLM, DDE, Follina, remote templates, RTF
 exploits), desktop app, regression suite (`tests/run.sh`).
 
-Not yet: packaged installers (run from the source tree for now), Windows
-and macOS hosts, executing Office macros (needs a Windows guest — planned),
-Firecracker's jailer (needs a one-time root setup). The guest image is
+Not yet: distribution packages (AppImage/.deb — waiting on a slimmer guest
+image; `scripts/install.sh` does a per-user install), Windows and macOS hosts, executing Office macros (needs a Windows guest — planned). The guest image is
 ~1.1 GB because of LibreOffice.
 
 Guest packages (MuPDF, LibreOffice, …) come from Alpine's 3.24 branch at

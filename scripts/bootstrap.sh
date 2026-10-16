@@ -90,4 +90,5 @@ host/target/release/airlock doctor
 echo
 echo "CLI:  host/target/release/airlock view|analyze <file>"
 [ "$APP" = 1 ] && echo "App:  app/target/release/airlock-app [file]"
+echo "Install for your user (launcher, 'Open with airlock'): scripts/install.sh"
 exit 0

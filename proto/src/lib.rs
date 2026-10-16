@@ -45,6 +45,10 @@ pub enum Kind {
     SearchDone = 8,
     /// Live: a = page; payload = UTF-8 page text (host re-sanitises).
     PageText = 9,
+    /// Live: a = page; payload = n * 16 bytes of u32 LE line boxes (tenths
+    /// of a point, top-left origin), one per line of the PageText that
+    /// follows. Numbers only.
+    PageLines = 10,
 }
 
 /// Host -> guest commands in live mode (same 24-byte header layout).
@@ -58,11 +62,14 @@ pub enum Cmd {
     /// a = page.
     GetText = 102,
     Quit = 103,
+    /// a = page. Reply: PageLines, then PageText (one text line per box).
+    GetLayout = 104,
 }
 
 pub const MAX_QUERY: u32 = 256;
 pub const MAX_PAGE_TEXT: u32 = 256 * 1024;
 pub const MAX_RECTS: u32 = 256;
+pub const MAX_LINES: u32 = 8192;
 pub const MAX_PT10: u32 = 1_000_000;
 pub const MIN_DPI: u32 = 20;
 pub const MAX_DPI: u32 = 600;
@@ -76,6 +83,7 @@ impl Header {
             101 if (1..=MAX_QUERY).contains(&h.len) => Cmd::Search,
             102 if h.a < MAX_PAGES && h.len == 0 => Cmd::GetText,
             103 if h.len == 0 => Cmd::Quit,
+            104 if h.a < MAX_PAGES && h.len == 0 => Cmd::GetLayout,
             _ => return None,
         };
         Some((cmd, h))
@@ -281,6 +289,9 @@ impl Header {
             }
             k if k == Kind::SearchDone as u32 => h.b == 0 && h.c == 0 && h.len == 0,
             k if k == Kind::PageText as u32 => h.a < MAX_PAGES && h.b == 0 && h.c == 0 && h.len <= MAX_PAGE_TEXT,
+            k if k == Kind::PageLines as u32 => {
+                h.a < MAX_PAGES && h.b == 0 && h.c == 0 && h.len % 16 == 0 && h.len <= MAX_LINES * 16
+            }
             _ => false,
         };
         ok.then_some(h)
@@ -305,6 +316,8 @@ mod tests {
         assert!(Header::decode(&h(6, 0, 6120, 7920, 0)).is_some());
         assert!(Header::decode(&h(7, 2, 0, 0, 32)).is_some());
         assert!(Header::decode(&h(9, 2, 0, 0, 100)).is_some());
+        assert!(Header::decode(&h(10, 2, 0, 0, 0)).is_some());
+        assert!(Header::decode(&h(10, 2, 0, 0, 160)).is_some());
     }
 
     #[test]
@@ -313,6 +326,10 @@ mod tests {
         assert!(Header::decode(&h(7, 2, 0, 0, (MAX_RECTS + 1) * 16)).is_none());
         assert!(Header::decode(&h(9, 2, 0, 0, MAX_PAGE_TEXT + 1)).is_none());
         assert!(Header::decode(&h(6, 0, 0, 7920, 0)).is_none());
+        assert!(Header::decode(&h(10, 2, 0, 0, 24)).is_none());
+        assert!(Header::decode(&h(10, 2, 0, 0, (MAX_LINES + 1) * 16)).is_none());
+        assert!(Header::decode_cmd(&h(104, 1, 0, 0, 0)).is_some());
+        assert!(Header::decode_cmd(&h(104, 1, 0, 0, 4)).is_none());
         // Commands are only accepted by decode_cmd, and vice versa.
         assert!(Header::decode(&h(100, 0, 150, 0, 0)).is_none());
         assert!(Header::decode_cmd(&h(100, 0, 150, 0, 0)).is_some());
@@ -354,5 +371,59 @@ mod tests {
         let mut wrong_magic = h(1, 3, 0, 0, 0);
         wrong_magic[0] = b'X';
         assert!(Header::decode(&wrong_magic).is_none());
+    }
+}
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+
+    /// Random headers biased towards valid kinds and boundary values:
+    /// whatever `decode` accepts must have a bounded, self-consistent shape.
+    #[test]
+    fn fuzz_decode() {
+        let mut x = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64 | 1;
+        eprintln!("fuzz_decode seed {x}");
+        let mut next = move || {
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        };
+        const EDGES: [u32; 12] = [0, 1, 16, 4, MAX_DIM, MAX_DIM + 1, MAX_PAGES, MAX_TEXT, MAX_PAGE_TEXT, MAX_LINES * 16, MAX_PT10, u32::MAX];
+        let iters = std::env::var("AIRLOCK_FUZZ_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(2_000_000u64);
+        for _ in 0..iters {
+            let f = |r: u64, v: u64| match r % 3 {
+                0 => v as u32,
+                1 => (v % 64) as u32,
+                _ => EDGES[(v % EDGES.len() as u64) as usize],
+            };
+            let r = next();
+            let kind = if r % 4 == 0 { f(next(), next()) } else { [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 100, 101, 102, 103, 104][(r % 15) as usize] };
+            let (a, b, c) = (f(next(), next()), f(next(), next()), f(next(), next()));
+            let len = if kind == 2 && next() % 2 == 0 { b.wrapping_mul(c).wrapping_mul(4) } else { f(next(), next()) };
+            let buf = Header { kind, a, b, c, len }.encode();
+            if let Some(h) = Header::decode(&buf) {
+                assert_eq!(h.encode(), buf);
+                let max = (MAX_DIM * MAX_DIM * 4).max(MAX_PAGE_TEXT).max(MAX_LINES * 16);
+                assert!(h.len <= max, "{h:?}");
+                match h.kind {
+                    2 => assert!(h.b >= 1 && h.b <= MAX_DIM && h.c >= 1 && h.c <= MAX_DIM && h.len as u64 == h.b as u64 * h.c as u64 * 4, "{h:?}"),
+                    5 => assert!(h.len >= 1 && h.len <= MAX_TEXT && Ind::from_u32(h.a).is_some(), "{h:?}"),
+                    7 | 10 => assert!(h.len % 16 == 0 && h.a < MAX_PAGES, "{h:?}"),
+                    1 | 3 | 4 | 6 | 8 => assert_eq!(h.len, 0, "{h:?}"),
+                    9 => assert!(h.len <= MAX_PAGE_TEXT && h.a < MAX_PAGES),
+                    k => panic!("decode accepted kind {k}"),
+                }
+            }
+            if let Some((cmd, h)) = Header::decode_cmd(&buf) {
+                match cmd {
+                    Cmd::Search => assert!(h.len >= 1 && h.len <= MAX_QUERY),
+                    Cmd::Render => assert!(h.len == 0 && h.a < MAX_PAGES && (MIN_DPI..=MAX_DPI).contains(&h.b)),
+                    Cmd::GetText | Cmd::GetLayout => assert!(h.len == 0 && h.a < MAX_PAGES),
+                    Cmd::Quit => assert_eq!(h.len, 0),
+                }
+            }
+        }
     }
 }

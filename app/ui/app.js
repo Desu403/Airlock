@@ -9,7 +9,7 @@ const PT_TO_PX = 96 / 72;
 const ZOOMS = [0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
 
 const state = {
-  pages: [],          // [{w, h, el, img, layer, key, url}]
+  pages: [],          // [{w, h, el, img, text, layer, key, url, textState}]
   zoom: 1,
   fitMode: true,      // keep fitting the width on resize / panel toggle
   hits: [],
@@ -19,6 +19,7 @@ const state = {
   docOpen: false,
   observer: null,
   findings: null,
+  pixelsOnly: false,  // no document text leaves the VM (enforced in Rust too)
 };
 
 // ---------------------------------------------------------------- helpers
@@ -97,7 +98,8 @@ function setupDocument(info) {
   closePanel();
 
   $("docname").textContent = info.name;
-  for (const id of ["doc", "searchbox", "zoombox", "textbtn", "analyze"]) $(id).hidden = false;
+  for (const id of ["doc", "searchbox", "zoombox", "pixels", "analyze"]) $(id).hidden = false;
+  $("textbtn").hidden = state.pixelsOnly;
   $("empty").hidden = true;
   $("analyze").disabled = false;
 
@@ -110,11 +112,12 @@ function setupDocument(info) {
     const pageEl = el("div", "page loading");
     const img = el("img");
     img.alt = `Page ${i + 1}`;
+    const text = el("div", "text");
     const layer = el("div", "layer");
-    pageEl.append(img, layer, el("span", "num", String(i + 1)));
+    pageEl.append(img, text, layer, el("span", "num", String(i + 1)));
     pageEl.dataset.index = String(i);
     container.append(pageEl);
-    state.pages.push({ w, h, el: pageEl, img, layer, key: null, url: null, visible: false });
+    state.pages.push({ w, h, el: pageEl, img, text, layer, key: null, url: null, visible: false, textState: null });
     state.observer.observe(pageEl);
   });
   fitWidth();
@@ -125,6 +128,7 @@ function setupDocument(info) {
 
 function layout() {
   const scale = state.zoom * PT_TO_PX;
+  $("pages").style.setProperty("--s", String(scale));
   for (const p of state.pages) {
     p.el.style.width = `${Math.round(p.w * scale)}px`;
     p.el.style.height = `${Math.round(p.h * scale)}px`;
@@ -171,12 +175,76 @@ async function pump() {
         status(`Page ${i + 1}: ${e}`, true);
         break;
       }
+      if (!p.textState && !state.pixelsOnly) await loadTextLayer(p, i);
     }
   } finally {
     state.rendering = false;
   }
   checkViewingFindings();
 }
+
+// ---------------------------------------------------------------- text layer
+// Invisible text over the page image so it can be selected and copied like
+// in any PDF viewer. Lines and boxes come from the VM; the text is the same
+// sanitised text as the Text panel and is inserted with textContent only.
+
+async function loadTextLayer(p, i) {
+  p.textState = "loading";
+  let lines;
+  try {
+    lines = await invoke("page_lines", { page: i });
+  } catch (e) {
+    p.textState = null;
+    status(`Page ${i + 1} text: ${e}`, true);
+    return;
+  }
+  const spans = [];
+  for (const { rect: [x0, y0, x1, y1], text } of lines) {
+    const w = x1 - x0, h = y1 - y0;
+    // Vertical / rotated lines would need rotation; leave them out.
+    if (!text || (h > w * 1.5 && [...text].length > 1)) continue;
+    const span = el("span", "", text);
+    span.style.setProperty("--x", String(x0));
+    span.style.setProperty("--y", String(y0));
+    span.style.setProperty("--h", String(h));
+    spans.push([span, w]);
+  }
+  p.text.replaceChildren(...spans.flatMap(([span]) => [span, document.createElement("br")]));
+  // Stretch each line to its real width (the page's fonts are not ours).
+  // The ratio does not depend on zoom, so it is measured once.
+  const scale = state.zoom * PT_TO_PX;
+  const widths = spans.map(([span]) => span.offsetWidth);
+  spans.forEach(([span, w], k) => {
+    if (widths[k] > 0) span.style.transform = `scaleX(${(w * scale) / widths[k]})`;
+  });
+  p.textState = "ready";
+}
+
+async function setPixelsOnly(on, remember = true) {
+  await invoke("set_pixels_only", { on });
+  state.pixelsOnly = on;
+  if (remember) try { localStorage.setItem("airlock.pixelsOnly", on ? "1" : "0"); } catch {}
+  $("pixels").setAttribute("aria-pressed", String(on));
+  $("textbtn").hidden = on || !state.docOpen;
+  if (on) {
+    getSelection()?.removeAllRanges();
+    for (const p of state.pages) { p.text.replaceChildren(); p.textState = null; }
+    if ($("panel-title").textContent.startsWith("Text")) closePanel();
+    status("Pixels only: no document text leaves the VM");
+  } else {
+    for (const [i, p] of state.pages.entries()) if (p.key && !p.textState) await loadTextLayer(p, i);
+    status("Text selection on");
+  }
+}
+
+// Copy plain text only: the layer is transparent, so its HTML would paste
+// as invisible text into rich editors.
+document.addEventListener("copy", (e) => {
+  const sel = getSelection();
+  if (!sel || sel.isCollapsed || !$("pages").contains(sel.anchorNode)) return;
+  e.clipboardData.setData("text/plain", sel.toString());
+  e.preventDefault();
+});
 
 async function checkViewingFindings() {
   if (!state.docOpen) return;
@@ -361,6 +429,7 @@ $("zin").onclick = () => stepZoom(1);
 $("zout").onclick = () => stepZoom(-1);
 $("zfit").onclick = fitWidth;
 $("textbtn").onclick = showText;
+$("pixels").onclick = () => setPixelsOnly(!state.pixelsOnly);
 $("analyze").onclick = analyze;
 $("panel-close").onclick = closePanel;
 $("qnext").onclick = () => stepHit(1);
@@ -408,11 +477,36 @@ async function runDemo() {
     const [cmd, arg] = step.split("=");
     if (cmd === "search") { $("q").value = arg; await runSearch(); }
     if (cmd === "text") await showText();
+    if (cmd === "reveal") {
+      // Paint the invisible text layer red to check its alignment.
+      await new Promise((r) => setTimeout(r, 1500));
+      for (const span of document.querySelectorAll(".page .text span")) span.style.color = "rgba(220, 0, 0, 0.75)";
+    }
+    if (cmd === "select") {
+      // Select page 1's text layer and show what a copy would contain.
+      await new Promise((r) => setTimeout(r, 1500));
+      const r = document.createRange();
+      r.selectNodeContents(state.pages[0].text);
+      getSelection().removeAllRanges();
+      getSelection().addRange(r);
+      const body = openPanel("Selection (demo)");
+      body.replaceChildren(el("pre", "", JSON.stringify(getSelection().toString()).slice(0, 2000)));
+    }
     if (cmd === "analyze") await analyze();
   }
 }
 
+// Pixels-only preference: the environment (AIRLOCK_PIXELS_ONLY) or the last choice.
+const pixelsReady = invoke("pixels_only").then(async (on) => {
+  let saved = null;
+  try { saved = localStorage.getItem("airlock.pixelsOnly"); } catch {}
+  // Only the user's own toggling is remembered, not the environment's default.
+  await setPixelsOnly(on || saved === "1", false);
+  status("Ready");
+});
+
 invoke("initial_path").then(async (p) => {
+  await pixelsReady;
   if (!p) return;
   await openWith(invoke("open_path", { path: p }), p.split(/[\\/]/).pop());
   runDemo();

@@ -1,13 +1,13 @@
 //! A live viewing session: the document stays inside a running microVM
 //! (no network device) and the host asks for what it needs. Everything that
-//! comes back is validated here; page text is re-sanitised before any UI
-//! sees it.
+//! comes back is validated here; page text is re-sanitised (`text`) before
+//! any UI sees it.
 
-use crate::{pdf, vm};
-use airlock_proto::{valid_text, Cmd, Error, Header, Ind, Kind, FRAME_PORT, HEADER_LEN, MAX_DPI, MAX_QUERY, MIN_DPI};
+use crate::{pdf, text, vm};
+use airlock_proto::{valid_text, Cmd, Error, Header, Ind, Kind, HEADER_LEN, MAX_DPI, MAX_QUERY, MIN_DPI};
 use anyhow::{anyhow, bail, Context, Result};
 use std::io::{Read, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(150);
@@ -25,11 +25,19 @@ pub struct Hit {
     pub rect: [f32; 4],
 }
 
+/// One line of page text and where it sits, for a selectable text layer.
+pub struct Line {
+    /// x0, y0, x1, y1 in points, top-left origin.
+    pub rect: [f32; 4],
+    pub text: String,
+}
+
 enum Msg {
     Hello(u32),
     PageInfo(u32, PageSize),
     Page(u32, pdf::Page),
     Hits(u32, Vec<[f32; 4]>),
+    Lines(u32, Vec<[f32; 4]>),
     SearchDone,
     Text(u32, String),
     Done,
@@ -45,20 +53,6 @@ pub struct LiveSession {
     pub boot_time: Duration,
 }
 
-/// Page text is attacker-controlled. Keep printable text and line breaks;
-/// drop control characters and bidi overrides ("Trojan Source").
-pub fn sanitize_text(raw: &[u8]) -> String {
-    String::from_utf8_lossy(raw)
-        .chars()
-        .filter(|&c| {
-            c == '\n'
-                || c == '\t'
-                || !(c.is_control()
-                    || matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}' | '\u{FEFF}'))
-        })
-        .collect()
-}
-
 impl LiveSession {
     /// Boots a live VM for `doc` (PDF or Office). The VM has no network device.
     pub fn open(doc: &[u8]) -> Result<Self> {
@@ -66,8 +60,7 @@ impl LiveSession {
         let assets = vm::Assets::locate()?;
         let run = vm::RunDir::create("live")?;
         let doc_disk = vm::write_doc_disk(&run.path, doc)?;
-        let listener = UnixListener::bind(format!("{}_{FRAME_PORT}", run.vsock().display()))?;
-        listener.set_nonblocking(true)?;
+        let listener = run.listen()?;
         let spec = vm::Spec { mode: "live", drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }], sinkhole_events: None };
         let mut child = vm::spawn(&assets, &run, &spec, &run.path.join("console.log"))?;
 
@@ -118,46 +111,10 @@ impl LiveSession {
 
     /// Reads one message; indicators are collected on the side.
     fn next(&mut self) -> Result<Msg> {
-        loop {
-            let mut buf = [0u8; HEADER_LEN];
-            self.stream.read_exact(&mut buf).context("VM stopped responding")?;
-            let Some(h) = Header::decode(&buf) else { return Err(self.hostile("malformed header")) };
-            let mut payload = vec![0u8; h.len as usize];
-            self.stream.read_exact(&mut payload).context("truncated message")?;
-            let msg = match h.kind {
-                k if k == Kind::Indicator as u32 => {
-                    if !valid_text(&payload) || self.indicators.len() >= 1000 {
-                        return Err(self.hostile("bad indicator"));
-                    }
-                    self.indicators.push((Ind::from_u32(h.a).unwrap(), String::from_utf8(payload).unwrap()));
-                    continue;
-                }
-                k if k == Kind::Hello as u32 => Msg::Hello(h.a),
-                k if k == Kind::PageInfo as u32 => Msg::PageInfo(h.a, PageSize { width: h.b as f32 / 10.0, height: h.c as f32 / 10.0 }),
-                k if k == Kind::Page as u32 => {
-                    let rgb = payload.chunks_exact(4).flat_map(|p| {
-                        let a = p[3] as u32;
-                        [0, 1, 2].map(|i| ((p[i] as u32 * a + 255 * (255 - a)) / 255) as u8)
-                    });
-                    Msg::Page(h.a, pdf::Page { width: h.b, height: h.c, rgb: rgb.collect() })
-                }
-                k if k == Kind::SearchHits as u32 => Msg::Hits(
-                    h.a,
-                    payload
-                        .chunks_exact(16)
-                        .map(|r| {
-                            let v = |i: usize| u32::from_le_bytes(r[i * 4..i * 4 + 4].try_into().unwrap()) as f32 / 10.0;
-                            [v(0), v(1), v(2), v(3)]
-                        })
-                        .collect(),
-                ),
-                k if k == Kind::SearchDone as u32 => Msg::SearchDone,
-                k if k == Kind::PageText as u32 => Msg::Text(h.a, sanitize_text(&payload)),
-                k if k == Kind::Done as u32 => Msg::Done,
-                k if k == Kind::Error as u32 => bail!("VM reported {:?}", Error::from_u32(h.a).unwrap()),
-                _ => return Err(self.hostile("unexpected message")),
-            };
-            return Ok(msg);
+        match read_msg(&mut self.stream, &mut self.indicators) {
+            Ok(m) => Ok(m),
+            Err(Bad::Hostile(what)) => Err(self.hostile(what)),
+            Err(Bad::Other(e)) => Err(e),
         }
     }
 
@@ -203,6 +160,28 @@ impl LiveSession {
         }
     }
 
+    /// Lines of text with their boxes. Text is sanitised like `text`; a box
+    /// that is degenerate or off the page is dropped with its line.
+    pub fn lines(&mut self, page: u32) -> Result<Vec<Line>> {
+        let Some(size) = self.pages.get(page as usize) else { bail!("no page {page}") };
+        let (pw, ph) = (size.width, size.height);
+        self.send(Cmd::GetLayout, page, 0, &[])?;
+        let boxes = match self.next()? {
+            Msg::Lines(p, b) if p == page => b,
+            _ => return Err(self.hostile("expected line boxes")),
+        };
+        let text = match self.next()? {
+            Msg::Text(p, t) if p == page => t,
+            _ => return Err(self.hostile("expected page text")),
+        };
+        Ok(boxes
+            .into_iter()
+            .zip(text.split('\n'))
+            .filter(|(r, _)| r[0] < r[2] && r[1] < r[3] && r[2] <= pw + 1.0 && r[3] <= ph + 1.0)
+            .map(|(rect, t)| Line { rect, text: t.to_owned() })
+            .collect())
+    }
+
     pub fn close(mut self) {
         let _ = self.send(Cmd::Quit, 0, 0, &[]);
         let _ = self.stream.set_read_timeout(Some(Duration::from_millis(500)));
@@ -220,14 +199,91 @@ impl Drop for LiveSession {
     }
 }
 
+enum Bad {
+    /// The guest broke the protocol: kill it.
+    Hostile(&'static str),
+    /// I/O failure, or the guest reported an error.
+    Other(anyhow::Error),
+}
+
+/// Parses one message from the untrusted guest stream. Every length comes
+/// from a header that `Header::decode` already bounded.
+fn read_msg(r: &mut impl Read, indicators: &mut Vec<(Ind, String)>) -> std::result::Result<Msg, Bad> {
+    loop {
+        let mut buf = [0u8; HEADER_LEN];
+        r.read_exact(&mut buf).context("VM stopped responding").map_err(Bad::Other)?;
+        let Some(h) = Header::decode(&buf) else { return Err(Bad::Hostile("malformed header")) };
+        let mut payload = vec![0u8; h.len as usize];
+        r.read_exact(&mut payload).context("truncated message").map_err(Bad::Other)?;
+        let msg = match h.kind {
+            k if k == Kind::Indicator as u32 => {
+                if !valid_text(&payload) || indicators.len() >= 1000 {
+                    return Err(Bad::Hostile("bad indicator"));
+                }
+                indicators.push((Ind::from_u32(h.a).unwrap(), String::from_utf8(payload).unwrap()));
+                continue;
+            }
+            k if k == Kind::Hello as u32 => Msg::Hello(h.a),
+            k if k == Kind::PageInfo as u32 => Msg::PageInfo(h.a, PageSize { width: h.b as f32 / 10.0, height: h.c as f32 / 10.0 }),
+            k if k == Kind::Page as u32 => {
+                let rgb = payload.chunks_exact(4).flat_map(|p| {
+                    let a = p[3] as u32;
+                    [0, 1, 2].map(|i| ((p[i] as u32 * a + 255 * (255 - a)) / 255) as u8)
+                });
+                Msg::Page(h.a, pdf::Page { width: h.b, height: h.c, rgb: rgb.collect() })
+            }
+            k if k == Kind::SearchHits as u32 => Msg::Hits(h.a, rects(&payload)),
+            k if k == Kind::PageLines as u32 => Msg::Lines(h.a, rects(&payload)),
+            k if k == Kind::SearchDone as u32 => Msg::SearchDone,
+            k if k == Kind::PageText as u32 => Msg::Text(h.a, text::sanitize(&payload)),
+            k if k == Kind::Done as u32 => Msg::Done,
+            k if k == Kind::Error as u32 => return Err(Bad::Other(anyhow!("VM reported {:?}", Error::from_u32(h.a).unwrap()))),
+            _ => return Err(Bad::Hostile("unexpected message")),
+        };
+        return Ok(msg);
+    }
+}
+
+/// n * 16 bytes of u32 LE tenths of a point -> rectangles in points.
+fn rects(payload: &[u8]) -> Vec<[f32; 4]> {
+    payload
+        .chunks_exact(16)
+        .map(|r| {
+            let v = |i: usize| u32::from_le_bytes(r[i * 4..i * 4 + 4].try_into().unwrap()) as f32 / 10.0;
+            [v(0), v(1), v(2), v(3)]
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::sanitize_text;
+    use super::*;
+    use crate::fuzz::{hostile_stream, iters, Rng};
+    use airlock_proto::{MAX_DIM, MAX_LINES, MAX_PAGES, MAX_PAGE_TEXT, MAX_RECTS};
 
     #[test]
-    fn strips_trojan_source_and_controls() {
-        let evil = "pay\u{202E}fdp.exe\u{1b}[2J\u{7}ok\nline2\u{2066}x";
-        assert_eq!(sanitize_text(evil.as_bytes()), "payfdp.exe[2Jok\nline2x");
-        assert_eq!(sanitize_text(b"\xff\xfeA"), "\u{FFFD}\u{FFFD}A");
+    fn fuzz_read_msg() {
+        let mut rng = Rng::from_env("fuzz_read_msg");
+        for _ in 0..iters(50_000) {
+            let data = hostile_stream(&mut rng);
+            let mut r = &data[..];
+            let mut inds = Vec::new();
+            while let Ok(m) = read_msg(&mut r, &mut inds) {
+                match m {
+                    Msg::Page(p, img) => {
+                        assert!(p < MAX_PAGES);
+                        assert!((1..=MAX_DIM).contains(&img.width) && (1..=MAX_DIM).contains(&img.height));
+                        assert_eq!(img.rgb.len(), (img.width * img.height * 3) as usize);
+                    }
+                    Msg::Hits(p, rects) => assert!(p < MAX_PAGES && !rects.is_empty() && rects.len() <= MAX_RECTS as usize),
+                    Msg::Lines(p, rects) => assert!(p < MAX_PAGES && rects.len() <= MAX_LINES as usize),
+                    // Lossy UTF-8 can triple invalid bytes; sanitising only removes.
+                    Msg::Text(p, t) => assert!(p < MAX_PAGES && t.len() <= MAX_PAGE_TEXT as usize * 3),
+                    Msg::PageInfo(p, size) => assert!(p < MAX_PAGES && size.width > 0.0 && size.height > 0.0 && size.width <= 100_000.0),
+                    Msg::Hello(_) | Msg::SearchDone | Msg::Done => {}
+                }
+            }
+            assert!(inds.len() <= 1000 && inds.iter().all(|(_, t)| valid_text(t.as_bytes())));
+        }
     }
 }

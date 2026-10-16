@@ -32,7 +32,10 @@ pub fn run(doc: &[u8], mode: &'static str, verbose: bool, progress: &dyn Fn(&str
     // The dead VM's disk is examined by a *fresh* VM, never by the host.
     progress("[2/2] autopsy of the dead VM's disk in a second microVM...");
     let run2 = vm::RunDir::create("autopsy")?;
-    let spec2 = vm::Spec { mode: "autopsy", drives: vec![vm::Drive { id: "evidence", path: scratch, read_only: true }], sinkhole_events: None };
+    // Hand the disk over: each VM's spare uid can only reach its own run dir.
+    let evidence = run2.path.join("evidence.img");
+    std::fs::rename(&scratch, &evidence)?;
+    let spec2 = vm::Spec { mode: "autopsy", drives: vec![vm::Drive { id: "evidence", path: evidence, read_only: true }], sinkhole_events: None };
     let a = session::run(&assets, &run2, &spec2, verbose, false)?;
 
     let mut indicators = s.indicators.clone();

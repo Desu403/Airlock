@@ -80,6 +80,7 @@ button:hover { border-color: var(--muted); }
 button:disabled { opacity: 0.5; cursor: default; }
 button.primary { background: var(--accent); color: var(--accent-text); border-color: transparent; font-weight: 600; }
 button.icon { padding: 4px 9px; min-width: 30px; }
+button[aria-pressed="true"] { background: var(--seal-bg); color: var(--seal); border-color: var(--seal); font-weight: 600; }
 button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; background: var(--surface-2); }
 

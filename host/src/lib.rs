@@ -6,6 +6,9 @@ pub mod live;
 pub mod pdf;
 pub mod report;
 pub mod session;
+pub mod text;
+#[cfg(test)]
+mod fuzz;
 pub mod vm;
 
 pub use airlock_proto as proto;

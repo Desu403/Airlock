@@ -19,6 +19,7 @@ const state = {
   docOpen: false,
   observer: null,
   findings: null,
+  pixelsOnly: false,  // no document text leaves the VM (enforced in Rust too)
 };
 
 // ---------------------------------------------------------------- helpers
@@ -97,7 +98,8 @@ function setupDocument(info) {
   closePanel();
 
   $("docname").textContent = info.name;
-  for (const id of ["doc", "searchbox", "zoombox", "textbtn", "analyze"]) $(id).hidden = false;
+  for (const id of ["doc", "searchbox", "zoombox", "pixels", "analyze"]) $(id).hidden = false;
+  $("textbtn").hidden = state.pixelsOnly;
   $("empty").hidden = true;
   $("analyze").disabled = false;
 
@@ -173,7 +175,7 @@ async function pump() {
         status(`Page ${i + 1}: ${e}`, true);
         break;
       }
-      if (!p.textState) await loadTextLayer(p, i);
+      if (!p.textState && !state.pixelsOnly) await loadTextLayer(p, i);
     }
   } finally {
     state.rendering = false;
@@ -216,6 +218,23 @@ async function loadTextLayer(p, i) {
     if (widths[k] > 0) span.style.transform = `scaleX(${(w * scale) / widths[k]})`;
   });
   p.textState = "ready";
+}
+
+async function setPixelsOnly(on) {
+  await invoke("set_pixels_only", { on });
+  state.pixelsOnly = on;
+  try { localStorage.setItem("airlock.pixelsOnly", on ? "1" : "0"); } catch {}
+  $("pixels").setAttribute("aria-pressed", String(on));
+  $("textbtn").hidden = on || !state.docOpen;
+  if (on) {
+    getSelection()?.removeAllRanges();
+    for (const p of state.pages) { p.text.replaceChildren(); p.textState = null; }
+    if ($("panel-title").textContent.startsWith("Text")) closePanel();
+    status("Pixels only: no document text leaves the VM");
+  } else {
+    for (const [i, p] of state.pages.entries()) if (p.key && !p.textState) await loadTextLayer(p, i);
+    status("Text selection on");
+  }
 }
 
 // Copy plain text only: the layer is transparent, so its HTML would paste
@@ -410,6 +429,7 @@ $("zin").onclick = () => stepZoom(1);
 $("zout").onclick = () => stepZoom(-1);
 $("zfit").onclick = fitWidth;
 $("textbtn").onclick = showText;
+$("pixels").onclick = () => setPixelsOnly(!state.pixelsOnly);
 $("analyze").onclick = analyze;
 $("panel-close").onclick = closePanel;
 $("qnext").onclick = () => stepHit(1);
@@ -476,7 +496,16 @@ async function runDemo() {
   }
 }
 
+// Pixels-only preference: the environment (AIRLOCK_PIXELS_ONLY) or the last choice.
+const pixelsReady = invoke("pixels_only").then(async (on) => {
+  let saved = null;
+  try { saved = localStorage.getItem("airlock.pixelsOnly"); } catch {}
+  await setPixelsOnly(on || saved === "1");
+  status("Ready");
+});
+
 invoke("initial_path").then(async (p) => {
+  await pixelsReady;
   if (!p) return;
   await openWith(invoke("open_path", { path: p }), p.split(/[\\/]/).pop());
   runDemo();

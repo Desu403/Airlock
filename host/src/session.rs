@@ -106,7 +106,7 @@ fn accept(listener: &UnixListener, child: &mut std::process::Child) -> Result<Un
     }
 }
 
-fn receive(mut s: UnixStream, out: &mut Session, progress: bool) -> Result<()> {
+fn receive(mut s: impl Read, out: &mut Session, progress: bool) -> Result<()> {
     let mut count: Option<u32> = None;
     loop {
         let mut buf = [0u8; HEADER_LEN];
@@ -168,6 +168,29 @@ fn receive(mut s: UnixStream, out: &mut Session, progress: bool) -> Result<()> {
                 return Ok(());
             }
             _ => bail!("protocol violation: unexpected message"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fuzz::{hostile_stream, iters, Rng};
+
+    #[test]
+    fn fuzz_receive() {
+        let mut rng = Rng::from_env("fuzz_receive");
+        for _ in 0..iters(50_000) {
+            let data = hostile_stream(&mut rng);
+            let mut s = Session::default();
+            let ok = receive(&data[..], &mut s, false).is_ok();
+            assert!(s.indicators.len() <= 1000 && s.indicators.iter().all(|(_, t)| valid_text(t.as_bytes())));
+            for p in &s.pages {
+                assert_eq!(p.rgb.len(), (p.width * p.height * 3) as usize);
+            }
+            if ok && s.guest_error.is_none() {
+                assert!(!s.pages.is_empty() || data.len() >= HEADER_LEN, "Done without a stream");
+            }
         }
     }
 }

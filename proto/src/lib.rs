@@ -373,3 +373,57 @@ mod tests {
         assert!(Header::decode(&wrong_magic).is_none());
     }
 }
+
+#[cfg(test)]
+mod fuzz {
+    use super::*;
+
+    /// Random headers biased towards valid kinds and boundary values:
+    /// whatever `decode` accepts must have a bounded, self-consistent shape.
+    #[test]
+    fn fuzz_decode() {
+        let mut x = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64 | 1;
+        eprintln!("fuzz_decode seed {x}");
+        let mut next = move || {
+            x ^= x >> 12;
+            x ^= x << 25;
+            x ^= x >> 27;
+            x.wrapping_mul(0x2545_F491_4F6C_DD1D)
+        };
+        const EDGES: [u32; 12] = [0, 1, 16, 4, MAX_DIM, MAX_DIM + 1, MAX_PAGES, MAX_TEXT, MAX_PAGE_TEXT, MAX_LINES * 16, MAX_PT10, u32::MAX];
+        let iters = std::env::var("AIRLOCK_FUZZ_ITERS").ok().and_then(|s| s.parse().ok()).unwrap_or(2_000_000u64);
+        for _ in 0..iters {
+            let f = |r: u64, v: u64| match r % 3 {
+                0 => v as u32,
+                1 => (v % 64) as u32,
+                _ => EDGES[(v % EDGES.len() as u64) as usize],
+            };
+            let r = next();
+            let kind = if r % 4 == 0 { f(next(), next()) } else { [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 100, 101, 102, 103, 104][(r % 15) as usize] };
+            let (a, b, c) = (f(next(), next()), f(next(), next()), f(next(), next()));
+            let len = if kind == 2 && next() % 2 == 0 { b.wrapping_mul(c).wrapping_mul(4) } else { f(next(), next()) };
+            let buf = Header { kind, a, b, c, len }.encode();
+            if let Some(h) = Header::decode(&buf) {
+                assert_eq!(h.encode(), buf);
+                let max = (MAX_DIM * MAX_DIM * 4).max(MAX_PAGE_TEXT).max(MAX_LINES * 16);
+                assert!(h.len <= max, "{h:?}");
+                match h.kind {
+                    2 => assert!(h.b >= 1 && h.b <= MAX_DIM && h.c >= 1 && h.c <= MAX_DIM && h.len as u64 == h.b as u64 * h.c as u64 * 4, "{h:?}"),
+                    5 => assert!(h.len >= 1 && h.len <= MAX_TEXT && Ind::from_u32(h.a).is_some(), "{h:?}"),
+                    7 | 10 => assert!(h.len % 16 == 0 && h.a < MAX_PAGES, "{h:?}"),
+                    1 | 3 | 4 | 6 | 8 => assert_eq!(h.len, 0, "{h:?}"),
+                    9 => assert!(h.len <= MAX_PAGE_TEXT && h.a < MAX_PAGES),
+                    k => panic!("decode accepted kind {k}"),
+                }
+            }
+            if let Some((cmd, h)) = Header::decode_cmd(&buf) {
+                match cmd {
+                    Cmd::Search => assert!(h.len >= 1 && h.len <= MAX_QUERY),
+                    Cmd::Render => assert!(h.len == 0 && h.a < MAX_PAGES && (MIN_DPI..=MAX_DPI).contains(&h.b)),
+                    Cmd::GetText | Cmd::GetLayout => assert!(h.len == 0 && h.a < MAX_PAGES),
+                    Cmd::Quit => assert_eq!(h.len, 0),
+                }
+            }
+        }
+    }
+}

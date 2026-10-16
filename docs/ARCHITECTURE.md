@@ -30,6 +30,8 @@ able to touch the host, and *see* what it tries to do.
 | 10 | Hardened guest kernel 6.1 LTS: no modules/BPF/io_uring/userns/IPv6/AF_PACKET/32-bit ABI, KASLR, init_on_alloc/free, panic on oops | done |
 | 11 | Unexpected VM death (e.g. kernel panic) reported as an outside finding | done |
 | 12 | VMM runs as a spare uid from the user's /etc/subuid range (a different one per VM; rootless equivalent of Firecracker's jailer); run dir granted to that uid only by ACL; sandbox built from file descriptors; no further user namespaces | done (falls back to the user's uid where unsupported — `airlock doctor` says so) |
+| 13 | Page text and file names narrowed to plain visible characters before any UI; optional pixels-only mode | done |
+| 14 | Every host-side parser fuzzed with hostile streams (`cargo test`; `AIRLOCK_FUZZ_ITERS` for long runs) | done |
 
 ## Roadmap
 
@@ -73,9 +75,14 @@ able to touch the host, and *see* what it tries to do.
   **only rectangles** (numbers), the host draws highlights. GetLayout returns
   one box per text line (numbers) plus the page text, which the app lays
   over the page image as an invisible, selectable layer (copy is forced to
-  plain text). Page text is the single text channel: size-capped, then
-  re-sanitised on the host (controls + bidi overrides removed — "Trojan
-  Source").
+  plain text). Page text is the single text channel, and the only path
+  where one host-side bug (in the system's text shaping, which runs as the
+  user) could suffice — so it is narrowed hard on the host (`host/src/text.rs`):
+  NFC, then only assigned visible characters (no controls, bidi overrides,
+  zero-widths, tags, private use, noncharacters, invisible fillers), at most
+  3 combining marks per base and 1000 characters per line. File names get
+  the same treatment. **Pixels only** (app toggle or `AIRLOCK_PIXELS_ONLY=1`,
+  enforced in Rust) turns the text channel off entirely; search still works.
 - **M6 — Tauri desktop app** — `app/`. Webview receives PNGs encoded by Rust
   from validated pixels, numbers and sanitised text (inserted via
   textContent only). Strict CSP, no remote content, capabilities =
@@ -85,8 +92,10 @@ able to touch the host, and *see* what it tries to do.
 - **M7 — hardening** — partly done: sinkhole seccomp, hardened guest kernel
   (`guest/build-kernel.sh`, fragment `guest/kernel-hardening.config`),
   VM-death detection, spare-uid VMM (wall 12; replaces the jailer, which
-  must be started as root for every VM). Open: Landlock + seccomp on the
-  host process, fuzzing the protocol, gVisor inside the guest.
+  must be started as root for every VM). Text-channel hardening (wall 13)
+  and fuzzing (wall 14; stable-Rust randomised tests, no coverage guidance —
+  found and fixed two text-limit bypasses). Open: Landlock + seccomp on the
+  host processes, gVisor inside the guest.
   PERF_EVENTS cannot be disabled on x86; the renderer monitor denies it.
 - **Phase 2 — Windows detonation**: QEMU/KVM Windows guest with real Office,
   snapshot revert, sinkhole, time acceleration, out-of-VM introspection

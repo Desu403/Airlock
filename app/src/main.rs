@@ -5,9 +5,10 @@
 
 use airlock_core::live::LiveSession;
 use airlock_core::proto::MAX_DOC_BYTES;
-use airlock_core::{analysis, report};
+use airlock_core::{analysis, report, text};
 use serde::Serialize;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::Response;
 use tauri::State;
@@ -23,6 +24,8 @@ struct Doc {
 struct AppState {
     doc: Arc<Mutex<Option<Doc>>>,
     initial: Mutex<Option<PathBuf>>,
+    /// Pixels only: no document text leaves the VM (no text layer, no Text panel).
+    pixels_only: Arc<AtomicBool>,
 }
 
 #[derive(Serialize)]
@@ -67,7 +70,8 @@ fn open_impl(doc: Arc<Mutex<Option<Doc>>>, path: PathBuf) -> R<OpenInfo> {
     }
     let session = LiveSession::open(&bytes).map_err(err)?;
     let info = OpenInfo {
-        name: path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        // File names are attacker-chosen too ("invoice\u{202E}fdp.exe").
+        name: path.file_name().map(|n| text::sanitize_line(n.as_encoded_bytes())).unwrap_or_default(),
         pages: session.pages.iter().map(|p| [p.width, p.height]).collect(),
         ready_ms: session.boot_time.as_millis() as u64,
     };
@@ -143,7 +147,25 @@ async fn search(query: String, state: State<'_, AppState>) -> R<Vec<HitOut>> {
 }
 
 #[tauri::command]
+fn pixels_only(state: State<'_, AppState>) -> bool {
+    state.pixels_only.load(Ordering::SeqCst)
+}
+
+#[tauri::command]
+fn set_pixels_only(on: bool, state: State<'_, AppState>) {
+    state.pixels_only.store(on, Ordering::SeqCst);
+}
+
+fn text_allowed(state: &AppState) -> R<()> {
+    if state.pixels_only.load(Ordering::SeqCst) {
+        return Err("pixels-only mode: no text leaves the VM".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn page_text(page: u32, state: State<'_, AppState>) -> R<String> {
+    text_allowed(&state)?;
     let doc = state.doc.clone();
     blocking(move || {
         let mut g = doc.lock().unwrap();
@@ -156,6 +178,7 @@ async fn page_text(page: u32, state: State<'_, AppState>) -> R<String> {
 /// Text lines + boxes for the invisible, selectable layer over a page.
 #[tauri::command]
 async fn page_lines(page: u32, state: State<'_, AppState>) -> R<Vec<LineOut>> {
+    text_allowed(&state)?;
     let doc = state.doc.clone();
     blocking(move || {
         let mut g = doc.lock().unwrap();
@@ -208,6 +231,7 @@ async fn close_document(state: State<'_, AppState>) -> R<()> {
 fn main() {
     let state = AppState::default();
     *state.initial.lock().unwrap() = std::env::args_os().nth(1).map(PathBuf::from);
+    state.pixels_only.store(std::env::var_os("AIRLOCK_PIXELS_ONLY").is_some(), Ordering::SeqCst);
     let doc = state.doc.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
@@ -221,6 +245,8 @@ fn main() {
             search,
             page_text,
             page_lines,
+            pixels_only,
+            set_pixels_only,
             viewing_findings,
             analyze,
             close_document

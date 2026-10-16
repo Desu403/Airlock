@@ -31,8 +31,9 @@ network to send anything to:
 4. bubblewrap jail around the VMM (all namespaces, no capabilities),
    running as a **spare user ID** that owns nothing on your system (from
    your `/etc/subuid` range, like rootless Podman — no root needed)
-5. a strict, tested host protocol: fixed-size headers, pixels and numbers;
-   the only text channel is size-capped and sanitised
+5. a strict, fuzzed host protocol: fixed-size headers, pixels and numbers;
+   the only text channel is narrowed to plain visible characters — or
+   switched off entirely with **Pixels only**
 6. the fake-internet process is jailed, capability-less and seccomp-locked
 
 Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). No sandbox is

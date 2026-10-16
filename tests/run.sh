@@ -9,6 +9,16 @@ OUT=build/tests
 rm -rf "$OUT" && mkdir -p "$OUT"
 fail=0
 
+# Unit tests + randomised hostile-input tests of every host-side parser
+# (AIRLOCK_FUZZ_ITERS raises the count for a long run).
+for crate in proto host; do
+    if (cd $crate && cargo test --release -q) >"$OUT/unit-$crate.log" 2>&1; then
+        echo "ok   unit + fuzz tests ($crate: $(grep -o '[0-9]* passed' "$OUT/unit-$crate.log" | awk '{n+=$1} END {print n}') passed)"
+    else
+        echo "FAIL unit + fuzz tests ($crate, see $OUT/unit-$crate.log)"; fail=$((fail+1))
+    fi
+done
+
 check() { # file, expected verdict, [required substring...]
     f=$1; want=$2; shift 2
     name=$(basename "$f")

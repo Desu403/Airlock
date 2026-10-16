@@ -26,6 +26,7 @@ fakeroot_sh $B/guestroot '
         libreoffice-writer libreoffice-calc libreoffice-impress \
         font-liberation font-dejavu
     install -D -m 0644 -o 0 -g 0 /src/guest/office_triage.py /usr/lib/airlock/office_triage.py
+    install -D -m 0644 -o 0 -g 0 /src/guest/pdf_scripts.js /usr/lib/airlock/pdf_scripts.js
     # Prebuilt font cache + LibreOffice profile: no first-run writes inside the
     # VM, and the autopsy can diff the per-run profile against this template.
     fc-cache -f >/dev/null 2>&1 || true

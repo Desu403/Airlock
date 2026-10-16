@@ -57,7 +57,7 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         Ind::PdfObfuscation => (Source::Static, Medium, "T1027 Obfuscated Files", text.to_string()),
         Ind::JsCall => {
             let (cat, rest) = text.split_once(": ").unwrap_or(("other", text));
-            let (sev, att, verb) = match cat {
+            let (mut sev, att, mut verb) = match cat {
                 "net" => (High, "T1071.001 Web Protocols", "contacts the internet:"),
                 "launch" => (High, "T1204.002 Malicious File", "opens/launches:"),
                 "drop" => (High, "T1105 Ingress Tool Transfer", "writes a file:"),
@@ -67,6 +67,22 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
                 "ui" => (Info, "-", "shows UI:"),
                 _ => (Info, "-", "calls"),
             };
+            // Only if the reader clicks/types (a button, a form field): opening
+            // a website then is what a hyperlink does; running or dropping
+            // something still deserves attention.
+            if rest.starts_with("(on user action") {
+                sev = match cat {
+                    "net" => Low,
+                    "launch" | "drop" => Medium,
+                    _ => sev.min(Low),
+                };
+                verb = match cat {
+                    "net" => "would open a website if clicked:",
+                    "launch" => "would open/launch if clicked:",
+                    "drop" => "would write a file if clicked:",
+                    _ => verb,
+                };
+            }
             (Source::Emulated, sev, att, format!("{verb} {rest}"))
         }
         Ind::JsExploit => (Source::Emulated, High, "T1203 Exploitation for Client Execution", format!("EXPLOIT: {text}")),

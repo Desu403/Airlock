@@ -105,9 +105,19 @@ fn one_line(b: &[u8], max: usize) -> String {
 }
 
 /// What the static pass found, plus the material the JS emulator needs.
+/// One piece of the document's JavaScript and what makes a reader run it.
+pub struct Script {
+    /// Plain ASCII, e.g. "document opened (/OpenAction)".
+    pub trigger: String,
+    /// Runs without the reader clicking or typing anything.
+    pub auto: bool,
+    pub code: Vec<u8>,
+}
+
 pub struct Triage {
     pub indicators: Vec<(Ind, String)>,
-    pub scripts: Vec<Vec<u8>>,
+    /// Automatic scripts first.
+    pub scripts: Vec<Script>,
     /// Document info dictionary (malware hides payloads in /Subject etc.).
     pub info: Vec<(&'static str, Vec<u8>)>,
     /// (subject, contents) of annotations, read back via getAnnots().
@@ -136,6 +146,45 @@ fn values_of(doc: &[u8], key: &[u8], max: usize, strings_only: bool) -> Vec<Vec<
         }
     }
     out
+}
+
+const SCRIPTS_JS: &str = "/usr/lib/airlock/pdf_scripts.js";
+
+/// Lines "@@JS\t<trigger>\t<0|1>\t<hex>" from pdf_scripts.js.
+fn parse_scripts(out: &[u8]) -> Vec<Script> {
+    let mut v: Vec<Script> = Vec::new();
+    for line in String::from_utf8_lossy(out).lines() {
+        let mut f = line.splitn(4, '\t');
+        let (Some("@@JS"), Some(trigger), Some(auto), Some(hex)) = (f.next(), f.next(), f.next(), f.next()) else { continue };
+        if hex.len() % 2 != 0 || v.len() >= 64 {
+            continue;
+        }
+        let Some(code) = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok()).collect::<Option<Vec<u8>>>() else { continue };
+        let code = utf16_to_utf8(&code);
+        if trimmed(&code).is_empty() || v.iter().any(|s| s.code == code) {
+            continue;
+        }
+        let trigger: String = trigger.chars().filter(|c| c.is_ascii_graphic() || *c == ' ').take(80).collect();
+        v.push(Script { trigger, auto: auto == "1", code });
+    }
+    v
+}
+
+/// PDF text strings may be UTF-16BE with a byte-order mark.
+fn utf16_to_utf8(b: &[u8]) -> Vec<u8> {
+    match b {
+        [0xFE, 0xFF, rest @ ..] => {
+            let units: Vec<u16> = rest.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            String::from_utf16_lossy(&units).into_bytes()
+        }
+        _ => b.to_vec(),
+    }
+}
+
+fn trimmed(b: &[u8]) -> &[u8] {
+    let start = b.iter().position(|c| !c.is_ascii_whitespace()).unwrap_or(b.len());
+    let end = b.iter().rposition(|c| !c.is_ascii_whitespace()).map_or(start, |e| e + 1);
+    &b[start..end]
 }
 
 pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
@@ -185,15 +234,25 @@ pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
     }
     out.extend(uris.into_iter().map(|u| (Ind::PdfUri, u)));
 
-    // JavaScript bodies: a preview for the report, the full code for the emulator.
-    let mut scripts: Vec<Vec<u8>> = Vec::new();
+    // JavaScript with its triggers, from the object graph (MuPDF, in here);
+    // a byte scan backs it up so nothing it cannot place is skipped.
+    let src = if clean.is_empty() { doc_path } else { clean_path.as_str() };
+    let r = monitor::run(&["/usr/bin/mutool", "run", SCRIPTS_JS, src], work, &monitor::Opts::new(Net::Deny, Duration::from_secs(60)));
+    out.extend(r.events);
+    let walked = r.stdout.is_some();
+    let mut scripts = r.stdout.as_deref().map(parse_scripts).unwrap_or_default();
     for v in values_of(doc, b"/JS", 32, false) {
-        if !v.iter().all(|c| c.is_ascii_whitespace()) && !scripts.contains(&v) {
-            scripts.push(v);
+        let code = utf16_to_utf8(&v);
+        let key = trimmed(&code);
+        if key.is_empty() || scripts.iter().any(|s| trimmed(&s.code) == key) {
+            continue;
         }
+        let (trigger, auto) = if walked { ("not attached to any trigger", false) } else { ("unknown trigger", true) };
+        scripts.push(Script { trigger: trigger.into(), auto, code });
     }
+    scripts.sort_by_key(|s| !s.auto);
     for js in scripts.iter().take(5) {
-        out.push((Ind::PdfJs, one_line(js, 220)));
+        out.push((Ind::PdfJs, format!("[{}] {}", js.trigger, one_line(&js.code, 160))));
     }
     let info = ["Title", "Author", "Subject", "Keywords", "Creator", "Producer"]
         .into_iter()

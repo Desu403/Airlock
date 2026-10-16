@@ -20,6 +20,18 @@ def emit(kind, text):
     print(f"@@AIRLOCK {kind} {text}", flush=True)
 
 
+# Code-execution primitives oletools does not flag by name (MirrorBlast-style
+# loaders run JScript from a cell through ScriptControl, for example).
+EXEC_PRIMITIVES = [
+    ("ScriptControl", "runs JScript/VBScript code from inside the macro"),
+    ("ExecuteStatement", "runs script code built at run time"),
+    ("AddCode", "loads script code into a script engine"),
+    ("CallByName", "calls a method whose name is chosen at run time"),
+    ("ExecuteExcel4Macro", "runs Excel 4.0 (XLM) code from VBA"),
+    ("MacScript", "runs AppleScript"),
+]
+
+
 def vba(path):
     try:
         from oletools.olevba import VBA_Parser
@@ -33,21 +45,28 @@ def vba(path):
         return
     try:
         if vp.detect_vba_macros():
+            sources = []
             for _f, _s, name, code in vp.extract_macros():
+                sources.append((code or "").lower())
                 lines = [l.strip() for l in (code or "").splitlines() if l.strip() and not l.strip().lower().startswith("attribute ")]
                 if not lines:
                     continue
                 emit("MACRO", f"module {name}: {len(lines)} lines | " + " ; ".join(lines[:6]))
+            flagged = set()
             for kw_type, keyword, desc in vp.analyze_macros():
                 t = kw_type.lower()
                 if t == "autoexec":
                     emit("AUTOEXEC", f"{keyword}: {desc}")
                 elif t == "suspicious":
+                    flagged.add(keyword.lower())
                     emit("SUSPICIOUS", f"{keyword}: {desc}")
                 elif t == "ioc":
                     emit("IOC", f"{keyword} ({desc})")
                 elif t in ("hex string", "base64 string", "dridex string", "vba string"):
                     emit("OBFUSCATION", f"{kw_type}: {keyword[:80]} -> {desc[:80]}")
+            for keyword, desc in EXEC_PRIMITIVES:
+                if keyword.lower() not in flagged and any(keyword.lower() in src for src in sources):
+                    emit("SUSPICIOUS", f"{keyword}: {desc}")
             try:
                 if vp.detect_vba_stomping():
                     emit("STOMPING", "VBA source does not match the compiled p-code: the visible macro is a decoy, Office would run hidden code")

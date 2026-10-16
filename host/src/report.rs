@@ -76,7 +76,11 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         Ind::OfficeAutoExec => (Source::Static, High, "T1204.002 Malicious File", format!("macro runs automatically on open: {text}")),
         Ind::OfficeSuspicious => {
             let k = text.to_ascii_lowercase();
-            let dangerous = ["shell", "urldownloadtofile", "powershell", "createprocess", "run", "exec", "wscript", "mshta", "certutil", "regsvr32", "rundll32"]
+            let dangerous = [
+                "shell", "urldownloadtofile", "powershell", "createprocess", "run", "exec", "wscript", "mshta", "certutil", "regsvr32", "rundll32",
+                // script-host execution (see EXEC_PRIMITIVES in guest/office_triage.py)
+                "scriptcontrol", "addcode", "callbyname", "macscript",
+            ]
                 .iter()
                 .any(|d| k.split(':').next().unwrap_or("").contains(d));
             (Source::Static, if dangerous { High } else { Medium }, "T1059.005 Visual Basic", format!("macro uses {text}"))

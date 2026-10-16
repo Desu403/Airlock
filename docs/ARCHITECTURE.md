@@ -69,6 +69,11 @@ able to touch the host, and *see* what it tries to do.
   the pristine template (macro persistence).
 - **Regression suite**: `tests/run.sh` (fixtures: `tests/mkpdf.py`,
   `tests/fetch-fixtures.sh`) — expected verdict per sample + selftest.
+  Includes Atomic Red Team's Office files (real techniques, harmless
+  payloads; pinned commit + SHA-256), which exposed a gap now closed:
+  script-host execution (ScriptControl/AddCode/ExecuteStatement/CallByName,
+  the MirrorBlast loader) was not treated as code execution. Real samples:
+  `tests/malware-run.sh` (password zips, extracted to RAM one at a time).
 - **M5 — live interactive viewing** — done (`host/src/live.rs`,
   `guest-agent/src/live.rs`). The VM stays up (no NIC) and answers
   Render{page,dpi} / Search{query} / GetText{page} / GetLayout{page}. One

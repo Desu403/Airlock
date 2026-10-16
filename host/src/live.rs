@@ -25,11 +25,19 @@ pub struct Hit {
     pub rect: [f32; 4],
 }
 
+/// One line of page text and where it sits, for a selectable text layer.
+pub struct Line {
+    /// x0, y0, x1, y1 in points, top-left origin.
+    pub rect: [f32; 4],
+    pub text: String,
+}
+
 enum Msg {
     Hello(u32),
     PageInfo(u32, PageSize),
     Page(u32, pdf::Page),
     Hits(u32, Vec<[f32; 4]>),
+    Lines(u32, Vec<[f32; 4]>),
     SearchDone,
     Text(u32, String),
     Done,
@@ -141,16 +149,8 @@ impl LiveSession {
                     });
                     Msg::Page(h.a, pdf::Page { width: h.b, height: h.c, rgb: rgb.collect() })
                 }
-                k if k == Kind::SearchHits as u32 => Msg::Hits(
-                    h.a,
-                    payload
-                        .chunks_exact(16)
-                        .map(|r| {
-                            let v = |i: usize| u32::from_le_bytes(r[i * 4..i * 4 + 4].try_into().unwrap()) as f32 / 10.0;
-                            [v(0), v(1), v(2), v(3)]
-                        })
-                        .collect(),
-                ),
+                k if k == Kind::SearchHits as u32 => Msg::Hits(h.a, rects(&payload)),
+                k if k == Kind::PageLines as u32 => Msg::Lines(h.a, rects(&payload)),
                 k if k == Kind::SearchDone as u32 => Msg::SearchDone,
                 k if k == Kind::PageText as u32 => Msg::Text(h.a, sanitize_text(&payload)),
                 k if k == Kind::Done as u32 => Msg::Done,
@@ -203,6 +203,28 @@ impl LiveSession {
         }
     }
 
+    /// Lines of text with their boxes. Text is sanitised like `text`; a box
+    /// that is degenerate or off the page is dropped with its line.
+    pub fn lines(&mut self, page: u32) -> Result<Vec<Line>> {
+        let Some(size) = self.pages.get(page as usize) else { bail!("no page {page}") };
+        let (pw, ph) = (size.width, size.height);
+        self.send(Cmd::GetLayout, page, 0, &[])?;
+        let boxes = match self.next()? {
+            Msg::Lines(p, b) if p == page => b,
+            _ => return Err(self.hostile("expected line boxes")),
+        };
+        let text = match self.next()? {
+            Msg::Text(p, t) if p == page => t,
+            _ => return Err(self.hostile("expected page text")),
+        };
+        Ok(boxes
+            .into_iter()
+            .zip(text.split('\n'))
+            .filter(|(r, _)| r[0] < r[2] && r[1] < r[3] && r[2] <= pw + 1.0 && r[3] <= ph + 1.0)
+            .map(|(rect, t)| Line { rect, text: t.to_owned() })
+            .collect())
+    }
+
     pub fn close(mut self) {
         let _ = self.send(Cmd::Quit, 0, 0, &[]);
         let _ = self.stream.set_read_timeout(Some(Duration::from_millis(500)));
@@ -218,6 +240,17 @@ impl Drop for LiveSession {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// n * 16 bytes of u32 LE tenths of a point -> rectangles in points.
+fn rects(payload: &[u8]) -> Vec<[f32; 4]> {
+    payload
+        .chunks_exact(16)
+        .map(|r| {
+            let v = |i: usize| u32::from_le_bytes(r[i * 4..i * 4 + 4].try_into().unwrap()) as f32 / 10.0;
+            [v(0), v(1), v(2), v(3)]
+        })
+        .collect()
 }
 
 #[cfg(test)]

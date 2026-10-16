@@ -1,9 +1,10 @@
 //! Live viewing: the VM stays up and answers host requests until told to quit.
-//! Only pixels, numbers (page sizes, search rectangles) and page text leave.
+//! Only pixels, numbers (page sizes, search and line rectangles) and page
+//! text leave.
 
 use crate::monitor::{self, Net, Opts};
 use crate::{fail, finish, pam_to_rgba, send, send_indicators};
-use airlock_proto::{Cmd, Error, Header, Kind, HEADER_LEN, MAX_DIM, MAX_PAGES, MAX_PAGE_TEXT, MAX_RECTS};
+use airlock_proto::{Cmd, Error, Header, Kind, HEADER_LEN, MAX_DIM, MAX_LINES, MAX_PAGES, MAX_PAGE_TEXT, MAX_RECTS};
 use std::fs::File;
 use std::io::Read;
 use std::time::Duration;
@@ -51,6 +52,8 @@ fn load_pages(pdf: &str, out: &mut File) -> Vec<Page> {
             pages.push(Page { w, h, chars: Vec::new() });
         } else if l.starts_with("<char ") {
             let (Some(p), Some(q), Some(c)) = (pages.last_mut(), attr(l, "quad"), attr(l, "c").and_then(unescape)) else { continue };
+            // Only '\n' entries may end a line.
+            let c = if c.is_control() { ' ' } else { c };
             let v: Vec<f32> = q.split_whitespace().filter_map(|x| x.parse().ok()).collect();
             if v.len() == 8 && p.chars.len() < 2_000_000 {
                 let xs = [v[0], v[2], v[4], v[6]];
@@ -119,6 +122,44 @@ fn search(pages: &[Page], query: &str) -> Vec<(u32, Vec<[u32; 4]>)> {
     out
 }
 
+/// Cuts `text` to the protocol's page-text cap on a char boundary.
+fn capped(mut text: String) -> String {
+    if text.len() > MAX_PAGE_TEXT as usize {
+        let mut cut = MAX_PAGE_TEXT as usize;
+        while !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        text.truncate(cut);
+    }
+    text
+}
+
+/// Text lines with their bounding boxes, for the app's selectable text layer.
+fn lines(p: &Page) -> Vec<([u32; 4], String)> {
+    let mut out = Vec::new();
+    let mut text = String::new();
+    let mut bbox: Option<[f32; 4]> = None;
+    let mut bytes = 0;
+    for (c, b) in &p.chars {
+        if *c == '\n' {
+            if let Some(r) = bbox.take() {
+                if !text.trim().is_empty() && out.len() < MAX_LINES as usize && bytes + text.len() < MAX_PAGE_TEXT as usize {
+                    bytes += text.len() + 1;
+                    out.push(([pt10(r[0]), pt10(r[1]), pt10(r[2]), pt10(r[3])], std::mem::take(&mut text)));
+                }
+            }
+            text.clear();
+            continue;
+        }
+        text.push(*c);
+        bbox = Some(match bbox {
+            None => *b,
+            Some(r) => [r[0].min(b[0]), r[1].min(b[1]), r[2].max(b[2]), r[3].max(b[3])],
+        });
+    }
+    out
+}
+
 pub fn serve(mut out: File, pdf: &str) -> ! {
     let pages = load_pages(pdf, &mut out);
     let _ = send(&mut out, Kind::Hello, pages.len() as u32, 0, 0, &[]);
@@ -172,14 +213,15 @@ pub fn serve(mut out: File, pdf: &str) -> ! {
             }
             Cmd::GetText => {
                 let Some(p) = pages.get(h.a as usize) else { continue };
-                let mut text: String = p.chars.iter().map(|(c, _)| *c).collect();
-                if text.len() > MAX_PAGE_TEXT as usize {
-                    let mut cut = MAX_PAGE_TEXT as usize;
-                    while !text.is_char_boundary(cut) {
-                        cut -= 1;
-                    }
-                    text.truncate(cut);
-                }
+                let text = capped(p.chars.iter().map(|(c, _)| *c).collect());
+                let _ = send(&mut out, Kind::PageText, h.a, 0, 0, text.as_bytes());
+            }
+            Cmd::GetLayout => {
+                let Some(p) = pages.get(h.a as usize) else { continue };
+                let ls = lines(p);
+                let boxes: Vec<u8> = ls.iter().flat_map(|(r, _)| r.iter().flat_map(|v| v.to_le_bytes())).collect();
+                let text = capped(ls.into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n"));
+                let _ = send(&mut out, Kind::PageLines, h.a, 0, 0, &boxes);
                 let _ = send(&mut out, Kind::PageText, h.a, 0, 0, text.as_bytes());
             }
         }

@@ -154,7 +154,7 @@ fn selftest(out_dir: PathBuf, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-/// Smoke test for live mode: boot, render, search, extract text, quit.
+/// Smoke test for live mode: boot, render, search, extract text + layout, quit.
 fn livecheck(doc: &[u8]) -> Result<()> {
     let mut s = live::LiveSession::open(doc)?;
     eprintln!("live: {} page(s), ready in {:.1}s", s.pages.len(), s.boot_time.as_secs_f32());
@@ -169,6 +169,8 @@ fn livecheck(doc: &[u8]) -> Result<()> {
     if let Some(h) = hits.first() {
         eprintln!("live: first hit page {} at {:?}", h.page + 1, h.rect);
     }
+    let lines = s.lines(0)?;
+    eprintln!("live: page 1 layout {} line(s){}", lines.len(), lines.first().map(|l| format!(", first {:?} at {:?}", l.text, l.rect)).unwrap_or_default());
     if !s.indicators.is_empty() {
         report::Report::build(&s.indicators, None, &[]).print();
     }

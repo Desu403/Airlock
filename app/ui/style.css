@@ -135,7 +135,16 @@ main { flex: 1; display: flex; min-height: 0; }
   flex: none; margin-inline: auto;
 }
 .page img { position: absolute; inset: 0; width: 100%; height: 100%; display: block; user-select: none; -webkit-user-drag: none; }
-.page .num { position: absolute; bottom: -18px; right: 0; font-size: 11px; color: var(--muted); }
+.page .num { position: absolute; bottom: -18px; right: 0; font-size: 11px; color: var(--muted); user-select: none; }
+/* Invisible, selectable text over the page image (positions in points × --s). */
+.page .text { position: absolute; inset: 0; overflow: hidden; line-height: 1; cursor: text; }
+.page .text span {
+  position: absolute; white-space: pre; color: transparent; transform-origin: 0 0;
+  font-family: sans-serif;
+  left: calc(var(--x) * var(--s) * 1px); top: calc(var(--y) * var(--s) * 1px);
+  font-size: calc(var(--h) * var(--s) * 1px);
+}
+.page .text ::selection { background: rgba(37, 99, 235, 0.32); color: transparent; }
 .page .hl { position: absolute; background: var(--hl); border-radius: 2px; mix-blend-mode: multiply; pointer-events: none; }
 .page .hl.current { background: var(--hl-current); outline: 2px solid var(--hl-current); }
 .page.loading::after {

@@ -67,11 +67,14 @@ able to touch the host, and *see* what it tries to do.
   `tests/fetch-fixtures.sh`) — expected verdict per sample + selftest.
 - **M5 — live interactive viewing** — done (`host/src/live.rs`,
   `guest-agent/src/live.rs`). The VM stays up (no NIC) and answers
-  Render{page,dpi} / Search{query} / GetText{page}. One `mutool -F stext`
-  pass gives page sizes + glyph boxes; search returns **only rectangles**
-  (numbers), the host draws highlights. Page text is the single text channel:
-  size-capped, then re-sanitised on the host (controls + bidi overrides
-  removed — "Trojan Source").
+  Render{page,dpi} / Search{query} / GetText{page} / GetLayout{page}. One
+  `mutool -F stext` pass gives page sizes + glyph boxes; search returns
+  **only rectangles** (numbers), the host draws highlights. GetLayout returns
+  one box per text line (numbers) plus the page text, which the app lays
+  over the page image as an invisible, selectable layer (copy is forced to
+  plain text). Page text is the single text channel: size-capped, then
+  re-sanitised on the host (controls + bidi overrides removed — "Trojan
+  Source").
 - **M6 — Tauri desktop app** — `app/`. Webview receives PNGs encoded by Rust
   from validated pixels, numbers and sanitised text (inserted via
   textContent only). Strict CSP, no remote content, capabilities =

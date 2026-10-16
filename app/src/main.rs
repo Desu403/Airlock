@@ -34,6 +34,12 @@ struct OpenInfo {
 }
 
 #[derive(Serialize)]
+struct LineOut {
+    rect: [f32; 4],
+    text: String,
+}
+
+#[derive(Serialize)]
 struct HitOut {
     page: u32,
     rect: [f32; 4],
@@ -147,6 +153,18 @@ async fn page_text(page: u32, state: State<'_, AppState>) -> R<String> {
     .await
 }
 
+/// Text lines + boxes for the invisible, selectable layer over a page.
+#[tauri::command]
+async fn page_lines(page: u32, state: State<'_, AppState>) -> R<Vec<LineOut>> {
+    let doc = state.doc.clone();
+    blocking(move || {
+        let mut g = doc.lock().unwrap();
+        let d = g.as_mut().ok_or("no document open")?;
+        Ok(d.session.lines(page).map_err(err)?.into_iter().map(|l| LineOut { rect: l.rect, text: l.text }).collect())
+    })
+    .await
+}
+
 /// Findings from the in-VM monitor while *viewing* (normally empty).
 #[tauri::command]
 fn viewing_findings(state: State<'_, AppState>) -> serde_json::Value {
@@ -202,6 +220,7 @@ fn main() {
             render_page,
             search,
             page_text,
+            page_lines,
             viewing_findings,
             analyze,
             close_document

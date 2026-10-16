@@ -45,6 +45,10 @@ pub enum Kind {
     SearchDone = 8,
     /// Live: a = page; payload = UTF-8 page text (host re-sanitises).
     PageText = 9,
+    /// Live: a = page; payload = n * 16 bytes of u32 LE line boxes (tenths
+    /// of a point, top-left origin), one per line of the PageText that
+    /// follows. Numbers only.
+    PageLines = 10,
 }
 
 /// Host -> guest commands in live mode (same 24-byte header layout).
@@ -58,11 +62,14 @@ pub enum Cmd {
     /// a = page.
     GetText = 102,
     Quit = 103,
+    /// a = page. Reply: PageLines, then PageText (one text line per box).
+    GetLayout = 104,
 }
 
 pub const MAX_QUERY: u32 = 256;
 pub const MAX_PAGE_TEXT: u32 = 256 * 1024;
 pub const MAX_RECTS: u32 = 256;
+pub const MAX_LINES: u32 = 8192;
 pub const MAX_PT10: u32 = 1_000_000;
 pub const MIN_DPI: u32 = 20;
 pub const MAX_DPI: u32 = 600;
@@ -76,6 +83,7 @@ impl Header {
             101 if (1..=MAX_QUERY).contains(&h.len) => Cmd::Search,
             102 if h.a < MAX_PAGES && h.len == 0 => Cmd::GetText,
             103 if h.len == 0 => Cmd::Quit,
+            104 if h.a < MAX_PAGES && h.len == 0 => Cmd::GetLayout,
             _ => return None,
         };
         Some((cmd, h))
@@ -281,6 +289,9 @@ impl Header {
             }
             k if k == Kind::SearchDone as u32 => h.b == 0 && h.c == 0 && h.len == 0,
             k if k == Kind::PageText as u32 => h.a < MAX_PAGES && h.b == 0 && h.c == 0 && h.len <= MAX_PAGE_TEXT,
+            k if k == Kind::PageLines as u32 => {
+                h.a < MAX_PAGES && h.b == 0 && h.c == 0 && h.len % 16 == 0 && h.len <= MAX_LINES * 16
+            }
             _ => false,
         };
         ok.then_some(h)
@@ -305,6 +316,8 @@ mod tests {
         assert!(Header::decode(&h(6, 0, 6120, 7920, 0)).is_some());
         assert!(Header::decode(&h(7, 2, 0, 0, 32)).is_some());
         assert!(Header::decode(&h(9, 2, 0, 0, 100)).is_some());
+        assert!(Header::decode(&h(10, 2, 0, 0, 0)).is_some());
+        assert!(Header::decode(&h(10, 2, 0, 0, 160)).is_some());
     }
 
     #[test]
@@ -313,6 +326,10 @@ mod tests {
         assert!(Header::decode(&h(7, 2, 0, 0, (MAX_RECTS + 1) * 16)).is_none());
         assert!(Header::decode(&h(9, 2, 0, 0, MAX_PAGE_TEXT + 1)).is_none());
         assert!(Header::decode(&h(6, 0, 0, 7920, 0)).is_none());
+        assert!(Header::decode(&h(10, 2, 0, 0, 24)).is_none());
+        assert!(Header::decode(&h(10, 2, 0, 0, (MAX_LINES + 1) * 16)).is_none());
+        assert!(Header::decode_cmd(&h(104, 1, 0, 0, 0)).is_some());
+        assert!(Header::decode_cmd(&h(104, 1, 0, 0, 4)).is_none());
         // Commands are only accepted by decode_cmd, and vice versa.
         assert!(Header::decode(&h(100, 0, 150, 0, 0)).is_none());
         assert!(Header::decode_cmd(&h(100, 0, 150, 0, 0)).is_some());

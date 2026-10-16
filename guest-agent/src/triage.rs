@@ -148,6 +148,58 @@ fn values_of(doc: &[u8], key: &[u8], max: usize, strings_only: bool) -> Vec<Vec<
     out
 }
 
+/// Names whose escaping only makes sense to evade keyword scanners.
+const KEYWORDS: &[&[u8]] = &[
+    b"JavaScript", b"JS", b"OpenAction", b"AA", b"Launch", b"EmbeddedFile", b"EmbeddedFiles", b"URI", b"SubmitForm",
+    b"ImportData", b"RichMedia", b"XFA", b"GoToR", b"GoToE", b"AcroForm", b"Names", b"ObjStm", b"Filter", b"Encrypt",
+    b"FlateDecode", b"ASCIIHexDecode", b"ASCII85Decode", b"LZWDecode", b"RunLengthDecode", b"JBIG2Decode", b"Action", b"S",
+];
+
+/// Counts /Name tokens that contain #xx escapes and decode to a keyword.
+fn escaped_keywords(raw: &[u8]) -> (usize, Vec<String>) {
+    let delim = |c: u8| c.is_ascii_whitespace() || b"()<>[]{}/%".contains(&c);
+    let (mut n, mut examples) = (0, Vec::new());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] != b'/' {
+            i += 1;
+            continue;
+        }
+        let start = i + 1;
+        let mut end = start;
+        while end < raw.len() && end - start < 128 && !delim(raw[end]) {
+            end += 1;
+        }
+        let tok = &raw[start..end];
+        if tok.contains(&b'#') {
+            let mut dec = Vec::with_capacity(tok.len());
+            let mut k = 0;
+            while k < tok.len() {
+                let hex = |c: u8| (c as char).to_digit(16);
+                match (tok[k], tok.get(k + 1).and_then(|&c| hex(c)), tok.get(k + 2).and_then(|&c| hex(c))) {
+                    (b'#', Some(h), Some(l)) => {
+                        dec.push((h * 16 + l) as u8);
+                        k += 3;
+                    }
+                    (c, _, _) => {
+                        dec.push(c);
+                        k += 1;
+                    }
+                }
+            }
+            if KEYWORDS.contains(&dec.as_slice()) {
+                n += 1;
+                let shown = format!("/{}", String::from_utf8_lossy(&tok[..tok.len().min(40)]));
+                if examples.len() < 3 && !examples.contains(&shown) {
+                    examples.push(shown);
+                }
+            }
+        }
+        i = end.max(i + 1);
+    }
+    (n, examples)
+}
+
 const SCRIPTS_JS: &str = "/usr/lib/airlock/pdf_scripts.js";
 
 /// Lines "@@JS\t<trigger>\t<0|1>\t<hex>" from pdf_scripts.js.
@@ -262,17 +314,12 @@ pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
     let contents = values_of(doc, b"/Contents", 20, true);
     let annots = subj.into_iter().zip(contents.into_iter().chain(std::iter::repeat(Vec::new()))).collect();
 
-    // Obfuscation: names written with #xx escapes (/J#61vaScript).
-    // Only counts '#xx' inside a /Name token, not in ordinary text.
-    let in_name = |k: usize| {
-        let start = k.saturating_sub(40);
-        raw[start..k].iter().rposition(|&c| !(c.is_ascii_alphanumeric() || c == b'#')).is_some_and(|p| raw[start + p] == b'/')
-    };
-    let hex_names = (1..raw.len().saturating_sub(3))
-        .filter(|&k| raw[k] == b'#' && raw[k + 1].is_ascii_hexdigit() && raw[k + 2].is_ascii_hexdigit() && in_name(k))
-        .count();
-    if hex_names > 0 {
-        out.push((Ind::PdfObfuscation, format!("hex-escaped names x{hex_names} (hides keywords from scanners)")));
+    // Obfuscation: security-relevant names written with #xx escapes
+    // (/J#61vaScript). Escapes elsewhere are normal (font names with
+    // spaces or non-Latin characters: /Times#20New#20Roman).
+    let (hidden, examples) = escaped_keywords(raw);
+    if hidden > 0 {
+        out.push((Ind::PdfObfuscation, format!("hex-escaped keywords x{hidden} ({}) hide them from scanners", examples.join(", "))));
     }
     for kw in [&b"/JavaScript"[..], b"/OpenAction", b"/Launch"] {
         if count_name(raw, kw) == 0 && count_name(doc, kw) > 0 {

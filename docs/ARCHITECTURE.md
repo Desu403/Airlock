@@ -74,6 +74,15 @@ able to touch the host, and *see* what it tries to do.
   script-host execution (ScriptControl/AddCode/ExecuteStatement/CallByName,
   the MirrorBlast loader) was not treated as code execution. Real samples:
   `tests/malware-run.sh` (password zips, extracted to RAM one at a time).
+- **Corpus run** (`tests/fetch-pdfjs-corpus.sh` + `tests/corpus-run.sh`):
+  979 pdf.js test PDFs — 0 crashes, 0 errors, 0 MALICIOUS; 852 clean, 127
+  SUSPICIOUS, every one for a feature it really has (JavaScript, open
+  actions, embedded files, XFA, Flash, Launch). It found three false-alarm
+  sources, now fixed: scripts behind buttons were emulated as if they ran on
+  open (a tax form's help links -> MALICIOUS BEHAVIOUR; triggers now come
+  from the object graph via `guest/pdf_scripts.js`), any `#xx` in a name
+  counted as obfuscation (font names do that; now only escaped keywords),
+  and compressed object streams counted as hiding JavaScript (now Low).
 - **M5 — live interactive viewing** — done (`host/src/live.rs`,
   `guest-agent/src/live.rs`). The VM stays up (no NIC) and answers
   Render{page,dpi} / Search{query} / GetText{page} / GetLayout{page}. One

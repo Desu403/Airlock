@@ -54,6 +54,10 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         Ind::PdfUri if text.starts_with("mailto:") => (Source::Static, Info, "-", format!("email link {text}")),
         Ind::PdfUri => (Source::Static, Info, "T1566.002 Spearphishing Link", format!("link to {text}")),
         Ind::PdfJs => (Source::Static, Medium, "T1059.007 JavaScript", format!("JavaScript: {text}")),
+        // Compressed object streams are how modern PDF writers save files.
+        Ind::PdfObfuscation if text.contains("only visible after decompression") => {
+            (Source::Static, Low, "T1027 Obfuscated Files", format!("{text} (normal in modern PDFs; also hides it from naive scanners)"))
+        }
         Ind::PdfObfuscation => (Source::Static, Medium, "T1027 Obfuscated Files", text.to_string()),
         Ind::JsCall => {
             let (cat, rest) = text.split_once(": ").unwrap_or(("other", text));

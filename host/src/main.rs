@@ -27,11 +27,13 @@ fn main() {
 fn run() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let cmd = args.next().unwrap_or_else(|| usage());
-    let (mut input, mut out_dir, mut verbose) = (None, None, false);
+    let (mut input, mut out_dir, mut verbose, mut report_only) = (None, None, false, false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--out" => out_dir = Some(PathBuf::from(args.next().unwrap_or_else(|| usage()))),
             "--verbose" | "-v" => verbose = true,
+            // Test bench: just report.json, no page images or safe copy.
+            "--report-only" => report_only = true,
             _ if input.is_none() => input = Some(PathBuf::from(a)),
             _ => usage(),
         }
@@ -48,7 +50,7 @@ fn run() -> Result<()> {
             if cmd == "view" {
                 view(&doc, &out, verbose)
             } else {
-                analyze(&doc, &out, verbose, "analyze").map(|_| ())
+                analyze(&doc, &out, verbose, "analyze", !report_only).map(|_| ())
             }
         }
         "doctor" => doctor(),
@@ -108,13 +110,13 @@ fn view(doc: &[u8], out_dir: &Path, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn analyze(doc: &[u8], out_dir: &Path, verbose: bool, mode: &'static str) -> Result<report::Report> {
+fn analyze(doc: &[u8], out_dir: &Path, verbose: bool, mode: &'static str, pages: bool) -> Result<report::Report> {
     let a = analysis::run(doc, mode, verbose, &|line| eprintln!("airlock: {line}"))?;
     let (rep, s) = (a.report, a.session);
     rep.print();
     std::fs::create_dir_all(out_dir)?;
     std::fs::write(out_dir.join("report.json"), serde_json::to_vec_pretty(&rep.to_json())?)?;
-    if s.protocol_violation.is_none() {
+    if s.protocol_violation.is_none() && pages {
         save_pages(&s.pages, out_dir)?;
     }
     match s.guest_error {
@@ -128,7 +130,7 @@ fn selftest(out_dir: PathBuf, verbose: bool) -> Result<()> {
     eprintln!("airlock selftest: a simulated *exploited renderer* runs inside the VM and tries to");
     eprintln!("phone home, drop files, run a shell, fork, ptrace and attack the kernel.\n");
     let blank = pdf::write(&[pdf::Page { width: 200, height: 260, rgb: vec![255; 200 * 260 * 3] }], DPI);
-    let rep = analyze(&blank, &out_dir, verbose, "selftest")?;
+    let rep = analyze(&blank, &out_dir, verbose, "selftest", true)?;
     let has = |needle: &str| rep.findings.iter().any(|f| f.what.contains(needle));
     let checks = [
         ("DNS lookup seen by the sinkhole", has("DNS lookup of c2.airlock-selftest.example")),

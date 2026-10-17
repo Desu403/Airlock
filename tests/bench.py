@@ -240,13 +240,13 @@ def harmless_file(r):
 def analyze(path, out):
     t = time.time()
     p = subprocess.run([AIRLOCK, "analyze", path, "--out", out, "--report-only"], capture_output=True, text=True, timeout=600)
-    verdict = next((l[len("=== airlock report: ") : -4] for l in p.stdout.splitlines() if l.startswith("=== airlock report: ")), None)
     rep = None
     try:
         with open(os.path.join(out, "report.json")) as f:
             rep = json.load(f)
     except Exception:
         pass
+    verdict = rep.get("verdict") if isinstance(rep, dict) and rep.get("verdict") in VERDICTS else None
     return verdict, round(time.time() - t, 1), rep, (p.stderr or "")[-400:]
 
 
@@ -301,6 +301,12 @@ def load_results(run):
 
 def cmd_run(a):
     rows = [r for r in all_rows() if not a.label or r["label"] == a.label]
+    if a.type:
+        rows = [r for r in rows if r["type"] in a.type.split(",")]
+    if a.outcome:
+        # Rerun only what had this outcome in the last run (e.g. missed).
+        last = load_results(runs()[-1]) if runs() else {}
+        rows = [r for r in rows if last.get(r["sha256"], {}).get("outcome") in a.outcome.split(",")]
     if a.limit:
         rows = rows[: a.limit]
     if not rows:
@@ -330,6 +336,25 @@ def cmd_run(a):
         w.writeheader()
         for r in sorted(results, key=lambda r: (r["label"], r["outcome"], r["sha256"])):
             w.writerow(r)
+    report(run)
+
+
+def rescore(run):
+    path = os.path.join(RUNS, run, "results.tsv")
+    with open(path, newline="") as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    for r in rows:
+        try:
+            with open(os.path.join(RUNS, run, "reports", r["sha256"], "report.json")) as f:
+                v = json.load(f).get("verdict")
+            if v in VERDICTS:
+                r["verdict"], r["outcome"], r["error"] = v, outcome(r["label"], v), ""
+        except Exception:
+            pass
+    with open(path, "w", newline="") as f:
+        w = csv.DictWriter(f, FIELDS + ["verdict", "outcome", "seconds", "error"], delimiter="\t", lineterminator="\n")
+        w.writeheader()
+        w.writerows(sorted(rows, key=lambda r: (r["label"], r["outcome"], r["sha256"])))
     report(run)
 
 
@@ -379,6 +404,10 @@ def main():
     p.add_argument("--jobs", type=int, default=6)
     p.add_argument("--label", choices=["malicious", "harmless", "decoy"])
     p.add_argument("--limit", type=int)
+    p.add_argument("--type", help="comma-separated file types, e.g. ppt,pdf")
+    p.add_argument("--outcome", help="only files with this outcome in the last run, e.g. missed,false-alarm")
+    p = sub.add_parser("rescore", help="rebuild a run's results from its saved reports")
+    p.add_argument("run")
     p = sub.add_parser("report")
     p.add_argument("run", nargs="?")
     a = ap.parse_args()
@@ -390,6 +419,8 @@ def main():
         cmd_add_poi(a)
     elif a.cmd == "run":
         cmd_run(a)
+    elif a.cmd == "rescore":
+        rescore(a.run)
     else:
         r = a.run or (runs() or [None])[-1]
         if not r:

@@ -35,14 +35,14 @@ EXEC_PRIMITIVES = [
 ]
 
 
-def vba(path):
+def vba(path, data=None, where=""):
     try:
         from oletools.olevba import VBA_Parser
     except Exception as e:  # pragma: no cover
         emit("ERROR", f"oletools unavailable: {e}")
         return
     try:
-        vp = VBA_Parser(path)
+        vp = VBA_Parser(path, data=data)
     except Exception as e:
         emit("ERROR", f"could not parse container: {e.__class__.__name__}")
         return
@@ -54,12 +54,18 @@ def vba(path):
                 lines = [l.strip() for l in (code or "").splitlines() if l.strip() and not l.strip().lower().startswith("attribute ")]
                 if not lines:
                     continue
-                emit("MACRO", f"module {name}: {len(lines)} lines | " + " ; ".join(lines[:6]))
+                emit("MACRO", f"module {name}{where}: {len(lines)} lines | " + " ; ".join(lines[:6]))
             flagged = set()
             for kw_type, keyword, desc in vp.analyze_macros():
                 t = kw_type.lower()
                 if t == "autoexec":
-                    emit("AUTOEXEC", f"{keyword}: {desc}")
+                    # Control events that need you to click or type are not
+                    # automatic (CommandButton1_Click); _Painted, _Layout,
+                    # _GotFocus and the like do fire by themselves.
+                    if re.search(r"_(Click|DblClick|Change|KeyDown|KeyPress|KeyUp|MouseDown|MouseUp|MouseMove|BeforeUpdate|AfterUpdate|SpinUp|SpinDown|Scroll|DropButtonClick|BeforeDropOrPaste|BeforeDragOver)$", keyword, re.I):
+                        emit("SUSPICIOUS", f"runs when you click or use a control: {keyword}")
+                    else:
+                        emit("AUTOEXEC", f"{keyword}: {desc}")
                 elif t == "suspicious":
                     flagged.add(keyword.lower())
                     emit("SUSPICIOUS", f"{keyword}: {desc}")
@@ -98,6 +104,16 @@ EXTERNAL_KINDS = {
 def local(name):
     """'{namespace}Relationship' or 'ns0:Relationship' -> 'Relationship'."""
     return name.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+
+
+def remote_target(t):
+    t = t.strip().lower()
+    if t.startswith(("http:", "https:", "ftp:", "\\\\", "//")):
+        return True
+    if t.startswith("file:"):
+        host = t[5:].lstrip("/") if t.startswith("file://") and not t.startswith("file:///") else ""
+        return bool(host) and not host.startswith("localhost")
+    return False
 
 
 def external_rels(xml):
@@ -202,6 +218,10 @@ def ooxml(path):
         except Exception:
             continue
         for rtype, target in external_rels(x):
+            # Word records every attached template as "external", including
+            # local ones (C:\\...\\x.dotx, Normal.dotm): only network ones load from outside.
+            if rtype == "attachedTemplate" and not remote_target(target):
+                continue
             what = EXTERNAL_KINDS.get(rtype, f"external {rtype}")
             t = target.lower()
             if "ms-msdt" in t or (rtype == "oleObject" and t.startswith("mhtml:")) or t.rstrip("/").endswith(".html!"):
@@ -234,6 +254,38 @@ def moniker_url(stream):
     return raw.decode("utf-16-le", "replace").split("\x00", 1)[0] or None
 
 
+def equation_problem(st):
+    """Why an Equation Native stream is an exploit, or None for a normal
+    formula. [MTEF] 28-byte EQNOLEFILEHDR, then MTEF: a 5-byte header and
+    records. CVE-2017-11882 / CVE-2018-0802 overflow Equation Editor's font
+    name buffer: a FONT record (tag 8) whose name runs far past 32 bytes."""
+    if len(st) < 28 + 5:
+        return "a truncated formula header"
+    cb_hdr, version = struct.unpack_from("<HI", st, 0)
+    if cb_hdr != 0x1C or version not in (0x00020000, 0x00010000):
+        return f"a malformed formula header (size {cb_hdr}, version {version:#x})"
+    mtef = st[cb_hdr:]
+    # MTEF 4 and 5 are MathType's: Equation Editor 3 never parses them.
+    if mtef[0] in (4, 5):
+        return None
+    if mtef[0] not in (2, 3):
+        return f"an unknown formula format (MTEF version {mtef[0]})"
+    # FONT records carry the font name, NUL-terminated. Look for every
+    # FONT tag that is followed by a name-like run; a real name is short.
+    for i in range(5, min(len(mtef), 4096)):
+        if mtef[i] & 0x0F != 8 or i + 3 >= len(mtef):
+            continue
+        name = mtef[i + 3 : i + 3 + 256]
+        end = name.find(b"\x00")
+        length = end if end >= 0 else len(name)
+        printable = sum(32 <= b < 127 for b in name[:length])
+        if length >= 64 or (length > 32 and printable < length):
+            return f"a {length}-byte font name (the buffer holds 32): the Equation Editor overflow"
+        if end < 0 and len(name) == 256:
+            return "a font name with no end: the Equation Editor overflow"
+    return None
+
+
 def ole_objects(data, where):
     """Equation Editor objects (CVE-2017-11882 / CVE-2018-0802) and linked
     objects whose source is a web address (CVE-2017-0199), in an OLE file."""
@@ -243,10 +295,14 @@ def ole_objects(data, where):
     except Exception:
         return
     try:
-        if any(e is not None and (e.clsid or "").upper() in EQUATION_CLSIDS for e in ole.direntries[:5000]) or any(
-            p[-1].lower() == "equation native" for p in ole.listdir(streams=True)[:5000]
-        ):
-            emit("EXPLOIT", f"Equation Editor object{where} - exploit for CVE-2017-11882 / CVE-2018-0802")
+        eq_streams = [p for p in ole.listdir(streams=True)[:5000] if p[-1].lower() == "equation native"]
+        if eq_streams or any(e is not None and (e.clsid or "").upper() in EQUATION_CLSIDS for e in ole.direntries[:5000]):
+            # Every formula made before 2018 is an Equation Editor object;
+            # only a malformed one is the exploit.
+            problems = [equation_problem(ole.openstream(p).read(1 << 20)) for p in eq_streams]
+            bad = [x for x in problems if x]
+            if bad:
+                emit("EXPLOIT", f"Equation Editor object{where} with {bad[0]} - exploit for CVE-2017-11882 / CVE-2018-0802")
         for p in ole.listdir(streams=True)[:5000]:
             if p[-1] != "\x01Ole":
                 continue
@@ -260,6 +316,108 @@ def ole_objects(data, where):
         pass
     finally:
         ole.close()
+
+
+def ppt_atoms(stream):
+    """[MS-PPT] record tree of a PowerPoint 97-2003 stream: every atom as
+    (parent containers as (type, instance), instance, type, body). Containers (version 0xF)
+    are descended; lengths are checked against their container."""
+    out, stack, steps = [], [(0, len(stream), ())], 0
+    while stack and steps < 300000:
+        off, end, parents = stack.pop()
+        while off + 8 <= end and steps < 300000:
+            steps += 1
+            verinst, rtype, rlen = struct.unpack_from("<HHI", stream, off)
+            body = off + 8
+            if rlen > end - body:
+                break
+            if verinst & 0x0F == 0x0F:
+                if len(parents) < 32:
+                    stack.append((body, body + rlen, parents + ((rtype, verinst >> 4),)))
+            else:
+                out.append((parents, verinst >> 4, rtype, stream[body : body + rlen]))
+            off = body + rlen
+    return out
+
+
+def ppt_storages(atoms):
+    """OLE storages kept in ExOleObjStg atoms (type 0x1011; instance 1 =
+    zlib-compressed after a 4-byte size): the VBA project, embedded objects."""
+    import zlib
+    out = []
+    for _, inst, rtype, raw in atoms:
+        if rtype != 0x1011 or len(out) >= 64:
+            continue
+        try:
+            data = zlib.decompressobj().decompress(raw[4:], 64 << 20) if inst == 1 else raw
+        except zlib.error:
+            data = b""
+        if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+            out.append(data)
+    return out
+
+
+# Text that makes a slide action or link a command rather than a page.
+COMMAND = re.compile(r"(?i)\b(cmd(\.exe)?|powershell|pwsh|rundll32|regsvr32|mshta|wscript|cscript|certutil|bitsadmin|msiexec|schtasks)\b|\.(exe|bat|cmd|ps1|vbs|vbe|js|jse|hta|scr|lnk|dll)\b|%20/[ck]\b")
+
+
+def ppt_actions(atoms):
+    """Slide action settings (InteractiveInfo, 0x0FF2/0x0FF3: instance 0 =
+    on click, 1 = on mouse-over) and hyperlink targets (ExHyperlink 0x0FD7,
+    CString 0x0FBA: instance 1 = target, 3 = location). Running a program or a command from a slide
+    is the "mouse-over" technique (APT28)."""
+    strings = lambda pred: [raw.decode("utf-16-le", "replace") for parents, inst, t, raw in atoms if t == 0x0FBA and pred(parents, inst)]
+    targets = strings(lambda p, i: any(t == 0x0FD7 for t, _ in p) and i in (1, 3))
+    for parents, inst, rtype, raw in atoms:
+        if rtype != 0x0FF3 or len(raw) < 16 or not parents or parents[-1][0] != 0x0FF2:
+            continue
+        action, when = raw[8], "when you point at it" if parents[-1][1] == 1 else "when you click it"
+        if action == 2:
+            # The program is kept as a hyperlink target. Old decks used this
+            # to start a video player: only a command is an attack.
+            programs = strings(lambda p, i: bool(p) and p[-1][0] == 0x0FF2 and i == 2)
+            prog = " | ".join(t.strip() for t in programs + targets if t.strip())[:200]
+            if COMMAND.search(prog):
+                emit("EXPLOIT", f"a slide runs a command {when}: {prog}")
+            else:
+                emit("SUSPICIOUS", f"runs when you click or use a control: a slide starts a program or file {when} ({prog or 'unnamed'})")
+        elif action == 1:
+            emit("SUSPICIOUS", f"runs when you click or use a control: slide action runs a macro {when}")
+    for target in targets[:200]:
+        if COMMAND.search(target):
+            emit("EXPLOIT", f"a slide link runs a command: {target[:200]}")
+        elif target.strip():
+            emit("LINK", target.strip())
+
+
+def ppt(path):
+    try:
+        import olefile
+        ole = olefile.OleFileIO(path)
+    except Exception:
+        return
+    try:
+        if not ole.exists("PowerPoint Document"):
+            return
+        stream = ole.openstream("PowerPoint Document").read(256 << 20)
+    finally:
+        ole.close()
+    atoms = ppt_atoms(stream)
+    ppt_actions(atoms)
+    for n, data in enumerate(ppt_storages(atoms)):
+        try:
+            import olefile
+            sub = olefile.OleFileIO(data)
+            has_vba = any(p[-1].lower() == "dir" and any(x.lower() == "vba" for x in p[:-1]) for p in sub.listdir(streams=True)[:5000])
+            sub.close()
+        except Exception:
+            continue
+        if has_vba:
+            vba(f"ppt-vba-{n}", data, " (PowerPoint macro project)")
+        else:
+            # Charts and tables embedded in slides are normal: only check
+            # them for exploits.
+            ole_objects(data, f" #{n + 1} in the slides")
 
 
 def rtf_end(data):
@@ -313,7 +471,11 @@ def rtf(data, where=""):
         if getattr(obj, "is_ole", False):
             cls = (obj.class_name or b"").decode("latin-1", "replace")
         if cls.lower().startswith("equation"):
-            emit("EXPLOIT", f"RTF{where} embeds {cls} - Equation Editor exploit (CVE-2017-11882 / CVE-2018-0802)")
+            data = getattr(obj, "oledata", None) or b""
+            if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+                ole_objects(data, f" in RTF{where}")
+            else:
+                emit("EXPLOIT", f"RTF{where} embeds {cls} whose data is not a valid OLE object - Equation Editor exploit (CVE-2017-11882 / CVE-2018-0802)")
         elif cls == "OLE2Link":
             emit("EXPLOIT", f"RTF{where} embeds OLE2Link - remote object exploit (CVE-2017-0199)")
         elif getattr(obj, "is_package", False):
@@ -337,6 +499,7 @@ def main():
             ooxml(path)
         elif head.startswith(b"\xd0\xcf\x11\xe0"):
             ole_objects(path, "")
+            ppt(path)
 
 
 if __name__ == "__main__":

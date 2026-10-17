@@ -182,10 +182,12 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         // ---- Office
         Ind::OfficeMacro => finding(Static, Medium, "T1059.005 Visual Basic", "Contains macros", WHY_MACRO, format!("VBA macro {text}")),
         Ind::OfficeAutoExec => finding(Static, High, "T1204.002 Malicious File", "A macro runs automatically when opened", "If you click \"Enable content\" in Office, this code starts by itself. That is how most Office malware runs.", format!("macro runs automatically on open: {text}")),
+        Ind::OfficeSuspicious if text.starts_with("runs when you click") => finding(Static, Medium, "T1204.002 Malicious File", "A macro runs when you click a button", "It only runs if you click or use a control in Office after enabling macros. Common in legitimate forms, and also used to trick people into starting malware.", format!("macro {text}")),
         Ind::OfficeSuspicious => {
             let k = text.to_ascii_lowercase();
             let dangerous = [
-                "shell", "urldownloadtofile", "powershell", "createprocess", "run", "exec", "wscript", "mshta", "certutil", "regsvr32", "rundll32",
+                // ("Run" is not here: Application.Run just calls another macro.)
+                "shell", "urldownloadtofile", "powershell", "createprocess", "exec", "wscript", "mshta", "certutil", "regsvr32", "rundll32",
                 // script-host execution (see EXEC_PRIMITIVES in guest/office_triage.py)
                 "scriptcontrol", "addcode", "callbyname", "macscript",
             ]
@@ -200,7 +202,9 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         }
         Ind::OfficeIoc => finding(Static, Medium, "T1105 Ingress Tool Transfer", "A macro mentions web addresses or files", "Addresses or program names inside macro code often show where malware would be downloaded from.", format!("macro mentions {text}")),
         Ind::OfficeObfuscation => finding(Static, Medium, "T1027 Obfuscated Files", "A macro hides what it does", "The macro encodes its text so it cannot be read at a glance, a common trick to slip past scanners.", format!("macro hides strings: {text}")),
-        Ind::OfficeStomping => finding(Static, High, "T1564.007 VBA Stomping", "Hidden macro code", "The macro you would see in Office is a decoy; Office would actually run different, hidden code. Only done to deceive.", text.to_string()),
+        // oletools' check also fires on some old legitimate macros (saved by
+        // another Office version): strong, but not decisive on its own.
+        Ind::OfficeStomping => finding(Static, Medium, "T1564.007 VBA Stomping", "Macro code may be hidden", "The macro text you would see in Office does not match the compiled code Office would actually run. Attackers do this to hide code; old files saved by another Office version can also show it.", text.to_string()),
         Ind::OfficeXlm => finding(Static, High, "T1059 Command and Scripting Interpreter", "Old Excel 4.0 macros", "A 30-year-old macro language that many scanners miss; popular with malware for exactly that reason.", text.to_string()),
         Ind::OfficeExternal => {
             let (sev, att, title, why) = if text.starts_with("remote template") {
@@ -321,6 +325,42 @@ fn sinkhole_findings(path: &Path) -> Vec<Finding> {
     out
 }
 
+/// Documents that link pictures from the web (old newsletters, reports):
+/// LibreOffice fetches them on open. When everything that went out is DNS
+/// plus plain picture downloads, it is tracking, not an attack: medium.
+/// Anything else (TLS, raw connections, other downloads) keeps it high.
+fn linked_pictures_only(findings: &mut [Finding]) {
+    let net = |f: &Finding| {
+        (f.source == Source::Outside && (f.what.starts_with("DNS lookup of ") || f.what.starts_with("HTTP \"") || f.what.starts_with("TLS ") || f.what.starts_with("TCP ") || f.what.starts_with("packets: ")))
+            || (f.source == Source::Monitor && f.what.starts_with("network: "))
+    };
+    let picture = |what: &str| {
+        let req = what.strip_prefix("HTTP \"").and_then(|r| r.split('"').next()).unwrap_or("");
+        let mut parts = req.split_whitespace();
+        let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or("").split(['?', '#']).next().unwrap_or("").to_ascii_lowercase());
+        matches!(method, "GET" | "HEAD" | "OPTIONS" | "PROPFIND")
+            && [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".wmf", ".emf", ".tif", ".tiff", ".ico", ".webp"].iter().any(|e| path.ends_with(e))
+    };
+    let http: Vec<&Finding> = findings.iter().filter(|f| f.source == Source::Outside && f.what.starts_with("HTTP \"")).collect();
+    let only = !http.is_empty()
+        && http.iter().all(|f| picture(&f.what))
+        && findings.iter().filter(|f| net(f)).all(|f| {
+            f.what.starts_with("DNS lookup of ")
+                || f.what.starts_with("HTTP \"")
+                || (f.source == Source::Monitor && (f.what.ends_with(":53") || f.what.ends_with(":80")))
+        })
+        && !findings.iter().any(|f| f.severity == Severity::High && !net(f) && f.source != Source::Static && f.source != Source::Signature);
+    if !only {
+        return;
+    }
+    for f in findings.iter_mut().filter(|f| net(f)) {
+        f.severity = Severity::Medium;
+        f.attack = "T1187 Forced Authentication";
+        f.title = "Loads pictures from the internet when opened".into();
+        f.explain = "Office would download linked pictures as soon as the file opens. That tells the sender you opened it (tracking); only pictures were fetched here.";
+    }
+}
+
 pub struct Report {
     pub findings: Vec<Finding>,
 }
@@ -366,10 +406,25 @@ impl Report {
                 f.explain = "airlock ran it in a fake Adobe Reader: it did not touch the internet, files or programs, and hid nothing. Typical for forms (filling in dates, totals, checks).";
             }
         }
+        linked_pictures_only(&mut findings);
         let mut seen = std::collections::HashSet::new();
         findings.retain(|f| seen.insert(f.what.clone()));
         findings.sort_by(|a, b| b.severity.cmp(&a.severity));
         Report { findings }
+    }
+
+    /// The VM could not identify the file: nothing in it was checked, so
+    /// it must never come out as "No threats found".
+    pub fn unreadable(&mut self) {
+        self.findings.push(finding(
+            Source::Static,
+            Severity::Medium,
+            "-",
+            "airlock could not read this file",
+            "It is not a document type airlock knows, so nothing inside it could be checked. Treat it as unknown, not as safe.",
+            "unsupported or unrecognised file type".into(),
+        ));
+        self.findings.sort_by(|a, b| b.severity.cmp(&a.severity));
     }
 
     pub fn verdict(&self) -> Verdict {
@@ -491,6 +546,23 @@ impl Report {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn linked_pictures_are_tracking_not_attacks() {
+        use super::*;
+        let ind = |s: &str| (Ind::Connect, s.to_string());
+        let dir = std::env::temp_dir().join(format!("airlock-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ev = dir.join("net.jsonl");
+        let line = |req: &str| format!("{{\"t\":\"tcp\",\"dst\":\"10.0.0.1:80\",\"proto\":\"http\",\"request\":\"{req}\",\"host\":\"ih.example.com\"}}");
+        std::fs::write(&ev, format!("{{\"t\":\"dns\",\"name\":\"ih.example.com\"}}\n{}\n", line("GET /img/95.jpg HTTP/1.1"))).unwrap();
+        let r = Report::build(&[ind("connect 10.0.0.1:53"), ind("connect 10.0.0.1:80")], Some(&ev), &[]);
+        assert_eq!(r.verdict().label, "SUSPICIOUS", "{:?}", r.findings.iter().map(|f| (&f.title, f.severity)).collect::<Vec<_>>());
+        std::fs::write(&ev, format!("{{\"t\":\"dns\",\"name\":\"ih.example.com\"}}\n{}\n", line("GET /stage2.bin HTTP/1.1"))).unwrap();
+        let r = Report::build(&[ind("connect 10.0.0.1:80")], Some(&ev), &[]);
+        assert_eq!(r.verdict().label, "MALICIOUS BEHAVIOUR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn phishing_style_links_stand_out() {
         use super::link_risk;

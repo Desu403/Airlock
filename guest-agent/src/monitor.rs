@@ -44,11 +44,14 @@ pub struct Opts<'a> {
     /// Exec attempts that are known-benign for this program: still denied,
     /// but not reported. Exact "path [argv]" match; a trailing '*' = prefix.
     pub quiet_exec: &'a [&'a str],
+    /// Netlink sockets (GLib's network monitor in LibreOffice's media
+    /// stack): still denied, but not reported.
+    pub quiet_netlink: bool,
 }
 
 impl Opts<'static> {
     pub fn new(net: Net, timeout: Duration) -> Self {
-        Opts { net, timeout, mem_limit: Some(1536 << 20), env: &[], allow_unix: false, allow_fork: false, quiet_exec: &[] }
+        Opts { net, timeout, mem_limit: Some(1536 << 20), env: &[], allow_unix: false, allow_fork: false, quiet_exec: &[], quiet_netlink: false }
     }
 }
 
@@ -287,6 +290,7 @@ struct Supervisor {
     net: Net,
     allow_unix: bool,
     allow_fork: bool,
+    quiet_netlink: bool,
     events: Arc<Mutex<Vec<(Ind, String)>>>,
 }
 
@@ -341,6 +345,7 @@ impl Supervisor {
             libc::SYS_connect if self.allow_unix && read_sockaddr(pid, a[1], a[2]).is_some_and(|d| d.starts_with("unix:")) => {
                 return Verdict::Allow
             }
+            libc::SYS_socket | libc::SYS_socketpair if self.quiet_netlink && a[0] as i32 == libc::AF_NETLINK => return Verdict::Deny(libc::EPERM),
             libc::SYS_socket | libc::SYS_socketpair => {
                 let fam = a[0] as i32;
                 let kind = match (a[1] as i32) & 0xf {
@@ -432,7 +437,7 @@ impl Supervisor {
 
 /// Runs `argv` as nobody under the monitor. `cwd` must be writable by nobody.
 pub fn run(argv: &[&str], cwd: &str, opts: &Opts) -> Outcome {
-    let (net, timeout, mem_limit, allow_unix, allow_fork) = (opts.net, opts.timeout, opts.mem_limit, opts.allow_unix, opts.allow_fork);
+    let (net, timeout, mem_limit, allow_unix, allow_fork, quiet_netlink) = (opts.net, opts.timeout, opts.mem_limit, opts.allow_unix, opts.allow_fork, opts.quiet_netlink);
     let quiet_exec: Vec<String> = opts.quiet_exec.iter().map(|s| s.to_string()).collect();
     let events = Arc::new(Mutex::new(Vec::new()));
     let mut pipe = [0 as RawFd; 2];
@@ -468,7 +473,7 @@ pub fn run(argv: &[&str], cwd: &str, opts: &Opts) -> Outcome {
             sup_events.lock().unwrap().push((Ind::RendererAbnormal, "monitor: could not attach".into()));
             return;
         }
-        Supervisor { quiet_exec, root_pid: pid, first_exec_done: false, net, allow_unix, allow_fork, events: sup_events }.serve(fd, sup_stop);
+        Supervisor { quiet_exec, root_pid: pid, first_exec_done: false, net, allow_unix, allow_fork, quiet_netlink, events: sup_events }.serve(fd, sup_stop);
     });
 
     let filter = build_filter();

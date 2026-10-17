@@ -121,7 +121,8 @@ fn analyze(doc: &[u8], out_dir: &Path, verbose: bool, mode: &'static str, pages:
     }
     match s.guest_error {
         Some(e) => eprintln!("airlock: rendering failed ({e:?}); report saved to {}/report.json", out_dir.display()),
-        None => eprintln!("airlock: wrote {}/report.json, safe.pdf and page PNGs", out_dir.display()),
+        None if pages => eprintln!("airlock: wrote {}/report.json, safe.pdf and page PNGs", out_dir.display()),
+        None => eprintln!("airlock: wrote {}/report.json", out_dir.display()),
     }
     Ok(rep)
 }

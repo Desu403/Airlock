@@ -218,6 +218,32 @@ fn image_age(rootfs: &std::path::Path) {
 }
 
 /// Checks everything airlock needs on this machine, with a fix for each miss.
+/// Days since the running kernel was built (`uname -v` ends with its date,
+/// e.g. "#1 SMP PREEMPT_DYNAMIC Sat, 11 Oct 2026 10:12:13 +0000").
+fn host_kernel_age_days() -> Option<u64> {
+    let v = std::fs::read_to_string("/proc/sys/kernel/version").ok()?;
+    let words: Vec<&str> = v.split_whitespace().collect();
+    let year: i64 = words.iter().rev().find_map(|w| w.parse().ok().filter(|y| (2000..2200).contains(y)))?;
+    let yi = words.iter().rposition(|w| w.parse::<i64>().ok() == Some(year))?;
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    // "... 11 Oct 2026 ..." or "... Oct 11 10:12:13 UTC 2026"
+    let (day, month) = words[..yi].iter().rev().take(4).fold((None, None), |(d, m), w| {
+        let w = w.trim_end_matches(',');
+        (d.or(w.parse::<i64>().ok().filter(|n| (1..=31).contains(n))), m.or(months.iter().position(|x| *x == w).map(|i| i as i64 + 1)))
+    });
+    let (day, month) = (day?, month?);
+    // Days since 1970 (civil-from-days inverse, proleptic Gregorian).
+    let days = |y: i64, m: i64, d: i64| {
+        let y = if m <= 2 { y - 1 } else { y };
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400;
+        let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+        era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468
+    };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64 / 86400;
+    u64::try_from(now - days(year, month, day)).ok()
+}
+
 fn doctor() -> Result<()> {
     use std::process::{Command, Stdio};
     let quiet = |c: &mut Command| c.stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
@@ -244,14 +270,26 @@ fn doctor() -> Result<()> {
     check(rw("/dev/net/tun"), "read/write access to /dev/net/tun (analysis mode)", "load the tun module (modprobe tun)");
     if vm::uid_shift() {
         eprintln!("  ok    VMs run as a spare uid from /etc/subuid (rootless jail)");
+    } else if std::env::var_os("AIRLOCK_NO_UIDSHIFT").is_some() {
+        eprintln!("  warn  VMs run as your own uid (AIRLOCK_NO_UIDSHIFT is set: less isolation)");
     } else {
-        eprintln!(
-            "  warn  VMs run as your own uid (no spare-uid isolation)\n        fix: give your user a range in /etc/subuid and /etc/subgid \
+        check(
+            false,
+            "VMs run as a spare uid (required)",
+            "give your user a range in /etc/subuid and /etc/subgid \
              (sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $USER) and make sure \
-             /dev/kvm and /dev/net/tun are mode 0666 (systemd's default)"
+             /dev/kvm and /dev/net/tun are mode 0666 (systemd's default)",
         );
     }
-    for (cmd, pkg) in [("ip", "iproute2"), ("nft", "nftables"), ("setpriv", "util-linux"), ("mke2fs", "e2fsprogs")] {
+    // KVM in the host kernel is the wall around every VM: keep it patched.
+    match host_kernel_age_days() {
+        Some(d) if d > 120 => eprintln!(
+            "  warn  your Linux kernel was built {d} days ago; the VM wall (KVM) is part of it\n        fix: install your distribution's kernel updates and reboot"
+        ),
+        Some(d) => eprintln!("  ok    Linux kernel is recent (built {d} days ago)"),
+        None => {}
+    }
+    for (cmd, pkg) in [("ip", "iproute2"), ("nft", "nftables"), ("setpriv", "util-linux"), ("prlimit", "util-linux"), ("unshare", "util-linux"), ("mke2fs", "e2fsprogs")] {
         check(has(cmd), &format!("{cmd}"), &format!("install {pkg}"));
     }
     if has("xdg-dbus-proxy") {

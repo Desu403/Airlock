@@ -207,6 +207,13 @@ impl RunDir {
         fs::create_dir(&path)?;
         fs::set_permissions(&path, fs::Permissions::from_mode(0o700))?;
         let mut uid = None;
+        if shift().is_none() && std::env::var_os("AIRLOCK_NO_UIDSHIFT").is_none() {
+            let _ = fs::remove_dir(&path);
+            bail!(
+                "VMs must run as a separate spare user, not as you, and this computer is not set up for that \
+                 (run `airlock doctor` for the one-line fix; AIRLOCK_NO_UIDSHIFT=1 overrides, with less isolation)"
+            );
+        }
         if let Some(s) = shift() {
             // A different spare uid per VM: concurrent VMs cannot signal or
             // reach each other. Only that uid is granted this directory.
@@ -337,7 +344,9 @@ pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<C
     let mut cmd = if let Some(uid) = run.uid {
         let uid = uid.to_string();
         let mut c = Command::new("unshare");
-        c.args(["--map-auto", "--setuid", &uid, "--setgid", &uid, "--", "bwrap"]);
+        // Few processes for the jail (it needs about ten). The count is per
+        // user, so it is set once running as the VM's own spare uid.
+        c.args(["--map-auto", "--setuid", &uid, "--setgid", &uid, "--", "prlimit", "--nproc=64", "--", "bwrap"]);
         c
     } else {
         Command::new("bwrap")
@@ -408,7 +417,8 @@ exec setpriv --bounding-set=-all --inh-caps=-all --no-new-privs -- {fc}
     }
     cmd.stdin(Stdio::null()).stdout(log_file.try_clone()?).stderr(log_file);
     let raw: Vec<i32> = fds.iter().map(|f: &fs::File| f.as_raw_fd()).collect();
-    // SAFETY: only async-signal-safe fcntl calls between fork and exec.
+    // SAFETY: only async-signal-safe calls (fcntl, setrlimit, setpriority)
+    // between fork and exec.
     unsafe {
         cmd.pre_exec(move || {
             for &fd in &raw {
@@ -416,6 +426,15 @@ exec setpriv --bounding-set=-all --inh-caps=-all --no-new-privs -- {fc}
                     return Err(std::io::Error::last_os_error());
                 }
             }
+            // Limits for everything in the jail (memory and CPUs are fixed by
+            // the VM's own size). No core dumps: they would hold guest memory,
+            // i.e. the document.
+            let limit = |res, n: u64| libc::setrlimit(res, &libc::rlimit { rlim_cur: n, rlim_max: n });
+            if limit(libc::RLIMIT_CORE, 0) != 0 || limit(libc::RLIMIT_NOFILE, 1024) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // Lower CPU priority: a busy VM never makes the desktop stutter.
+            libc::setpriority(libc::PRIO_PROCESS, 0, 10);
             Ok(())
         });
     }

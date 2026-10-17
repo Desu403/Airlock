@@ -241,6 +241,8 @@ struct Walk {
     /// (name, size, first bytes)
     embedded: Vec<(String, u64, Vec<u8>)>,
     features: Vec<String>,
+    /// (percent of the page, page, URI) of links covering much of a page
+    big_links: Vec<(u32, u32, String)>,
 }
 
 fn unhex(h: &str) -> Option<Vec<u8>> {
@@ -275,6 +277,10 @@ fn run_walker(pdf: &str, work: &str, out: &mut Vec<(Ind, String)>) -> Option<Wal
                 w.embedded.push((name, size.parse().unwrap_or(0), unhex(head).unwrap_or_default()));
             }
             ["@@FEAT", feat] => w.features.push(label(feat, 16)),
+            ["@@BIG", pct, page, uri] if w.big_links.len() < 20 => {
+                let uri = one_line(&utf16_to_utf8(&unhex(uri).unwrap_or_default()), 200);
+                w.big_links.push((pct.parse().unwrap_or(0).min(100), page.parse().unwrap_or(0), uri));
+            }
             _ => {}
         }
     }
@@ -347,9 +353,67 @@ fn report_walk(w: &Walk, out: &mut Vec<(Ind, String)>) {
         }
     }
     out.extend(links.into_iter().map(|u| (Ind::PdfUri, u)));
+    // Only web addresses: a big link to a file next to the PDF is no lure.
+    for (pct, page, uri) in w.big_links.iter().filter(|(_, _, u)| u.to_ascii_lowercase().starts_with("http")) {
+        let entry = (Ind::PdfLure, format!("a link covers {pct}% of page {page}: {uri}"));
+        if !out.contains(&entry) {
+            out.push(entry);
+        }
+    }
     for (name, size, head) in &w.embedded {
         let name = if name.is_empty() { "(unnamed)" } else { name.as_str() };
         out.push((Ind::PdfAttachment, format!("{name} ({size} bytes, {})", file_kind(name, head))));
+    }
+}
+
+/// What a run of bytes starts with, if it is a program or an archive.
+fn payload_kind(b: &[u8]) -> Option<&'static str> {
+    let magic: &[(&[u8], &str)] = &[
+        (b"MZ", "Windows program"),
+        (b"\x7fELF", "Linux program"),
+        (b"PK\x03\x04", "ZIP archive"),
+        (b"7z\xbc\xaf\x27\x1c", "7-Zip archive"),
+        (b"Rar!", "RAR archive"),
+        (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1", "Office/OLE file"),
+    ];
+    magic.iter().find(|(m, _)| b.starts_with(m)).map(|(_, k)| *k)
+}
+
+/// Readers start at "%PDF-" (up to 1 KB in) and stop at the last "%%EOF":
+/// whatever sits outside is invisible, and a classic hiding place. A PDF
+/// that is also a program or archive (a polyglot) is how droppers smuggle one.
+fn hidden_data(doc: &[u8], out: &mut Vec<(Ind, String)>) {
+    if let Some(pos) = doc[..doc.len().min(1024)].windows(5).position(|w| w == b"%PDF-") {
+        if pos > 0 {
+            if let Some(kind) = payload_kind(doc) {
+                out.push((Ind::HiddenData, format!("the file is also a {kind}: {pos} bytes come before the PDF begins (a polyglot)")));
+            }
+        }
+    }
+    let Some(eof) = doc.windows(5).rposition(|w| w == b"%%EOF") else { return };
+    let tail = &doc[eof + 5..];
+    let start = tail.iter().position(|b| !b" \t\r\n\x00".contains(b)).unwrap_or(tail.len());
+    let tail = &tail[start..];
+    // A ZIP's index at the end makes the same file a ZIP archive too.
+    if tail.windows(4).any(|w| w == b"PK\x05\x06" || w == b"PK\x01\x02") {
+        out.push((Ind::HiddenData, format!("{} bytes after the end of the PDF, containing a ZIP archive's index: the file is also a ZIP archive (a polyglot)", tail.len())));
+        return;
+    }
+    let lower: Vec<u8> = tail[..tail.len().min(4096)].to_ascii_lowercase();
+    if tail.len() > 64 && (lower.windows(5).any(|w| w == b"<html") || lower.windows(7).any(|w| w == b"<script")) {
+        out.push((Ind::HiddenData, format!("{} bytes after the end of the PDF, containing a web page: renamed to .html it becomes a page with scripts (a polyglot)", tail.len())));
+        return;
+    }
+    if tail.len() > 1024 {
+        // A payload may start right away or after some padding.
+        let kind = (0..tail.len().min(4096)).find_map(|i| payload_kind(&tail[i..]).filter(|k| !k.starts_with("Windows") || tail[i..].windows(4).take(1024).any(|w| w == b"PE\0\0")));
+        out.push((
+            Ind::HiddenData,
+            match kind {
+                Some(k) => format!("{} bytes after the end of the PDF, containing a {k} (a polyglot)", tail.len()),
+                None => format!("{} bytes after the end of the PDF that no reader shows", tail.len()),
+            },
+        ));
     }
 }
 
@@ -490,6 +554,8 @@ pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
     }
     let walked = walk.is_some();
     let walk = walk.unwrap_or_default();
+    // The original bytes: cleaning drops whatever sits outside the PDF.
+    hidden_data(raw, &mut out);
     if walked {
         report_walk(&walk, &mut out);
     } else {

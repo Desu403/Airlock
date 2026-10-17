@@ -127,6 +127,9 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         Ind::PdfJsClick => finding(Static, Low, "T1059.007 JavaScript", "JavaScript that only runs when you click or type", "Typical for interactive forms. Nothing runs by itself.", format!("JavaScript: {text}")),
         Ind::PdfJsForm => finding(Static, Info, "-", "Standard form-field scripts", "Fillable forms use Adobe's built-in functions to format numbers, dates and totals. Harmless.", text.to_string()),
         Ind::PdfUnreadable => finding(Static, Medium, "T1027 Obfuscated Files", if text.starts_with("password") { "Password protected" } else { "The PDF's structure could not be read" }, "Damaged or deliberately malformed files can hide things from scanners, so its contents could not be fully checked.", text.to_string()),
+        Ind::PdfLure => finding(Static, Medium, "T1566.002 Spearphishing Link", "The page is one big link", "Phishing PDFs show a picture of a document or a \"View\" button, and clicking almost anywhere opens a website, usually a fake login page. Real documents rarely do this.", text.to_string()),
+        Ind::HiddenData if text.contains("program") || text.contains("archive") || text.contains("Office/OLE") || text.contains("web page") => finding(Static, High, "T1027.009 Embedded Payloads", "Hides a program or archive inside the file", "The file is built to be two things at once: a document you can open and a hidden program or archive. Only done to smuggle malware past scanners.", text.to_string()),
+        Ind::HiddenData => finding(Static, Medium, "T1027 Obfuscated Files", "Hides data after the end of the document", "Readers stop at the document's end, so this part is invisible to you; a common place to smuggle a payload.", text.to_string()),
         Ind::PdfFeature => {
             let t = text.to_ascii_lowercase();
             let (title, why, sev, att) = if t.starts_with("encryption") {
@@ -150,8 +153,8 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         }
         Ind::PdfUri if text.starts_with("mailto:") => finding(Static, Info, "-", "Email link", "Clicking it opens your mail program.", format!("email link {text}")),
         Ind::PdfUri | Ind::OfficeLink if link_risk(text).is_some() => {
-            let (title, why) = link_risk(text).unwrap_or_default();
-            finding(Static, Medium, "T1566.002 Spearphishing Link", title, why, format!("link to {text}"))
+            let (sev, title, why) = link_risk(text).unwrap_or((Info, "", ""));
+            finding(Static, sev, "T1566.002 Spearphishing Link", title, why, format!("link to {text}"))
         }
         Ind::PdfUri => finding(Static, Info, "T1566.002 Spearphishing Link", "Link to a website", "An ordinary clickable link. Check where it really goes before clicking.", format!("link to {text}")),
         // Compressed object streams are how modern PDF writers save files.
@@ -250,12 +253,12 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
 /// Links of the kind phishing documents use: free web hosting and file
 /// storage that anyone can publish to anonymously, bare IP addresses,
 /// direct downloads of programs, Windows file shares. (title, explanation)
-fn link_risk(url: &str) -> Option<(&'static str, &'static str)> {
+fn link_risk(url: &str) -> Option<(Severity, &'static str, &'static str)> {
     let u = url.trim().to_ascii_lowercase();
     // \\server\share or file://server/share (file:///C:/... is this computer).
     let file_host = u.strip_prefix("file://").map(|r| r.split(['/', '\\']).next().unwrap_or(""));
     if u.starts_with("\\\\") || file_host.is_some_and(|h| !h.is_empty() && h != "localhost") {
-        return Some(("Links to a network file share", "On Windows, opening it can send your login details to whoever runs that server."));
+        return Some((Severity::Medium, "Links to a network file share", "On Windows, opening it can send your login details to whoever runs that server."));
     }
     let rest = u.split_once("://").map(|(_, r)| r)?;
     let host = rest.split(['/', '?', '#']).next().unwrap_or("").rsplit('@').next().unwrap_or("");
@@ -267,19 +270,35 @@ fn link_risk(url: &str) -> Option<(&'static str, &'static str)> {
         "herokuapp.com", "onrender.com", "replit.app", "replit.dev", "repl.co", "ngrok.io", "ngrok-free.app", "ngrok.app", "trycloudflare.com",
         "duckdns.org", "ddns.net", "000webhostapp.com", "surge.sh", "ipfs.io", "dweb.link", "cloudflare-ipfs.com", "fleek.co",
         "telegra.ph", "pastebin.com", "dropboxusercontent.com", "transfer.sh", "gofile.io", "files.catbox.moe", "cdn.discordapp.com",
+        "myqcloud.com", "pixeldrain.com", "filecloudtrial.com", "mediafire.com", "mega.nz", "file.io", "tmpfiles.org", "temp.sh", "filebin.net",
+        "sendspace.com", "anonfiles.com", "bayfiles.com", "zippyshare.com",
     ];
     let on = |d: &str| host == d || host.ends_with(&format!(".{d}"));
     // Amazon S3 buckets (not every amazonaws.com service).
     let s3 = host.ends_with(".amazonaws.com") && (host.starts_with("s3.") || host.starts_with("s3-") || host.contains(".s3.") || host.contains(".s3-"));
     if host.parse::<std::net::Ipv4Addr>().is_ok() || host.starts_with('[') {
-        return Some(("Link to a bare IP address", "Real organisations link to named websites; a raw number address is typical of malware servers."));
+        return Some((Severity::Medium, "Link to a bare IP address", "Real organisations link to named websites; a raw number address is typical of malware servers."));
     }
     let program = [".exe", ".msi", ".scr", ".hta", ".jse", ".vbs", ".vbe", ".wsf", ".bat", ".cmd", ".ps1", ".lnk", ".iso", ".img", ".vhd", ".vhdx", ".jar", ".appx", ".msix", ".one", ".cpl", ".dll"];
     if program.iter().any(|e| path.ends_with(e)) {
-        return Some(("Link downloads a program", "Clicking it would download something that runs as a program, not a document."));
+        return Some((Severity::Medium, "Link downloads a program", "Clicking it would download something that runs as a program, not a document."));
     }
-    if s3 || FREE_HOSTING.iter().any(|d| on(d)) {
+    // File drops on general sites: only their sharing paths.
+    let share = (on("supabase.co") && path.starts_with("/storage/"))
+        || (on("dropbox.com") && (path.starts_with("/scl/") || path.starts_with("/s/")))
+        || (on("4sync.com") && path.contains("download"));
+    if on("t.me") || on("telegram.me") {
+        return Some((Severity::Medium, "Link to a Telegram chat", "Scams and malware campaigns move victims to Telegram, where nobody moderates them. Real documents rarely link there."));
+    }
+    const SHORTENERS: &[&str] = &[
+        "bit.ly", "tinyurl.com", "is.gd", "cutt.ly", "rb.gy", "shorturl.at", "t.co", "ow.ly", "rebrand.ly", "surl.li", "urlgoal.com", "tiny.cc", "s.id", "shorturl.ae", "v.gd", "buff.ly",
+    ];
+    if SHORTENERS.iter().any(|d| on(d)) {
+        return Some((Severity::Low, "Short link hides where it goes", "You cannot see the real destination before clicking. Common in newsletters, and also in phishing."));
+    }
+    if s3 || share || FREE_HOSTING.iter().any(|d| on(d)) {
         return Some((
+            Severity::Medium,
             "Link to a free hosting or file-sharing site",
             "Anyone can publish there anonymously in minutes, so phishing documents use them for fake login and \"view document\" pages. Real companies rarely do.",
         ));
@@ -574,6 +593,10 @@ mod tests {
             "https://example.com/invoice.pdf.exe?x=1",
             "\\\\attacker\\share\\a.docx",
             "HTTPS://User@Evil.Workers.Dev:8443/a",
+            "https://fnvimoyvwkbxbmczlqus.supabase.co/storage/v1/object/public/a/b.html",
+            "https://www.dropbox.com/scl/fi/abc/file.pdf",
+            "https://t.me/OneRevealed",
+            "https://surl.li/yerloi",
             "file://fileserver/share/doc.pdf",
         ] {
             assert!(link_risk(risky).is_some(), "{risky}");
@@ -587,6 +610,8 @@ mod tests {
             "mailto:a@b.c",
             "https://example.com/setup-guide.pdf",
             "https://github.com/mozilla/pdf.js",
+            "https://www.dropbox.com/business",
+            "https://app.supabase.co/docs",
             "file:///C:/Users/me/report.pdf",
             "file://localhost/etc/x",
         ] {

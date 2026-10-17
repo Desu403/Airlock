@@ -200,6 +200,10 @@ pub enum Ind {
     PdfJsClick = 64,
     /// PDF: structure could not be read (password, damage, deliberate malformation).
     PdfUnreadable = 65,
+    /// PDF: a web link covering a large part of a page (phishing lure).
+    PdfLure = 66,
+    /// Data hidden after a document's end, or a file that is two formats at once.
+    HiddenData = 67,
 }
 
 impl Ind {
@@ -244,6 +248,8 @@ impl Ind {
             63 => PdfJsForm,
             64 => PdfJsClick,
             65 => PdfUnreadable,
+            66 => PdfLure,
+            67 => HiddenData,
             _ => return None,
         })
     }

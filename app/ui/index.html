@@ -8,12 +8,27 @@
   <script src="app.js" defer></script>
 </head>
 <body>
+  <div class="menu ctx" id="ctxmenu" role="menu" hidden>
+    <button role="menuitem" id="c-copy" data-doc>Copy <kbd>Ctrl+C</kbd></button>
+    <button role="menuitem" id="c-zin" data-doc>Zoom in <kbd>+</kbd></button>
+    <button role="menuitem" id="c-zout" data-doc>Zoom out <kbd>−</kbd></button>
+    <button role="menuitem" id="c-fit" data-doc>Fit width</button>
+    <hr data-doc>
+    <button role="menuitem" id="c-safe" data-doc>Save safe PDF copy <kbd>Ctrl+S</kbd></button>
+    <button role="menuitem" id="c-print" data-doc>Print <kbd>Ctrl+P</kbd></button>
+    <button role="menuitem" id="c-analyze" data-doc>Analyze for malware</button>
+    <hr data-doc>
+    <button role="menuitem" id="c-new">New window</button>
+    <button role="menuitem" id="c-close">Close this window <kbd>Ctrl+W</kbd></button>
+    <button role="menuitem" id="c-quit">Exit airlock (all windows) <kbd>Ctrl+Q</kbd></button>
+  </div>
   <header class="bar">
     <div class="menu-wrap" id="appwrap">
       <button class="brand" id="appbtn" aria-haspopup="menu" aria-expanded="false" title="airlock menu"><span class="logo" aria-hidden="true"></span>airlock</button>
       <div class="menu left" id="appmenu" role="menu" hidden>
         <button role="menuitem" id="m-new">New window</button>
         <button role="menuitem" id="m-tour">Guided tour</button>
+        <button role="menuitem" id="m-close">Close this window <kbd>Ctrl+W</kbd></button>
         <button role="menuitem" id="m-quit">Exit airlock (all windows) <kbd>Ctrl+Q</kbd></button>
       </div>
     </div>

@@ -215,6 +215,12 @@ fn quit_everything(app: tauri::AppHandle) {
     quit_all(&app);
 }
 
+/// "Close this window": its VM stops and its copy of the document is deleted.
+#[tauri::command]
+fn close_window(app: tauri::AppHandle) {
+    shutdown(&app);
+}
+
 #[tauri::command]
 fn new_window() -> bool {
     open_window(None)
@@ -662,6 +668,7 @@ fn main() {
             open_paths,
             reopen,
             quit_everything,
+            close_window,
             new_window,
             save_safe_copy,
             save_report,

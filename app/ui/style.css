@@ -276,6 +276,9 @@ label.check { display: flex; gap: 8px; align-items: center; font-size: 13px; col
 .menu button { border: 0; text-align: left; display: flex; justify-content: space-between; gap: 16px; }
 .menu button:hover { background: var(--seal-bg); }
 .menu kbd { color: var(--muted); font-size: 0.85em; }
+.menu.ctx { position: fixed; top: 0; right: auto; z-index: 60; min-width: 250px; }
+.menu.ctx button { white-space: nowrap; }
+.menu hr { border: 0; border-top: 1px solid var(--border); margin: 4px 2px; }
 
 /* ---- printing: only the pixels the VM drew ---- */
 #printout { display: none; }

@@ -6,6 +6,8 @@
 set -eu
 cd "$(dirname "$0")/.."
 . guest/lib.sh
+RULES_ZIP=$(ls vendor/dl/yara-forge-rules-*.zip 2>/dev/null | sort -V | tail -1)
+[ -n "$RULES_ZIP" ] || { echo "missing YARA rules in vendor/dl (run scripts/bootstrap.sh)" >&2; exit 1; }
 
 # 1. Build root with the Rust toolchain.
 ensure_buildroot cargo tar file
@@ -24,11 +26,20 @@ fakeroot_sh $B/guestroot '
     # Security fixes for the base system too, not only for what we add.
     apk upgrade --no-progress -q
     apk add --no-progress -q mupdf-tools quickjs \
-        python3 py3-oletools \
+        python3 py3-oletools yara \
         libreoffice-writer libreoffice-calc libreoffice-impress \
         font-liberation font-dejavu
     install -D -m 0644 -o 0 -g 0 /src/guest/office_triage.py /usr/lib/airlock/office_triage.py
     install -D -m 0644 -o 0 -g 0 /src/guest/pdf_scripts.js /usr/lib/airlock/pdf_scripts.js
+    install -D -m 0644 -o 0 -g 0 /src/guest/unpack.py /usr/lib/airlock/unpack.py
+    # Known-malware signatures (YARA-Forge rule package), compiled once here.
+    mkdir /tmp/rules && unzip -q /src/'"$RULES_ZIP"' -d /tmp/rules
+    set -- /tmp/rules/packages/*/*.yar
+    python3 -I /src/guest/yara_meta.py "$@" > /usr/lib/airlock/yara-meta.tsv
+    yarac -w "$@" /usr/lib/airlock/rules.yarc
+    chmod 0644 /usr/lib/airlock/yara-meta.tsv /usr/lib/airlock/rules.yarc
+    echo "rules $(basename '"$RULES_ZIP"' .zip) $(grep -c . /usr/lib/airlock/yara-meta.tsv)" > /src/'"$B"'/rootfs.rules.tmp
+    rm -rf /tmp/rules
     # Prebuilt font cache + LibreOffice profile: no first-run writes inside the
     # VM, and the autopsy can diff the per-run profile against this template.
     fc-cache -f >/dev/null 2>&1 || true
@@ -44,8 +55,8 @@ fakeroot_sh $B/guestroot '
 '
 rmdir $B/guestroot/src
 # What went into this image, and when (read by doctor and scripts/update.sh).
-{ echo "built $(date +%s)"; cat $B/rootfs.packages.tmp; } > $B/rootfs.info.new
-rm -f $B/rootfs.packages.tmp
+{ echo "built $(date +%s)"; cat $B/rootfs.rules.tmp $B/rootfs.packages.tmp; } > $B/rootfs.info.new
+rm -f $B/rootfs.packages.tmp $B/rootfs.rules.tmp
 # Pack from inside the fake root so every file is recorded as root:root.
 fakeroot_sh $B/buildroot 'tar -C /src/'"$B"'/guestroot --numeric-owner --owner=0 --group=0 -cf /src/'"$B"'/guestroot.tar .'
 

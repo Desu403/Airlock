@@ -13,6 +13,9 @@ KERNEL_VERSION=6.1.190
 KERNEL_SHA256=8aa50daca0412a3d0a61a87af3744f39773d40b3132635fb7bc9be652cdb7b0c
 # Firecracker's microvm guest config, from the same Firecracker release tag.
 FC_CONFIG_SHA256=153ca1b40f3312bfb40b7587b471ea548a915f98f480f0d0892a1537957a2147
+# Known-malware signatures: YARA-Forge's quality-tested "core" rule package.
+YARA_RULES_VERSION=20261011
+YARA_RULES_SHA256=bf0cc68e60df44bee4e9906713160889e7c2142b14621394860a45e629035147
 
 set -eu
 cd "$(dirname "$0")/.."
@@ -67,6 +70,9 @@ fetch "https://github.com/firecracker-microvm/firecracker/releases/download/$FC_
     "vendor/dl/firecracker-$FC_VERSION-x86_64.tgz" "$FC_SHA256"
 fetch "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/x86_64/alpine-minirootfs-$ALPINE_VERSION-x86_64.tar.gz" \
     "vendor/dl/alpine-minirootfs-$ALPINE_VERSION-x86_64.tar.gz" "$ALPINE_SHA256"
+rm -f $(ls vendor/dl/yara-forge-rules-core-*.zip 2>/dev/null | grep -v "core-$YARA_RULES_VERSION.zip") 2>/dev/null || true
+fetch "https://github.com/YARAHQ/yara-forge/releases/download/$YARA_RULES_VERSION/yara-forge-rules-core.zip" \
+    "vendor/dl/yara-forge-rules-core-$YARA_RULES_VERSION.zip" "$YARA_RULES_SHA256"
 # The kernel is only rebuilt when its inputs change (version, base config,
 # hardening fragment).
 KSTAMP="$KERNEL_VERSION $FC_CONFIG_SHA256 $(sha256sum guest/kernel-hardening.config | cut -c1-64)"

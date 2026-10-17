@@ -22,6 +22,8 @@ pub enum Source {
     Static,
     /// What the document's JavaScript did in the fake reader.
     Emulated,
+    /// YARA rules for known malware matched its bytes or unpacked insides.
+    Signature,
 }
 
 pub struct Finding {
@@ -124,6 +126,14 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         Ind::OfficeLink => (Source::Static, Info, "T1566.002 Spearphishing Link", format!("link to {text}")),
         Ind::OfficeContainer => (Source::Static, Low, "-", text.to_string()),
         Ind::OfficeError => (Source::Static, Info, "-", format!("triage: {text}")),
+        Ind::YaraHigh | Ind::YaraMedium | Ind::YaraLow => {
+            let sev = match ind {
+                Ind::YaraHigh => High,
+                Ind::YaraMedium => Medium,
+                _ => Low,
+            };
+            (Source::Signature, sev, "-", text.to_string())
+        }
         Ind::Exec => (Source::Monitor, High, "T1059 Command and Scripting Interpreter", format!("tried to run {text} (blocked)")),
         Ind::ProcessCreate => (Source::Monitor, High, "T1203 Exploitation for Client Execution", format!("tried to start a process: {text} (blocked)")),
         Ind::Socket => (Source::Monitor, Medium, "T1071 Application Layer Protocol", format!("opened a network socket ({text})")),
@@ -202,16 +212,18 @@ impl Report {
     }
 
     pub fn verdict(&self) -> (&'static str, &'static str) {
-        let behaviour = |sev| self.findings.iter().any(|f| f.source != Source::Static && f.severity >= sev);
+        let behaviour = |sev| self.findings.iter().any(|f| !matches!(f.source, Source::Static | Source::Signature) && f.severity >= sev);
         // Emulated = what it *would* do in a real reader: that is behaviour.
-        let static_sev = self.findings.iter().filter(|f| f.source == Source::Static).map(|f| f.severity).max();
+        let static_sev = self.findings.iter().filter(|f| matches!(f.source, Source::Static | Source::Signature)).map(|f| f.severity).max();
         let has = |att: &str| self.findings.iter().any(|f| f.source == Source::Static && f.severity == Severity::High && f.attack.starts_with(att));
         // Decisive static evidence: we never run macros, so these stand on their own.
-        let decisive = has("T1203") || has("T1564.007") || has("T1221") || (has("T1204.002") && has("T1059"));
+        let decisive = has("T1203") || has("T1564.007") || has("T1221") || (has("T1204.002") && has("T1059"))
+            // A rule written for a known malware family or exploit.
+            || self.findings.iter().any(|f| f.source == Source::Signature && f.severity == Severity::High);
         if behaviour(Severity::High) {
             ("MALICIOUS BEHAVIOUR", "the document actively tried things a document should never do")
         } else if decisive {
-            ("LIKELY MALICIOUS", "contains an auto-running payload or a known exploit technique (not executed here)")
+            ("LIKELY MALICIOUS", "contains an auto-running payload, a known exploit technique or known malware (not executed here)")
         } else if behaviour(Severity::Medium) || static_sev >= Some(Severity::Medium) {
             ("SUSPICIOUS", "risky features or odd behaviour, but no clear attack observed")
         } else {
@@ -226,6 +238,7 @@ impl Report {
             (Source::Outside, "Seen from OUTSIDE the VM (cannot be faked by the document)"),
             (Source::Monitor, "Seen by the in-VM monitor"),
             (Source::Emulated, "What its JavaScript does in a (fake) Adobe Reader"),
+            (Source::Signature, "Matches known malware (YARA rules)"),
             (Source::Static, "Static structure of the file"),
         ] {
             let items: Vec<_> = self.findings.iter().filter(|f| f.source == src).collect();

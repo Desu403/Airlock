@@ -59,6 +59,19 @@ able to touch the host, and *see* what it tries to do.
     2009-0927/1492/1493/4324).
 - **M3 — static triage / explainable risk report** (oletools, pcodedmp
   p-code vs source diff, pdfid, YARA) — runs *inside* a VM too
+- **YARA signatures** — done (`guest-agent/src/yara.rs`). YARA-Forge's
+  "core" package (pinned release + SHA-256, ~5,000 rules) is compiled into
+  the image at build time (`yarac`); `guest/yara_meta.py` keeps each rule's
+  score, description and author, since yara prints only names. Scanned, as
+  nobody under the monitor without network: the file, the decompressed PDF,
+  and for Office files every ZIP part, OLE stream, OLE package and macro's
+  source (`guest/unpack.py`, bounded; written to a tmpfs so the autopsy
+  only ever sees what the document left). The autopsy VM scans dropped
+  files too (selftest: a dropped EICAR file must be named). Severity from
+  the rule's score (>=75 high, decisive; 60-74 medium); technique rules
+  (`SUSP_`, `INDICATOR_`, `GEN_`, ...) are capped at medium. The larger
+  "extended" package was tried and rejected: it named a criminal group
+  (TA505) on two harmless Atomic Red Team files.
 - **M4 — Office documents** — done. Content sniffing (OLE2/OOXML/ODF/RTF,
   never the extension). Static: oletools inside the VM (VBA source, AutoExec,
   suspicious keywords, IOCs, **VBA stomping via pcodedmp**, XLM), external

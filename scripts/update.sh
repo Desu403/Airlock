@@ -4,7 +4,9 @@
 #    current security fixes, every time;
 #  - the guest kernel moves to the newest 6.1 LTS release (checksums signed
 #    by kernel.org, verified with GPG), Firecracker to its newest release,
-#    and the Alpine base to its newest point release (published checksums).
+#    and the Alpine base to its newest point release (published checksums);
+#  - the YARA malware signatures move to YARA-Forge's newest release (its
+#    published SHA-256 digest).
 # The working version is kept aside; the full regression suite must pass,
 # otherwise it is restored untouched. On success an installed copy
 # (scripts/install.sh) is updated too.
@@ -121,8 +123,16 @@ print(v[0] if v else "")')
 FCV=$(curl -fsS -m 30 https://api.github.com/repos/firecracker-microvm/firecracker/releases/latest | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["tag_name"])')
 AV=$(curl -fsS -m 30 "https://dl-cdn.alpinelinux.org/alpine/v$(pin ALPINE_VERSION | cut -d. -f1,2)/releases/x86_64/latest-releases.yaml" |
     sed -n 's/^ *file: alpine-minirootfs-\(.*\)-x86_64.tar.gz$/\1/p' | head -1)
+# Newest YARA-Forge rule package and its digest ("<tag> <sha256>").
+YARA_LATEST=$(curl -fsS -m 30 https://api.github.com/repos/YARAHQ/yara-forge/releases/latest | python3 -I -c '
+import json, sys
+r = json.load(sys.stdin)
+d = [a.get("digest") or "" for a in r["assets"] if a["name"] == "yara-forge-rules-core.zip"]
+if d and d[0].startswith("sha256:"):
+    print(r["tag_name"], d[0][7:])')
+YV=${YARA_LATEST%% *}
 STABLE=$(curl -fsS -m 30 https://alpinelinux.org/releases.json | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["latest_stable"].lstrip("v"))' || true)
-[ -n "$KV" ] && [ -n "$FCV" ] && [ -n "$AV" ] || die "could not read upstream versions"
+[ -n "$KV" ] && [ -n "$FCV" ] && [ -n "$AV" ] && [ -n "$YV" ] || die "could not read upstream versions"
 
 PKGS=$(outdated_packages) || die "could not read Alpine's package index"
 NPKG=$(printf '%s' "$PKGS" | grep -c . || true)
@@ -131,13 +141,14 @@ AGE=$(( ($(date +%s) - ${BUILT:-0}) / 86400 ))
 
 if [ "$MODE" = status ]; then
     avail=0
-    [ "$KV" = "$(pin KERNEL_VERSION)" ] && [ "$FCV" = "$(pin FC_VERSION)" ] && [ "$AV" = "$(pin ALPINE_VERSION)" ] && [ "$NPKG" = 0 ] || avail=1
+    [ "$KV" = "$(pin KERNEL_VERSION)" ] && [ "$FCV" = "$(pin FC_VERSION)" ] && [ "$AV" = "$(pin ALPINE_VERSION)" ] && [ "$YV" = "$(pin YARA_RULES_VERSION)" ] && [ "$NPKG" = 0 ] || avail=1
     {
         echo "checked=$(date +%s)"
         echo "available=$avail"
         echo "kernel=$(pin KERNEL_VERSION) $KV"
         echo "firecracker=$(pin FC_VERSION) $FCV"
         echo "alpine=$(pin ALPINE_VERSION) $AV"
+        echo "rules=$(pin YARA_RULES_VERSION) $YV"
         echo "image_age_days=$AGE"
         echo "packages=$NPKG"
         # The renderers first: they are what a document attacks.
@@ -155,6 +166,7 @@ show() { # name current latest
 show "guest kernel (6.1 LTS)" "$(pin KERNEL_VERSION)" "$KV"
 show "Firecracker" "$(pin FC_VERSION)" "$FCV"
 show "Alpine base" "$(pin ALPINE_VERSION)" "$AV"
+show "malware signatures (YARA-Forge)" "$(pin YARA_RULES_VERSION)" "$YV"
 if [ "$NPKG" = 0 ]; then
     echo "   guest packages: all current"
 else
@@ -204,6 +216,7 @@ cp "$INFO" "$PREV/rootfs.info" 2>/dev/null || true
 [ -z "${KSHA:-}" ] || { setpin KERNEL_VERSION "$KV"; setpin KERNEL_SHA256 "$KSHA"; }
 [ -z "${FSHA:-}" ] || { setpin FC_VERSION "$FCV"; setpin FC_SHA256 "$FSHA"; setpin FC_CONFIG_SHA256 "$CSHA"; }
 [ -z "${ASHA:-}" ] || { setpin ALPINE_VERSION "$AV"; setpin ALPINE_SHA256 "$ASHA"; }
+[ "$YV" = "$(pin YARA_RULES_VERSION)" ] || { setpin YARA_RULES_VERSION "$YV"; setpin YARA_RULES_SHA256 "${YARA_LATEST#* }"; }
 
 echo "==> Rebuilding and running the regression suite (log: $LOG)"
 if [ "$KIT" = 1 ]; then
@@ -227,7 +240,9 @@ if [ -f "$PREV/rootfs.info" ]; then
         new=$(grep "^$p-[0-9]" build/rootfs.info | head -1)
         [ "$old" = "$new" ] || echo "   $old -> $new"
     done
-    n=$(cat "$PREV/rootfs.info" build/rootfs.info | grep -v '^built' | sort | uniq -u | sed 's/-[0-9].*//' | sort -u | wc -l)
+    old=$(grep '^rules ' "$PREV/rootfs.info" | cut -d' ' -f2); new=$(grep '^rules ' build/rootfs.info | cut -d' ' -f2)
+    [ "$old" = "$new" ] || echo "   malware signatures: ${old:-none} -> $new"
+    n=$(cat "$PREV/rootfs.info" build/rootfs.info | grep -v '^built\|^rules ' | sort | uniq -u | sed 's/-[0-9].*//' | sort -u | wc -l)
     echo "   $n guest package(s) changed in total"
 fi
 if [ "$KIT" = 1 ]; then

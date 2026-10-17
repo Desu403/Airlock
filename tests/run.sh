@@ -50,7 +50,7 @@ check testdata/evil.pdf "MALICIOUS BEHAVIOUR" "app.launchURL(http://evil-cdn.exa
 check testdata/evil2.pdf "MALICIOUS BEHAVIOUR" "CVE-2008-2992" "shellcode pattern" "heap spray" "nLaunch=2" "gate.php"
 check testdata/office/harmless-clean.docx "$NONE"
 check testdata/office/harmless-clean.doc "$NONE"
-check testdata/office/follina-template.docx "LIKELY MALICIOUS" "CVE-2022-30190" "remote template injection"
+check testdata/office/follina-template.docx "LIKELY MALICIOUS" "CVE-2022-30190" "remote template injection" "(rule SIGNATURE_BASE_EXPL_CVE_2021_40444"
 check testdata/office/dde-test.docx "LIKELY MALICIOUS" "DDE field runs a command"
 check testdata/office/excel4_sample_macro.xls "SUSPICIOUS" "Excel 4.0 (XLM)"
 check testdata/office/embedded-simple-2007.docx "SUSPICIOUS" "oleObject1.bin"

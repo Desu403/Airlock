@@ -20,6 +20,7 @@ mod office;
 mod monitor;
 mod selftest;
 mod triage;
+mod yara;
 
 use airlock_proto::{sanitize_into, Error, Header, Ind, Kind, DOC_HEADER_LEN, DOC_MAGIC, FRAME_PORT, MAX_DIM, MAX_DOC_BYTES, MAX_PAGES, MAX_TEXT};
 use monitor::Net;
@@ -199,6 +200,9 @@ fn autopsy(out: &mut File) -> ! {
     if !mount("/dev/vdb", "/mnt", "ext4", ro, "") {
         fail(out, Error::Internal);
     }
+    if mount("tmpfs", "/run", "tmpfs", libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC, "size=16m,mode=0755") {
+        let _ = fs::create_dir_all(yara::SCRATCH);
+    }
     let found = autopsy::inspect("/mnt");
     log(&format!("autopsy: {} finding(s)", found.len()));
     send_indicators(out, &found);
@@ -248,6 +252,16 @@ fn main() {
         let t = CString::new("/tmp").unwrap();
         libc::chmod(t.as_ptr(), 0o1777);
     }
+    // Airlock's own unpacked copies for the YARA scan: in memory, so the
+    // autopsy (which inspects the scratch disk) sees only what the document
+    // and its renderers left behind.
+    if scratch && mount("tmpfs", "/run", "tmpfs", nosx, "size=256m,mode=0755") {
+        let _ = fs::create_dir_all(yara::SCRATCH);
+        unsafe {
+            let p = CString::new(yara::SCRATCH).unwrap();
+            libc::chown(p.as_ptr(), monitor::RENDER_UID, monitor::RENDER_GID);
+        }
+    }
     let net = if scratch { Net::AllowInet } else { Net::Deny };
 
     let doc = load_document().unwrap_or_else(|| fail(&mut out, Error::BadDocDisk));
@@ -276,6 +290,8 @@ fn main() {
             if scratch {
                 let t = triage::analyze(&doc, WORK, &doc_path);
                 send_indicators(&mut out, &t.indicators);
+                log("scanning with YARA");
+                send_indicators(&mut out, &yara::scan(WORK, &doc_path, Some(&format!("{WORK}/clean.pdf")), false));
                 if !t.scripts.is_empty() {
                     log(&format!("emulating {} script(s)", t.scripts.len()));
                     send_indicators(&mut out, &emulate::run(&t, WORK));
@@ -286,6 +302,8 @@ fn main() {
         office::Kind::Office(_) => {
             if scratch {
                 send_indicators(&mut out, &office::triage(&doc_path, WORK));
+                log("scanning with YARA");
+                send_indicators(&mut out, &yara::scan(WORK, &doc_path, None, true));
             }
             log("converting with LibreOffice");
             send_indicators(&mut out, &office::convert(&doc_path, WORK, net));

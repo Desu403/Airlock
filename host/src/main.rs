@@ -140,6 +140,7 @@ fn selftest(out_dir: PathBuf, verbose: bool) -> Result<()> {
         ("kernel attack surface blocked + logged", has("unshare()") && has("bpf()")),
         ("dropped ELF found by autopsy VM", has("stage2") && has("[Linux executable (ELF)]")),
         ("dropped script found by autopsy VM", has(".persist.sh")),
+        ("dropped file named by YARA (EICAR test file)", has("Malw_Eicar")),
     ];
     let mut failed = 0;
     eprintln!("selftest results:");
@@ -196,7 +197,13 @@ fn image_age(rootfs: &std::path::Path) {
     };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
     let days = now.saturating_sub(built) / 86_400;
-    let what = format!("MuPDF {}, LibreOffice {}", version("mupdf-tools"), version("libreoffice-common"));
+    let mut what = format!("MuPDF {}, LibreOffice {}", version("mupdf-tools"), version("libreoffice-common"));
+    // "rules yara-forge-rules-core-20261011 5140"
+    if let Some(r) = info.lines().find_map(|l| l.strip_prefix("rules ")) {
+        if let Some((pkg, n)) = r.split_once(' ') {
+            what += &format!(", {} YARA rules from {}", n.trim(), pkg.rsplit('-').next().unwrap_or(pkg));
+        }
+    }
     if days > MAX_DAYS {
         eprintln!("  warn  guest image is {days} days old ({what})\n        fix: scripts/update.sh (security fixes for the renderers, kernel and VMM)");
     } else {

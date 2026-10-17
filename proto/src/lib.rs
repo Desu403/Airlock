@@ -182,6 +182,12 @@ pub enum Ind {
     OfficeContainer = 41,
     /// Office: triage could not parse something.
     OfficeError = 42,
+    /// YARA: a known-malware rule matched (rule score >= 75).
+    YaraHigh = 50,
+    /// YARA: a rule for suspicious-but-not-conclusive traits (score 60-74).
+    YaraMedium = 51,
+    /// YARA: weak or generic rule.
+    YaraLow = 52,
 }
 
 impl Ind {
@@ -217,6 +223,9 @@ impl Ind {
             40 => OfficeLink,
             41 => OfficeContainer,
             42 => OfficeError,
+            50 => YaraHigh,
+            51 => YaraMedium,
+            52 => YaraLow,
             _ => return None,
         })
     }

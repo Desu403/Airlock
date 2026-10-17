@@ -41,7 +41,8 @@ fn kind_of(path: &Path) -> &'static str {
     }
 }
 
-fn walk(root: &Path, dir: &Path, out: &mut Vec<(Ind, String)>, budget: &mut usize) {
+/// `files`: regular files found, for the YARA scan (path, report name).
+fn walk(root: &Path, dir: &Path, out: &mut Vec<(Ind, String)>, files: &mut Vec<(String, String)>, budget: &mut usize) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         if *budget == 0 {
@@ -57,7 +58,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(Ind, String)>, budget: &mut usiz
                 out.push((Ind::FileDropped, format!("directory {rel}")));
             }
             if rel != "/lost+found" {
-                walk(root, &p, out, budget);
+                walk(root, &p, out, files, budget);
             }
             continue;
         }
@@ -89,6 +90,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(Ind, String)>, budget: &mut usiz
             let t = fs::read_link(&p).map(|t| t.display().to_string()).unwrap_or_default();
             format!("symlink {rel} -> {t}")
         } else if ft.is_file() {
+            files.push((p.display().to_string(), format!("dropped file {rel}")));
             format!("{rel} {}B [{}]{flags} sha256:{}", m.size(), kind_of(&p), sha256_hex(&p))
         } else {
             format!("special file {rel}{flags}")
@@ -102,6 +104,10 @@ pub fn inspect(mountpoint: &str) -> Vec<(Ind, String)> {
     let mut budget = 200;
     // Files can also land in the scratch root (= the analysis VM's /tmp).
     let root = Path::new(mountpoint);
-    walk(root, root, &mut out, &mut budget);
+    let mut files = Vec::new();
+    walk(root, root, &mut out, &mut files, &mut budget);
+    // Known-malware signatures over what was left behind: a dropped or
+    // downloaded program is where family rules actually apply.
+    out.extend(crate::yara::matches(&files, "/"));
     out
 }

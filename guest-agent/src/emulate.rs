@@ -69,6 +69,8 @@ pub fn run(t: &Triage, work: &str) -> Vec<(Ind, String)> {
         };
         let text = match current {
             Some(sc) if ind == Ind::JsCall && !sc.auto => format!("{cat}: (on user action: {}) {text}", sc.trigger),
+            // A script that never runs by itself failing says little.
+            Some(sc) if ind == Ind::JsError && !sc.auto => format!("(on user action: {}) {text}", sc.trigger),
             _ if ind == Ind::JsCall => format!("{cat}: {text}"),
             _ => text.to_string(),
         };

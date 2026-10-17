@@ -89,14 +89,27 @@ able to touch the host, and *see* what it tries to do.
   the MirrorBlast loader) was not treated as code execution. Real samples:
   `tests/malware-run.sh` (password zips, extracted to RAM one at a time).
 - **Corpus run** (`tests/fetch-pdfjs-corpus.sh` + `tests/corpus-run.sh`):
-  979 pdf.js test PDFs — 0 crashes, 0 errors, 0 MALICIOUS; 852 clean, 127
-  SUSPICIOUS, every one for a feature it really has (JavaScript, open
-  actions, embedded files, XFA, Flash, Launch). It found three false-alarm
-  sources, now fixed: scripts behind buttons were emulated as if they ran on
-  open (a tax form's help links -> MALICIOUS BEHAVIOUR; triggers now come
-  from the object graph via `guest/pdf_scripts.js`), any `#xx` in a name
-  counted as obfuscation (font names do that; now only escaped keywords),
-  and compressed object streams counted as hiding JavaScript (now Low).
+  979 pdf.js test PDFs — 0 crashes, 0 errors, 0 MALICIOUS. An earlier
+  version of this note said every SUSPICIOUS file had "a feature it really
+  has"; that was not checked file by file, and it was wrong: a real tutorial
+  PDF was flagged because screenshot pixels spelled "/AA". Since then:
+  - PDF features come from the object graph (`guest/pdf_walk.js`: every
+    action with its type and trigger, embedded files with their real type,
+    XFA/RichMedia/media/encryption), never from a byte search; the byte
+    scan is only a fallback for files MuPDF cannot read, and says so.
+  - Severity follows what an action does: navigation is not reported,
+    "open a website / send data / open another file" by itself is medium,
+    "start a program" is high, a Launch of a document is not a program;
+    attachments are rated by their first bytes.
+  - The fake reader runs scripts like Reader does (one global scope, `this`
+    = the document, Acrobat's AF* helpers and ADBE object, realistic form
+    fields), so ordinary form logic no longer ends in errors. A script that
+    runs on open and did nothing risky there (automatic behaviour only;
+    clicks are reported separately) is low, not medium.
+  - Every remaining SUSPICIOUS file was reviewed by hand: password
+    protected (cannot be checked), deliberately broken, renderer hangs,
+    real rich media, one script the emulator cannot run. Rule: a corpus
+    result is only called correct after looking at it.
 - **M5 — live interactive viewing** — done (`host/src/live.rs`,
   `guest-agent/src/live.rs`). The VM stays up (no NIC) and answers
   Render{page,dpi} / Search{query} / GetText{page} / GetLayout{page}. One

@@ -342,47 +342,11 @@ async fn save_safe_copy(app: tauri::AppHandle, state: State<'_, AppState>) -> R<
     .await
 }
 
-/// The report as plain text (what `airlock analyze` prints).
+/// The report as plain text (the host's own rendering, plus which file).
 fn report_text(j: &serde_json::Value) -> String {
-    let s = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
-    let mut t = format!("airlock report: {}
-{}
-
-", s(&j["verdict"]), s(&j["summary"]));
-    t += &format!("document: {}
-analyzed in: {:.1}s
-", s(&j["document"]), j["seconds"].as_f64().unwrap_or(0.0));
-    let empty = Vec::new();
-    let findings = j["findings"].as_array().unwrap_or(&empty);
-    for (src, title) in [
-        ("outside", "Seen from OUTSIDE the VM (cannot be faked by the document)"),
-        ("monitor", "Seen by the in-VM monitor"),
-        ("emulated", "What its JavaScript does in a (fake) Adobe Reader"),
-        ("signature", "Matches known malware (YARA rules)"),
-        ("static", "Static structure of the file"),
-    ] {
-        let items: Vec<_> = findings.iter().filter(|f| f["source"] == src).collect();
-        if items.is_empty() {
-            continue;
-        }
-        t += &format!("
-{title}:
-");
-        for f in items {
-            t += &format!("  [{:<6}] {}
-", s(&f["severity"]).to_uppercase(), s(&f["what"]));
-            if f["attack"] != "-" {
-                t += &format!("           ATT&CK {}
-", s(&f["attack"]));
-            }
-        }
-    }
-    if findings.is_empty() {
-        t += "
-(no findings)
-";
-    }
-    t
+    let body = j["text"].as_str().unwrap_or("");
+    let (first, rest) = body.split_once('\n').unwrap_or((body, ""));
+    format!("{first}\ndocument: {} (analyzed in {:.1}s)\n{rest}", j["document"].as_str().unwrap_or(""), j["seconds"].as_f64().unwrap_or(0.0))
 }
 
 #[tauri::command]

@@ -231,9 +231,212 @@ fn escaped_keywords(raw: &[u8]) -> (usize, Vec<String>) {
     (n, examples)
 }
 
-const SCRIPTS_JS: &str = "/usr/lib/airlock/pdf_scripts.js";
+const WALK_JS: &str = "/usr/lib/airlock/pdf_walk.js";
 
-/// Lines "@@JS\t<trigger>\t<0|1>\t<hex>" from pdf_scripts.js.
+#[derive(Default)]
+struct Walk {
+    scripts: Vec<Script>,
+    /// (trigger, automatic, action type, detail)
+    actions: Vec<(String, bool, String, String)>,
+    /// (name, size, first bytes)
+    embedded: Vec<(String, u64, Vec<u8>)>,
+    features: Vec<String>,
+}
+
+fn unhex(h: &str) -> Option<Vec<u8>> {
+    if h.len() % 2 != 0 {
+        return None;
+    }
+    (0..h.len()).step_by(2).map(|i| u8::from_str_radix(h.get(i..i + 2)?, 16).ok()).collect()
+}
+
+fn label(s: &str, max: usize) -> String {
+    s.chars().filter(|c| c.is_ascii_graphic() || *c == ' ').take(max).collect()
+}
+
+/// Runs guest/pdf_walk.js; None unless it got all the way through.
+fn run_walker(pdf: &str, work: &str, out: &mut Vec<(Ind, String)>) -> Option<Walk> {
+    let r = monitor::run(&["/usr/bin/mutool", "run", WALK_JS, pdf], work, &monitor::Opts::new(Net::Deny, Duration::from_secs(60)));
+    out.extend(r.events);
+    let text = String::from_utf8_lossy(r.stdout.as_deref()?).into_owned();
+    if !text.lines().any(|l| l == "@@DONE") {
+        return None;
+    }
+    let mut w = Walk { scripts: parse_scripts(text.as_bytes()), ..Default::default() };
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        match f[..] {
+            ["@@ACT", trigger, auto, kind, detail] if w.actions.len() < 256 => {
+                let detail = one_line(&utf16_to_utf8(&unhex(detail).unwrap_or_default()), 160);
+                w.actions.push((label(trigger, 80), auto == "1", label(kind, 32), detail));
+            }
+            ["@@EMB", name, size, head] if w.embedded.len() < 64 => {
+                let name = one_line(&utf16_to_utf8(&unhex(name).unwrap_or_default()), 100);
+                w.embedded.push((name, size.parse().unwrap_or(0), unhex(head).unwrap_or_default()));
+            }
+            ["@@FEAT", feat] => w.features.push(label(feat, 16)),
+            _ => {}
+        }
+    }
+    Some(w)
+}
+
+/// What an embedded file really is, from its first bytes (then its name).
+fn file_kind(name: &str, head: &[u8]) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let program_ext = ["js", "jse", "vbs", "vbe", "wsf", "hta", "bat", "cmd", "ps1", "lnk", "scr", "exe", "dll", "jar", "msi", "com", "pif", "cpl", "reg"];
+    if head.starts_with(b"MZ") {
+        "Windows program"
+    } else if head.starts_with(b"\x7fELF") {
+        "Linux program"
+    } else if head.starts_with(b"#!") {
+        "script"
+    } else if program_ext.contains(&ext.as_str()) {
+        "program or script (by its name)"
+    } else if head.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]) {
+        "Office document (older format; can carry macros)"
+    } else if head.starts_with(b"PK\x03\x04") {
+        if ["docx", "xlsx", "pptx", "docm", "xlsm", "pptm"].contains(&ext.as_str()) {
+            "Office document"
+        } else {
+            "ZIP archive"
+        }
+    } else if head.starts_with(b"%PDF") {
+        "PDF"
+    } else if head.starts_with(b"{\\rt") {
+        "RTF document"
+    } else if head.starts_with(b"\x89PNG") || head.starts_with(b"\xff\xd8\xff") || head.starts_with(b"GIF8") {
+        "image"
+    } else if head.iter().all(|c| c.is_ascii_graphic() || c.is_ascii_whitespace()) {
+        "text or XML"
+    } else {
+        "data"
+    }
+}
+
+/// Page navigation and display actions: nothing to report.
+const QUIET_ACTIONS: &[&str] = &["GoTo", "GoToDp", "Thread", "Trans", "SetOCGState", "Hide", "ResetForm", "GoTo3DView"];
+const QUIET_NAMED: &[&str] = &["NextPage", "PrevPage", "FirstPage", "LastPage", "GoBack", "GoForward", "FitPage", "FullScreen", "Find"];
+
+fn report_walk(w: &Walk, out: &mut Vec<(Ind, String)>) {
+    for f in &w.features {
+        out.push(match f.as_str() {
+            "Password" => (Ind::PdfUnreadable, "password protected: nothing in it can be checked (or shown) without the password".into()),
+            "Encrypt" => (Ind::PdfFeature, "encryption (usually just permissions such as \"no printing\")".into()),
+            "XFA" => (Ind::PdfFeature, "an XFA form (an older Adobe form technology; legitimate, but a past source of reader exploits)".into()),
+            "RichMedia" => (Ind::PdfFeature, "rich media / Flash content".into()),
+            "Media" => (Ind::PdfFeature, "embedded media (video or sound player)".into()),
+            _ => continue,
+        });
+    }
+    let mut links = Vec::new();
+    for (trigger, auto, kind, detail) in &w.actions {
+        if QUIET_ACTIONS.contains(&kind.as_str()) || (kind == "Named" && QUIET_NAMED.contains(&detail.as_str())) {
+            continue;
+        }
+        // Clicked web links are ordinary links.
+        if !auto && kind == "URI" {
+            if !detail.is_empty() && !links.contains(detail) && links.len() < 20 {
+                links.push(detail.clone());
+            }
+            continue;
+        }
+        let entry = (if *auto { Ind::PdfAutoAction } else { Ind::PdfClickAction }, format!("{kind}: {detail} [{trigger}]"));
+        if !out.contains(&entry) && out.len() < 200 {
+            out.push(entry);
+        }
+    }
+    out.extend(links.into_iter().map(|u| (Ind::PdfUri, u)));
+    for (name, size, head) in &w.embedded {
+        let name = if name.is_empty() { "(unnamed)" } else { name.as_str() };
+        out.push((Ind::PdfAttachment, format!("{name} ({size} bytes, {})", file_kind(name, head))));
+    }
+}
+
+/// Fallback when MuPDF cannot walk the document: name counts on the structure.
+fn byte_scan(doc: &[u8], st: &[u8], out: &mut Vec<(Ind, String)>) {
+    let js = count_name(st, b"/JavaScript") + count_name(st, b"/JS");
+    if js > 0 {
+        out.push((Ind::PdfFeature, format!("JavaScript ({js} places)")));
+    }
+    let features: &[(&[u8], &str)] = &[
+        (b"/OpenAction", "an action that runs on open (/OpenAction)"),
+        (b"/AA", "automatic actions (/AA)"),
+        (b"/Launch", "a Launch action that can start programs"),
+        (b"/SubmitForm", "a form that submits data (/SubmitForm)"),
+        (b"/ImportData", "an action that imports external data"),
+        (b"/EmbeddedFile", "an embedded file"),
+        (b"/RichMedia", "rich media / Flash"),
+        (b"/XFA", "an XFA form"),
+        (b"/GoToR", "a link that opens another document (/GoToR)"),
+        (b"/GoToE", "a link that opens an embedded document (/GoToE)"),
+    ];
+    for (name, label) in features {
+        let n = count_name(st, name);
+        if n > 0 {
+            out.push((Ind::PdfFeature, if n > 1 { format!("{label} x{n}") } else { label.to_string() }));
+        }
+    }
+    let mut uris = Vec::new();
+    let mut i = 0;
+    while let Some(p) = st[i..].windows(4).position(|w| w == b"/URI") {
+        let at = i + p + 4;
+        if let Some(v) = value_text(doc, &st[at..]) {
+            let u = one_line(&v, 200);
+            if !u.is_empty() && !uris.contains(&u) && uris.len() < 20 {
+                uris.push(u);
+            }
+        }
+        i = at;
+    }
+    out.extend(uris.into_iter().map(|u| (Ind::PdfUri, u)));
+}
+
+/// Only calls to Adobe's built-in form helpers (AFNumber_Format(2, 0, ...);
+/// AFSimple_Calculate("SUM", ...)): what every fillable form uses.
+fn standard_form_script(code: &[u8]) -> Option<Vec<String>> {
+    let text = String::from_utf8_lossy(code);
+    let mut names = Vec::new();
+    for stmt in text.split([';', '\n', '\r']).map(str::trim).filter(|s| !s.is_empty()) {
+        let open = stmt.find('(')?;
+        let name = stmt[..open].trim();
+        let ok = name.starts_with("AF") && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') && stmt.ends_with(')');
+        if !ok || stmt[open..].contains(['{', '}', '=']) {
+            return None;
+        }
+        names.push(name.to_string());
+    }
+    (!names.is_empty()).then_some(names)
+}
+
+fn report_scripts(scripts: &[Script], out: &mut Vec<(Ind, String)>) {
+    let (mut form, mut form_names) = (0, Vec::<String>::new());
+    let (mut shown_auto, mut shown_click) = (0, 0);
+    for js in scripts {
+        if let Some(names) = standard_form_script(&js.code) {
+            form += 1;
+            for n in names {
+                if !form_names.contains(&n) && form_names.len() < 6 {
+                    form_names.push(n);
+                }
+            }
+            continue;
+        }
+        let text = format!("[{}] {}", js.trigger, one_line(&js.code, 160));
+        if js.auto && shown_auto < 5 {
+            shown_auto += 1;
+            out.push((Ind::PdfJs, text));
+        } else if !js.auto && shown_click < 5 {
+            shown_click += 1;
+            out.push((Ind::PdfJsClick, text));
+        }
+    }
+    if form > 0 {
+        out.push((Ind::PdfJsForm, format!("{form} form-field script(s) that only use Adobe's standard formatting functions ({})", form_names.join(", "))));
+    }
+}
+
+/// Lines "@@JS\t<trigger>\t<0|1>\t<hex>" from pdf_walk.js.
 fn parse_scripts(out: &[u8]) -> Vec<Script> {
     let mut v: Vec<Script> = Vec::new();
     for line in String::from_utf8_lossy(out).lines() {
@@ -279,65 +482,41 @@ pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
     let doc: &[u8] = if clean.is_empty() { raw } else { &clean };
     let st = structure(doc);
 
-    let js = count_name(&st, b"/JavaScript") + count_name(&st, b"/JS");
-    if js > 0 {
-        out.push((Ind::PdfFeature, format!("JavaScript ({js} places)")));
+    // The PDF's real structure, read by MuPDF (in here, as nobody): every
+    // action with what triggers it, embedded files, risky features.
+    let mut walk = run_walker(doc_path, work, &mut out);
+    if walk.is_none() && !clean.is_empty() {
+        walk = run_walker(&clean_path, work, &mut out);
     }
-    let features: &[(&[u8], &str)] = &[
-        (b"/OpenAction", "an action that runs on open (/OpenAction)"),
-        (b"/AA", "automatic actions (/AA)"),
-        (b"/Launch", "a Launch action that can start programs"),
-        (b"/SubmitForm", "a form that submits data (/SubmitForm)"),
-        (b"/ImportData", "an action that imports external data"),
-        (b"/EmbeddedFile", "an embedded file"),
-        (b"/RichMedia", "rich media / Flash"),
-        (b"/XFA", "an XFA form"),
-        (b"/GoToR", "a link that opens another document (/GoToR)"),
-        (b"/GoToE", "a link that opens an embedded document (/GoToE)"),
-        (b"/Encrypt", "encryption"),
-    ];
-    for (name, label) in features {
-        let n = count_name(&st, name);
-        if n > 0 {
-            out.push((Ind::PdfFeature, if n > 1 { format!("{label} x{n}") } else { label.to_string() }));
-        }
+    let walked = walk.is_some();
+    let walk = walk.unwrap_or_default();
+    if walked {
+        report_walk(&walk, &mut out);
+    } else {
+        out.push((Ind::PdfUnreadable, "MuPDF could not read the document's structure (damaged, or malformed on purpose); a rough byte scan was used instead".into()));
+        byte_scan(doc, &st, &mut out);
     }
 
-    // Link targets.
-    let mut uris = Vec::new();
-    let mut i = 0;
-    while let Some(p) = st[i..].windows(4).position(|w| w == b"/URI") {
-        let at = i + p + 4;
-        if let Some(v) = value_text(doc, &st[at..]) {
-            let u = one_line(&v, 200);
-            if !u.is_empty() && !uris.contains(&u) && uris.len() < 20 {
-                uris.push(u);
-            }
-        }
-        i = at;
-    }
-    out.extend(uris.into_iter().map(|u| (Ind::PdfUri, u)));
-
-    // JavaScript with its triggers, from the object graph (MuPDF, in here);
-    // a byte scan backs it up so nothing it cannot place is skipped.
-    let src = if clean.is_empty() { doc_path } else { clean_path.as_str() };
-    let r = monitor::run(&["/usr/bin/mutool", "run", SCRIPTS_JS, src], work, &monitor::Opts::new(Net::Deny, Duration::from_secs(60)));
-    out.extend(r.events);
-    let walked = r.stdout.is_some();
-    let mut scripts = r.stdout.as_deref().map(parse_scripts).unwrap_or_default();
+    // Scripts the walk could not place (byte scan of the structure): they
+    // are not attached to anything a reader runs.
+    let mut scripts = walk.scripts;
     for v in values_of(doc, &st, b"/JS", 32, false) {
         let code = utf16_to_utf8(&v);
         let key = trimmed(&code);
         if key.is_empty() || scripts.iter().any(|s| trimmed(&s.code) == key) {
             continue;
         }
+        // Still-compressed or binary data under a /JS key is not a script
+        // (random bytes are ~12% control characters, text has next to none).
+        let control = key.iter().filter(|&&c| (c < 0x20 && !c.is_ascii_whitespace()) || c == 0x7f).count();
+        if control * 20 > key.len() {
+            continue;
+        }
         let (trigger, auto) = if walked { ("not attached to any trigger", false) } else { ("unknown trigger", true) };
         scripts.push(Script { trigger: trigger.into(), auto, code });
     }
     scripts.sort_by_key(|s| !s.auto);
-    for js in scripts.iter().take(5) {
-        out.push((Ind::PdfJs, format!("[{}] {}", js.trigger, one_line(&js.code, 160))));
-    }
+    report_scripts(&scripts, &mut out);
     let info = ["Title", "Author", "Subject", "Keywords", "Creator", "Producer"]
         .into_iter()
         .filter_map(|k| values_of(doc, &st, format!("/{k}").as_bytes(), 1, false).pop().map(|v| (k, v)))

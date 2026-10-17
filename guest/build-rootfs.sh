@@ -30,7 +30,7 @@ fakeroot_sh $B/guestroot '
         libreoffice-writer libreoffice-calc libreoffice-impress \
         font-liberation font-dejavu
     install -D -m 0644 -o 0 -g 0 /src/guest/office_triage.py /usr/lib/airlock/office_triage.py
-    install -D -m 0644 -o 0 -g 0 /src/guest/pdf_scripts.js /usr/lib/airlock/pdf_scripts.js
+    install -D -m 0644 -o 0 -g 0 /src/guest/pdf_walk.js /usr/lib/airlock/pdf_walk.js
     install -D -m 0644 -o 0 -g 0 /src/guest/unpack.py /usr/lib/airlock/unpack.py
     # Known-malware signatures (YARA-Forge rule package), compiled once here.
     mkdir /tmp/rules && unzip -q /src/'"$RULES_ZIP"' -d /tmp/rules

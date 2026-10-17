@@ -468,31 +468,63 @@ async function showText() {
   }
 }
 
-const SOURCE_TITLES = {
-  outside: "Seen from outside the VM — cannot be faked by the document",
-  monitor: "Seen by the in-VM monitor",
-  emulated: "What its JavaScript does in a (fake) Adobe Reader",
-  signature: "Matches known malware (YARA rules)",
-  static: "Static structure of the file",
-};
-
+// Plain language first (title, why it matters); the evidence, who saw it
+// and the ATT&CK technique are one click away under each finding.
 function renderReport(body, report, title) {
   const v = report.verdict;
   const cls = v.startsWith("MALICIOUS") || v.startsWith("LIKELY") ? "malicious" : v.startsWith("SUSPICIOUS") ? "suspicious" : "clean";
   const box = el("div", `verdict ${cls}`);
-  box.append(el("h3", "", v), el("p", "", report.summary));
+  box.append(el("div", "label", v), el("h3", "", report.headline || v));
+  const advice = el("div", "advice");
+  advice.append(el("strong", "", "What to do"), el("p", "", report.advice || report.summary));
+  box.append(advice);
   const nodes = [box];
   if (title) nodes.push(el("p", "note", title));
-  for (const src of ["outside", "monitor", "emulated", "signature", "static"]) {
-    const items = report.findings.filter((f) => f.source === src);
-    if (!items.length) continue;
-    nodes.push(el("div", "source", SOURCE_TITLES[src]));
-    for (const f of items) {
-      const row = el("div", "finding");
-      row.append(el("span", `sev ${f.severity}`, f.severity === "medium" ? "med" : f.severity), el("span", "what", f.what));
-      if (f.attack && f.attack !== "-") row.append(el("span", "attack", `ATT&CK ${f.attack}`));
-      nodes.push(row);
+
+  const important = report.findings.filter((f) => f.severity !== "info");
+  const notes = report.findings.filter((f) => f.severity === "info");
+  if (important.length) {
+    const kinds = (s) => new Set(important.filter((f) => f.severity === s).map((f) => f.title + f.source)).size;
+    const counts = ["high", "medium", "low"].map((s) => [s, kinds(s)]).filter(([, n]) => n);
+    const row = el("div", "counts");
+    for (const [s, n] of counts) row.append(el("span", `sev ${s}`, `${n} ${s === "medium" ? "medium" : s}`));
+    nodes.push(el("h4", "section", "What we found"), row);
+  }
+  // One card per kind of finding; every piece of evidence inside it.
+  const groups = [];
+  for (const f of important) {
+    const g = groups.find((x) => x.f.title === f.title && x.f.severity === f.severity && x.f.source === f.source);
+    if (g) g.all.push(f); else groups.push({ f, all: [f] });
+  }
+  for (const { f, all } of groups) {
+    const card = el("div", `finding ${f.severity}`);
+    const head = el("div", "f-head");
+    head.append(el("span", `sev ${f.severity}`, f.severity === "medium" ? "med" : f.severity), el("span", "f-title", f.title || f.what));
+    if (all.length > 1) head.append(el("span", "f-count", `×${all.length}`));
+    card.append(head);
+    if (f.explain) card.append(el("p", "f-explain", f.explain));
+    const more = el("details", "tech");
+    more.append(el("summary", "", "Technical details"));
+    const dl = el("dl");
+    const row = (k, val) => { if (val && val !== "-") dl.append(el("dt", "", k), el("dd", "", val)); };
+    all.forEach((e, i) => row(i ? "" : "Evidence", e.what));
+    row("Seen by", f.seen_by);
+    row("ATT&CK", f.attack);
+    more.append(dl);
+    card.append(more);
+    nodes.push(card);
+  }
+  if (notes.length) {
+    const d = el("details", "notes");
+    d.append(el("summary", "", `Also noted · ${notes.length} harmless on ${notes.length > 1 ? "their" : "its"} own`));
+    const ul = el("ul");
+    for (const f of notes) {
+      const li = el("li");
+      li.append(el("strong", "", f.title || ""), el("span", "", ` ${f.what}`));
+      ul.append(li);
     }
+    d.append(ul);
+    nodes.push(d);
   }
   if (!report.findings.length) nodes.push(el("p", "note", "No findings."));
   body.replaceChildren(...nodes);

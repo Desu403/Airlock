@@ -193,6 +193,8 @@ function setupDocument(info) {
   closePanel();
 
   $("docname").textContent = info.name;
+  $("seal").classList.remove("stopped");
+  $("seal").querySelector(".label").textContent = "Sealed · microVM · no network";
   for (const id of ["doc", "searchbox", "zoombox", "savewrap", "pixels", "analyze"]) $(id).hidden = false;
   $("textbtn").hidden = state.pixelsOnly;
   $("empty").hidden = true;
@@ -267,7 +269,7 @@ async function pump() {
         p.key = dpi;
         p.el.classList.remove("loading");
       } catch (e) {
-        status(`Page ${i + 1}: ${e}`, true);
+        if (!vmStopped(e)) status(`Page ${i + 1}: ${e}`, true);
         break;
       }
       if (!p.textState && !state.pixelsOnly) await loadTextLayer(p, i);
@@ -290,7 +292,7 @@ async function loadTextLayer(p, i) {
     lines = await invoke("page_lines", { page: i });
   } catch (e) {
     p.textState = null;
-    status(`Page ${i + 1} text: ${e}`, true);
+    if (!vmStopped(e)) status(`Page ${i + 1} text: ${e}`, true);
     return;
   }
   const spans = [];
@@ -396,8 +398,33 @@ async function runSearch() {
     drawHighlights();
     showHit();
   } catch (e) {
-    status(`Search failed: ${e}`, true);
+    if (!vmStopped(e)) status(`Search failed: ${e}`, true);
   }
+}
+
+// The document's VM is gone (it stopped, or was shut down as hostile):
+// say so plainly and offer a fresh one. Why is in ~/.local/state/airlock/app.log.
+function vmStopped(e) {
+  const msg = String(e);
+  const stopped = msg.startsWith("the document's VM stopped");
+  const hostile = msg.startsWith("protocol violation");
+  if (!stopped && !hostile) return false;
+  status(hostile ? "The document's VM broke airlock's rules and was shut down" : "The document's VM stopped", true);
+  $("seal").classList.add("stopped");
+  $("seal").querySelector(".label").textContent = "VM stopped · nothing is running";
+  notify(
+    hostile ? "VM shut down for safety" : "This document's VM stopped",
+    hostile
+      ? "The VM showing this document broke airlock's rules (what an exploit looks like from outside), so it was destroyed. Run Analyze for details. Reopening starts a new, clean VM."
+      : "The disposable VM showing this document is no longer running, so pages, search and text are unavailable. Reopening starts a new one in a second.",
+    [["Reopen", reopenDocument], ["Close", hideToast]],
+  );
+  return true;
+}
+
+function reopenDocument() {
+  hideToast();
+  openWith(invoke("reopen"), $("docname").textContent || "the document");
 }
 
 function drawHighlights() {
@@ -802,6 +829,9 @@ async function runDemo() {
   for (const step of script.split(";")) {
     const [cmd, arg] = step.split("=");
     if (cmd === "search") { $("q").value = arg; await runSearch(); }
+    if (cmd === "open") openPaths([arg]);
+    if (cmd === "reopen") await reopenDocument();
+    if (cmd === "wait") await new Promise((r) => setTimeout(r, Number(arg) || 0));
     if (cmd === "text") await showText();
     if (cmd === "reveal") {
       // Paint the invisible text layer red to check its alignment.

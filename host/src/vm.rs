@@ -413,9 +413,35 @@ exec setpriv --bounding-set=-all --inh-caps=-all --no-new-privs -- {fc}
             Ok(())
         });
     }
-    let child = cmd.spawn().context("starting bwrap/firecracker")?;
+    let child = spawn_from_keeper(cmd).context("starting bwrap/firecracker")?;
     drop(fds);
     Ok(child)
+}
+
+/// bwrap --die-with-parent ties the VM to the *thread* that started it
+/// (PR_SET_PDEATHSIG): started from a short-lived worker thread (the app's
+/// blocking pool retires idle threads after seconds), the VM was killed
+/// mid-viewing. Every VM is therefore started from one thread that lives as
+/// long as the process: VMs still die with airlock, never before.
+fn spawn_from_keeper(cmd: Command) -> std::io::Result<std::process::Child> {
+    use std::sync::{mpsc, Mutex, OnceLock};
+    type Job = (Command, mpsc::Sender<std::io::Result<std::process::Child>>);
+    static KEEPER: OnceLock<Mutex<mpsc::Sender<Job>>> = OnceLock::new();
+    let keeper = KEEPER.get_or_init(|| {
+        let (tx, rx) = mpsc::channel::<Job>();
+        std::thread::Builder::new()
+            .name("airlock-vm-keeper".into())
+            .spawn(move || {
+                for (mut cmd, reply) in rx {
+                    let _ = reply.send(cmd.spawn());
+                }
+            })
+            .expect("starting the VM keeper thread");
+        Mutex::new(tx)
+    });
+    let (reply, result) = mpsc::channel();
+    keeper.lock().unwrap().send((cmd, reply)).map_err(|_| std::io::Error::other("VM keeper thread is gone"))?;
+    result.recv().map_err(|_| std::io::Error::other("VM keeper thread is gone"))?
 }
 
 /// Opens `src` for the sandbox to inherit; returns its path inside.

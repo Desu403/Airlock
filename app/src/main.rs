@@ -63,7 +63,31 @@ struct HitOut {
 type R<T> = Result<T, String>;
 
 fn err(e: impl std::fmt::Display) -> String {
-    format!("{e:#}")
+    let s = format!("{e:#}");
+    if s.starts_with(airlock_core::live::VM_STOPPED) || s.starts_with("protocol violation") {
+        log_event(&s);
+    }
+    s
+}
+
+/// A small log of things worth knowing afterwards (why a VM stopped):
+/// $XDG_STATE_HOME/airlock/app.log, restarted when over 1 MB.
+fn log_event(msg: &str) {
+    use std::io::Write;
+    let dir = std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+        .map(|d| d.join("airlock"));
+    let Some(dir) = dir else { return };
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("app.log");
+    if std::fs::metadata(&path).is_ok_and(|m| m.len() > 1 << 20) {
+        let _ = std::fs::remove_file(&path);
+    }
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "{secs} pid {} {}", std::process::id(), text::sanitize_line(msg.as_bytes()));
+    }
 }
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> R<T> + Send + 'static) -> R<T> {
@@ -93,11 +117,16 @@ fn open_impl(doc: Arc<Mutex<Option<Doc>>>, chosen: Arc<Mutex<Option<(String, Arc
     // File names are attacker-chosen too ("invoice\u{202E}fdp.exe").
     let name = path.file_name().map(|n| text::sanitize_line(n.as_encoded_bytes())).unwrap_or_default();
     *chosen.lock().unwrap() = Some((name.clone(), bytes.clone()));
+    open_bytes(doc, name, &bytes)
+}
+
+/// Boots a fresh VM for the document (closing this window's previous one).
+fn open_bytes(doc: Arc<Mutex<Option<Doc>>>, name: String, bytes: &[u8]) -> R<OpenInfo> {
     // Close the previous VM before booting a new one.
     if let Some(old) = doc.lock().unwrap().take() {
         old.session.close();
     }
-    let session = LiveSession::open(&bytes).map_err(open_error)?;
+    let session = LiveSession::open(bytes).map_err(open_error)?;
     let info = OpenInfo {
         name,
         pages: session.pages.iter().map(|p| [p.width, p.height]).collect(),
@@ -122,7 +151,22 @@ fn open_elsewhere(paths: &[PathBuf]) -> usize {
     paths
         .iter()
         .filter(|p| {
-            std::process::Command::new(&exe).arg(p).stdin(std::process::Stdio::null()).spawn().is_ok()
+            let child = std::process::Command::new(&exe)
+                .arg(p)
+                .stdin(std::process::Stdio::null())
+                // Test hooks are for this window only.
+                .env_remove("AIRLOCK_DEMO")
+                .env_remove("AIRLOCK_TEST_SAVE_DIR")
+                .env_remove("AIRLOCK_TEST_SAVE_NAME")
+                .spawn();
+            match child {
+                // Collect its exit status when it closes (no zombie left behind).
+                Ok(mut c) => {
+                    std::thread::spawn(move || c.wait());
+                    true
+                }
+                Err(_) => false,
+            }
         })
         .count()
 }
@@ -151,6 +195,17 @@ async fn pick_and_open(app: tauri::AppHandle, state: State<'_, AppState>) -> R<O
             .unwrap_or_default();
         let paths = picked.into_iter().filter_map(|p| p.into_path().ok()).collect();
         open_many(doc, chosen, paths)
+    })
+    .await
+}
+
+/// A new VM for the same document (after its VM stopped).
+#[tauri::command]
+async fn reopen(state: State<'_, AppState>) -> R<OpenInfo> {
+    let (doc, chosen) = (state.doc.clone(), state.chosen.clone());
+    blocking(move || {
+        let (name, bytes) = chosen.lock().unwrap().clone().ok_or("no document chosen")?;
+        open_bytes(doc, name, &bytes)
     })
     .await
 }
@@ -574,6 +629,7 @@ fn main() {
             pick_and_open,
             open_path,
             open_paths,
+            reopen,
             save_safe_copy,
             save_report,
             initial_path,

@@ -110,6 +110,8 @@ kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--border); borde
   padding: 3px 10px; border-radius: 999px; white-space: nowrap;
 }
 .seal .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--seal); box-shadow: 0 0 0 3px color-mix(in srgb, var(--seal) 25%, transparent); }
+.seal.stopped { background: var(--info-bg); color: var(--info); }
+.seal.stopped .dot { background: var(--info); box-shadow: none; }
 .spacer { flex: 1; }
 .group { display: flex; align-items: center; gap: 4px; }
 .search input {

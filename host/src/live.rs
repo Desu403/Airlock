@@ -12,6 +12,8 @@ use std::time::{Duration, Instant};
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(150);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Start of the error when the document's VM is no longer running.
+pub const VM_STOPPED: &str = "the document's VM stopped";
 
 pub struct PageSize {
     /// Points.
@@ -44,7 +46,7 @@ enum Msg {
 }
 
 pub struct LiveSession {
-    _run: vm::RunDir,
+    run: vm::RunDir,
     child: std::process::Child,
     stream: UnixStream,
     pub pages: Vec<PageSize>,
@@ -80,7 +82,7 @@ impl LiveSession {
         stream.set_nonblocking(false)?;
         // Opening includes Office conversion, which can take a while.
         stream.set_read_timeout(Some(BOOT_TIMEOUT))?;
-        let mut s = LiveSession { _run: run, child, stream, pages: Vec::new(), indicators: Vec::new(), boot_time: Duration::ZERO };
+        let mut s = LiveSession { run, child, stream, pages: Vec::new(), indicators: Vec::new(), boot_time: Duration::ZERO };
 
         let count = match s.next()? {
             Msg::Hello(n) => n,
@@ -102,11 +104,29 @@ impl LiveSession {
         anyhow!("protocol violation: {what} — VM killed, guest treated as hostile")
     }
 
+    /// Whether the VM is still running.
+    pub fn alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// An I/O error on the stream: if the VM is gone, say so and why (exit
+    /// status and the last lines of its console), for the log.
+    fn io_error(&mut self, e: anyhow::Error) -> anyhow::Error {
+        std::thread::sleep(Duration::from_millis(50));
+        match self.child.try_wait() {
+            Ok(Some(status)) => {
+                let console = std::fs::read_to_string(self.run.path.join("console.log")).unwrap_or_default();
+                let tail: Vec<&str> = console.lines().rev().take(3).collect();
+                anyhow!("{VM_STOPPED} ({status}; last console lines: {})", tail.into_iter().rev().collect::<Vec<_>>().join(" | "))
+            }
+            _ => e,
+        }
+    }
+
     fn send(&mut self, cmd: Cmd, a: u32, b: u32, payload: &[u8]) -> Result<()> {
         let h = Header { kind: cmd as u32, a, b, c: 0, len: payload.len() as u32 };
-        self.stream.write_all(&h.encode())?;
-        self.stream.write_all(payload)?;
-        Ok(())
+        let r = self.stream.write_all(&h.encode()).and_then(|_| self.stream.write_all(payload));
+        r.map_err(|e| self.io_error(e.into()))
     }
 
     /// Reads one message; indicators are collected on the side.
@@ -114,7 +134,7 @@ impl LiveSession {
         match read_msg(&mut self.stream, &mut self.indicators) {
             Ok(m) => Ok(m),
             Err(Bad::Hostile(what)) => Err(self.hostile(what)),
-            Err(Bad::Other(e)) => Err(e),
+            Err(Bad::Other(e)) => Err(self.io_error(e)),
         }
     }
 

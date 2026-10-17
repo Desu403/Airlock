@@ -189,8 +189,9 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         Ind::OfficeSuspicious => {
             let k = text.to_ascii_lowercase();
             let dangerous = [
-                // ("Run" is not here: Application.Run just calls another macro.)
-                "shell", "urldownloadtofile", "powershell", "createprocess", "exec", "wscript", "mshta", "certutil", "regsvr32", "rundll32",
+                // "Run" is also Application.Run (calls another macro), but the
+                // verdict needs an automatic macro too before it calls it an attack.
+                "shell", "urldownloadtofile", "powershell", "createprocess", "run", "exec", "wscript", "mshta", "certutil", "regsvr32", "rundll32",
                 // script-host execution (see EXEC_PRIMITIVES in guest/office_triage.py)
                 "scriptcontrol", "addcode", "callbyname", "macscript",
             ]

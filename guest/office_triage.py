@@ -264,12 +264,21 @@ def equation_problem(st):
     cb_hdr, version = struct.unpack_from("<HI", st, 0)
     if cb_hdr != 0x1C or version not in (0x00020000, 0x00010000):
         return f"a malformed formula header (size {cb_hdr}, version {version:#x})"
-    mtef = st[cb_hdr:]
+    return mtef_problem(st[cb_hdr:])
+
+
+def mtef_problem(mtef):
+    """The formula data itself: [MTEF] header (version, platform 0/1,
+    product 0/1), then records, checked for the font-name overflow."""
+    if len(mtef) < 5:
+        return "a truncated formula"
     # MTEF 4 and 5 are MathType's: Equation Editor 3 never parses them.
     if mtef[0] in (4, 5):
         return None
     if mtef[0] not in (2, 3):
         return f"an unknown formula format (MTEF version {mtef[0]})"
+    if mtef[1] > 1 or mtef[2] > 1:
+        return f"an invalid formula header (platform {mtef[1]}, product {mtef[2]})"
     # FONT records carry the font name, NUL-terminated. Look for every
     # FONT tag that is followed by a name-like run; a real name is short.
     for i in range(5, min(len(mtef), 4096)):
@@ -295,14 +304,47 @@ def ole_objects(data, where):
     except Exception:
         return
     try:
-        eq_streams = [p for p in ole.listdir(streams=True)[:5000] if p[-1].lower() == "equation native"]
-        if eq_streams or any(e is not None and (e.clsid or "").upper() in EQUATION_CLSIDS for e in ole.direntries[:5000]):
-            # Every formula made before 2018 is an Equation Editor object;
-            # only a malformed one is the exploit.
-            problems = [equation_problem(ole.openstream(p).read(1 << 20)) for p in eq_streams]
-            bad = [x for x in problems if x]
-            if bad:
-                emit("EXPLOIT", f"Equation Editor object{where} with {bad[0]} - exploit for CVE-2017-11882 / CVE-2018-0802")
+        streams = ole.listdir(streams=True)[:5000]
+        # Every formula made before 2018 is an Equation Editor object; only
+        # a malformed one is the exploit.
+        eq_streams = [p for p in streams if p[-1].lower() == "equation native"]
+        bad = [x for x in (equation_problem(ole.openstream(p).read(1 << 20)) for p in eq_streams) if x]
+        if bad:
+            emit("EXPLOIT", f"Equation Editor object{where} with {bad[0]} - exploit for CVE-2017-11882 / CVE-2018-0802")
+        else:
+            # Each Equation Editor storage on its own (a workbook can hold a
+            # formula and, separately, an attached file): a real formula keeps
+            # its data in "Equation Native"; exploit kits ship the payload in
+            # an Ole10Native stream of the same object instead.
+            seen, todo = 0, [ole.root]
+            while todo and seen < 5000:
+                e = todo.pop()
+                seen += 1
+                kids = [k for k in (getattr(e, "kids", None) or []) if k is not None]
+                todo.extend(kids)
+                if (e.clsid or "").upper() not in EQUATION_CLSIDS:
+                    continue
+                names = {k.name.lower(): k for k in kids}
+                if "equation native" not in names and "\x01ole10native" in names:
+                    # Older (OLE 1) formulas keep the same header + MTEF in an
+                    # Ole10Native stream after a 4-byte size: check that instead.
+                    k = names["\x01ole10native"]
+                    native = ole._open(k.isectStart, k.size).read(1 << 20) if k.size else b""
+                    # Ole10Native: a 4-byte size, then the formula (OLE 1
+                    # objects: plain MTEF; or the full header + MTEF).
+                    declared = struct.unpack_from("<I", native)[0] if len(native) >= 4 else 0
+                    data = native[4:]
+                    if len(native) < 9:
+                        problem = "an empty formula"
+                    elif declared > k.size:
+                        problem = f"a declared size of {declared} bytes in a {k.size}-byte stream"
+                    elif data[:2] == b"\x1c\x00":
+                        problem = equation_problem(data)
+                    else:
+                        problem = mtef_problem(data)
+                    if problem:
+                        emit("EXPLOIT", f"Equation Editor object{where} with {problem} (in its Ole10Native stream) - exploit for CVE-2017-11882 / CVE-2018-0802")
+                        break
         for p in ole.listdir(streams=True)[:5000]:
             if p[-1] != "\x01Ole":
                 continue
@@ -459,6 +501,7 @@ def rtf_structure(data, objects, where=""):
 
 
 def rtf(data, where=""):
+    rtf_data = data
     rtf_structure(data, 0, where)
     try:
         from oletools.rtfobj import RtfObjParser
@@ -472,7 +515,11 @@ def rtf(data, where=""):
             cls = (obj.class_name or b"").decode("latin-1", "replace")
         if cls.lower().startswith("equation"):
             data = getattr(obj, "oledata", None) or b""
-            if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+            if re.search(rb"\\objupdate", rtf_data):
+                # Real formulas wait to be shown; this one forces Equation
+                # Editor to start as the file opens.
+                emit("EXPLOIT", f"RTF{where} embeds {cls} set to load by itself (\\objupdate) - Equation Editor exploit (CVE-2017-11882 / CVE-2018-0802)")
+            elif data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
                 ole_objects(data, f" in RTF{where}")
             else:
                 emit("EXPLOIT", f"RTF{where} embeds {cls} whose data is not a valid OLE object - Equation Editor exploit (CVE-2017-11882 / CVE-2018-0802)")

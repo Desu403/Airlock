@@ -305,7 +305,7 @@ def cmd_run(a):
         rows = [r for r in rows if r["type"] in a.type.split(",")]
     if a.outcome:
         # Rerun only what had this outcome in the last run (e.g. missed).
-        last = load_results(runs()[-1]) if runs() else {}
+        last = load_results(a.in_run or runs()[-1]) if runs() else {}
         rows = [r for r in rows if last.get(r["sha256"], {}).get("outcome") in a.outcome.split(",")]
     if a.limit:
         rows = rows[: a.limit]
@@ -360,8 +360,12 @@ def rescore(run):
 
 def report(run):
     res = load_results(run)
+    # Each file is compared with the last earlier run that included it
+    # (runs can be subsets: --type, --outcome).
     prev = [r for r in runs() if r < run]
-    old = load_results(prev[-1]) if prev else {}
+    old = {}
+    for p in prev:
+        old.update(load_results(p))
     count = lambda label, o: sum(1 for r in res.values() if r["label"] == label and r["outcome"] == o)
     total = lambda label: sum(1 for r in res.values() if r["label"] == label)
     print(f"\nairlock bench {run}  ({len(res)} files)")
@@ -378,7 +382,7 @@ def report(run):
     worse = [r for s, r in res.items() if s in old and r["outcome"] in rank and old[s]["outcome"] in rank and rank[r["outcome"]] < rank[old[s]["outcome"]]]
     better = [r for s, r in res.items() if s in old and r["outcome"] in rank and old[s]["outcome"] in rank and rank[r["outcome"]] > rank[old[s]["outcome"]]]
     if old:
-        print(f"  vs {prev[-1]}: {len(better)} better · {len(worse)} REGRESSIONS")
+        print(f"  vs earlier runs: {len(better)} better · {len(worse)} REGRESSIONS")
         for r in worse:
             print(f"     regression: {r['sha256'][:12]} {r['label']} {old[r['sha256']]['outcome']} -> {r['outcome']} ({r['source']} {r['name']})")
     for o in ["false-alarm", "missed", "error"]:
@@ -406,6 +410,7 @@ def main():
     p.add_argument("--limit", type=int)
     p.add_argument("--type", help="comma-separated file types, e.g. ppt,pdf")
     p.add_argument("--outcome", help="only files with this outcome in the last run, e.g. missed,false-alarm")
+    p.add_argument("--in-run", help="with --outcome: look the outcome up in this run instead of the last one")
     p = sub.add_parser("rescore", help="rebuild a run's results from its saved reports")
     p.add_argument("run")
     p = sub.add_parser("report")

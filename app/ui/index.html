@@ -9,7 +9,14 @@
 </head>
 <body>
   <header class="bar">
-    <div class="brand"><span class="logo" aria-hidden="true"></span>airlock</div>
+    <div class="menu-wrap" id="appwrap">
+      <button class="brand" id="appbtn" aria-haspopup="menu" aria-expanded="false" title="airlock menu"><span class="logo" aria-hidden="true"></span>airlock</button>
+      <div class="menu left" id="appmenu" role="menu" hidden>
+        <button role="menuitem" id="m-new">New window</button>
+        <button role="menuitem" id="m-tour">Guided tour</button>
+        <button role="menuitem" id="m-quit">Exit airlock (all windows) <kbd>Ctrl+Q</kbd></button>
+      </div>
+    </div>
     <button id="open" title="Open a document (Ctrl+O)">Open…</button>
     <div class="doc" id="doc" hidden>
       <span class="doc-name" id="docname"></span>

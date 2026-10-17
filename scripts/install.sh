@@ -175,6 +175,15 @@ Categories=Office;Viewer;Security;
 Keywords=pdf;docx;malware;sandbox;safe;
 MimeType=$(echo "$TYPES" | tr '\n' ';');
 StartupWMClass=airlock-app
+Actions=new-window;quit-all;
+
+[Desktop Action new-window]
+Name=New window
+Exec="$BIN/airlock-app" --new-window
+
+[Desktop Action quit-all]
+Name=Exit airlock (all windows)
+Exec="$BIN/airlock-app" --quit-all
 EOF
     refresh
     echo "installed app:  $BIN/airlock-app (launcher: airlock; 'Open with airlock' for PDF and Office files)"

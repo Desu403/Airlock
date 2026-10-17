@@ -209,6 +209,17 @@ async fn reopen(state: State<'_, AppState>) -> R<OpenInfo> {
     .await
 }
 
+/// "Exit airlock" from a window: every window closes properly.
+#[tauri::command]
+fn quit_everything(app: tauri::AppHandle) {
+    quit_all(&app);
+}
+
+#[tauri::command]
+fn new_window() -> bool {
+    open_window(None)
+}
+
 /// Dropped files.
 #[tauri::command]
 async fn open_paths(paths: Vec<String>, state: State<'_, AppState>) -> R<OpenResult> {
@@ -602,6 +613,14 @@ fn main() {
     sandbox_web_content();
     let state = AppState::default();
     let mut args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    // From the launcher's right-click menu (desktop file actions).
+    if args.first().is_some_and(|a| a == "--quit-all") {
+        for pid in instances().into_iter().filter(|&p| p != std::process::id()) {
+            unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        }
+        return;
+    }
+    args.retain(|a| a != "--new-window");
     // "airlock-app a.pdf b.docx": the first here, the others in their own windows.
     if args.len() > 1 {
         open_elsewhere(&args.split_off(1));
@@ -631,6 +650,8 @@ fn main() {
             open_path,
             open_paths,
             reopen,
+            quit_everything,
+            new_window,
             save_safe_copy,
             save_report,
             initial_path,
@@ -705,8 +726,8 @@ fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
     use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
     use tauri::tray::TrayIconBuilder;
     let count = MenuItem::with_id(app, "count", open_count_label(), false, None::<&str>)?;
-    let open = MenuItem::with_id(app, "open", "Open a document…", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "quit", "Close all documents and quit", true, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "New window…", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Exit airlock (closes all documents)", true, None::<&str>)?;
     let menu = Menu::with_items(app, &[&count, &PredefinedMenuItem::separator(app)?, &open, &quit])?;
     let mut tray = TrayIconBuilder::with_id("airlock").tooltip("airlock: documents open in disposable VMs").menu(&menu);
     if let Some(icon) = app.default_window_icon() {

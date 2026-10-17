@@ -831,6 +831,7 @@ async function runDemo() {
     if (cmd === "search") { $("q").value = arg; await runSearch(); }
     if (cmd === "open") openPaths([arg]);
     if (cmd === "reopen") await reopenDocument();
+    if (cmd === "appmenu") toggleAppMenu(true);
     if (cmd === "tour") { startTour(); tourShow(Number(arg) || 0); }
     if (cmd === "wait") await new Promise((r) => setTimeout(r, Number(arg) || 0));
     if (cmd === "text") await showText();
@@ -914,7 +915,7 @@ const TOUR = [
     text: "Finds out what a file tries to do: contact servers, run programs, drop files, exploit the reader.",
     how: "It runs the file in a second VM wired to a fake internet, then inspects that VM's disk from a third one. The report explains every finding in plain words, with the technical evidence underneath." },
   { target: "tourbtn", kicker: "That's it", title: "You're ready",
-    text: "Replay this tour anytime with the ? button. airlock also has an icon in your system tray: it shows how many windows are open and can close them all.",
+    text: "Replay this tour anytime with the ? button. Click the airlock logo (or press Ctrl+Q) to open a new window or exit airlock, closing every document. The same is in the tray icon and in the launcher's right-click menu.",
     how: "Tip: when a file looks suspicious, press Analyze before you trust it." },
 ];
 
@@ -1001,6 +1002,27 @@ function endTour() {
 }
 
 $("tourbtn").onclick = startTour;
+
+// ---------------------------------------------------------------- app menu
+// Works on every desktop (with or without a tray): new window, tour, exit.
+function toggleAppMenu(open) {
+  const m = $("appmenu");
+  m.hidden = open === undefined ? !m.hidden : !open;
+  $("appbtn").setAttribute("aria-expanded", String(!m.hidden));
+}
+function quitEverything() {
+  status("Closing every airlock window and its VM…");
+  invoke("quit_everything");
+}
+$("appbtn").onclick = (e) => { e.stopPropagation(); toggleAppMenu(); };
+$("m-new").onclick = () => { toggleAppMenu(false); invoke("new_window"); };
+$("m-tour").onclick = () => { toggleAppMenu(false); startTour(); };
+$("m-quit").onclick = quitEverything;
+document.addEventListener("click", (e) => { if (!$("appwrap").contains(e.target)) toggleAppMenu(false); });
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "q") { e.preventDefault(); quitEverything(); }
+  if (e.key === "Escape") toggleAppMenu(false);
+});
 $("tour-next").onclick = () => (tour.i === TOUR.length - 1 ? endTour() : tourShow(tour.i + 1));
 $("tour-back").onclick = () => tourShow(tour.i - 1);
 $("tour-skip").onclick = endTour;

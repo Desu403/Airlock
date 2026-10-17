@@ -94,7 +94,10 @@ kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--border); borde
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
-.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: 0.02em; }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 700; letter-spacing: 0.02em; background: none; border-color: transparent; font-size: inherit; }
+.brand:hover { background: var(--surface-2); border-color: var(--border); }
+.menu.left { left: 0; right: auto; min-width: 270px; }
+.menu button { white-space: nowrap; }
 .logo {
   width: 22px; height: 22px; border-radius: 50%;
   border: 3px solid var(--seal);

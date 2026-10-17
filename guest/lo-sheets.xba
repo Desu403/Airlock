@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE script:module PUBLIC "-//OpenOffice.org//DTD OfficeDocument 1.0//EN" "module.dtd">
+<script:module xmlns:script="http://openoffice.org/2000/script" script:name="Module1" script:language="StarBasic" script:moduleType="normal">REM airlock: spreadsheet to PDF with every sheet fitted to the page width
+REM (columns never split across pages; rows flow onto as many pages as needed).
+REM The document&apos;s own macros never run (MacroExecutionMode NEVER_EXECUTE).
+
+Sub SheetsToPdf(src As String, dst As String)
+	Dim load(1) As New com.sun.star.beans.PropertyValue
+	load(0).Name = &quot;Hidden&quot; : load(0).Value = True
+	load(1).Name = &quot;MacroExecutionMode&quot; : load(1).Value = 0
+	REM Any error: no PDF, which the agent reports as a failed render.
+	On Error GoTo Done
+	doc = StarDesktop.loadComponentFromURL(ConvertToURL(src), &quot;_blank&quot;, 0, load())
+	If IsNull(doc) Then Exit Sub
+	If doc.supportsService(&quot;com.sun.star.sheet.SpreadsheetDocument&quot;) Then
+		styles = doc.StyleFamilies.getByName(&quot;PageStyles&quot;)
+		For i = 0 To doc.Sheets.Count - 1
+			sheet = doc.Sheets.getByIndex(i)
+			ps = styles.getByName(sheet.PageStyle)
+			REM Content width (1/100 mm) of the used area.
+			cur = sheet.createCursor()
+			cur.gotoEndOfUsedArea(False)
+			w = 0
+			For c = 0 To cur.RangeAddress.EndColumn
+				col = sheet.Columns.getByIndex(c)
+				If col.IsVisible Then w = w + col.Width
+			Next c
+			pw = ps.Width - ps.LeftMargin - ps.RightMargin
+			REM Much wider than a portrait page: landscape, so text stays readable.
+			If w &gt; pw * 1.3 And Not ps.IsLandscape Then
+				h = ps.Height : ps.Height = ps.Width : ps.Width = h
+				ps.IsLandscape = True
+			End If
+			REM Never below about a third of the size: very wide sheets get
+			REM more pages across instead of unreadable text.
+			pw = ps.Width - ps.LeftMargin - ps.RightMargin
+			across = 1
+			If w &gt; pw * 3 Then across = Int(w / (pw * 3)) + 1
+			ps.ScaleToPagesX = across
+			ps.ScaleToPagesY = 0
+		Next i
+	End If
+	Dim save(0) As New com.sun.star.beans.PropertyValue
+	save(0).Name = &quot;FilterName&quot; : save(0).Value = &quot;calc_pdf_Export&quot;
+	doc.storeToURL(ConvertToURL(dst), save())
+Done:
+	If Not IsNull(doc) And Not IsEmpty(doc) Then doc.close(True)
+End Sub
+</script:module>

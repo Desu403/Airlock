@@ -299,14 +299,14 @@ fn main() {
             }
             doc_path.clone()
         }
-        office::Kind::Office(_) => {
+        office::Kind::Office(ext) => {
             if scratch {
                 send_indicators(&mut out, &office::triage(&doc_path, WORK));
                 log("scanning with YARA");
                 send_indicators(&mut out, &yara::scan(WORK, &doc_path, None, true));
             }
             log("converting with LibreOffice");
-            send_indicators(&mut out, &office::convert(&doc_path, WORK, net));
+            send_indicators(&mut out, &office::convert(&doc_path, WORK, net, ext));
             let pdf = format!("{WORK}/office.pdf");
             if !std::path::Path::new(&pdf).exists() {
                 fail(&mut out, Error::RenderFailed);

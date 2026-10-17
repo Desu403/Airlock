@@ -77,7 +77,10 @@ able to touch the host, and *see* what it tries to do.
   suspicious keywords, IOCs, **VBA stomping via pcodedmp**, XLM), external
   relationships (remote template, Follina `mhtml:`/`ms-msdt`), DDE fields,
   RTF objects (Equation Editor, OLE2Link). Render: LibreOffice headless as
-  nobody under the monitor with a prebuilt profile; macros never run. Known
+  nobody under the monitor with a prebuilt profile; macros never run.
+  Spreadsheets are exported by the profile's one macro (`guest/lo-sheets.xba`,
+  loading with MacroExecutionMode NEVER_EXECUTE): each sheet is fitted to the
+  page width (landscape when wide, never below ~1/3 scale). Known
   LibreOffice start-up probes (paperconf, gpgconf) are denied silently by
   exact match; everything else is reported. Autopsy diffs the profile against
   the pristine template (macro persistence).

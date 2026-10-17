@@ -147,28 +147,27 @@ fn self_exe() -> Option<PathBuf> {
 /// Opens each document in its own new window: a separate airlock process
 /// with its own VM, so documents never share a renderer.
 fn open_elsewhere(paths: &[PathBuf]) -> usize {
-    let Some(exe) = self_exe() else { return 0 };
-    paths
-        .iter()
-        .filter(|p| {
-            let child = std::process::Command::new(&exe)
-                .arg(p)
-                .stdin(std::process::Stdio::null())
-                // Test hooks are for this window only.
-                .env_remove("AIRLOCK_DEMO")
-                .env_remove("AIRLOCK_TEST_SAVE_DIR")
-                .env_remove("AIRLOCK_TEST_SAVE_NAME")
-                .spawn();
-            match child {
-                // Collect its exit status when it closes (no zombie left behind).
-                Ok(mut c) => {
-                    std::thread::spawn(move || c.wait());
-                    true
-                }
-                Err(_) => false,
-            }
-        })
-        .count()
+    paths.iter().filter(|p| open_window(Some(p))).count()
+}
+
+/// A new airlock window (its own process, so its own VM), optionally with a document.
+fn open_window(path: Option<&PathBuf>) -> bool {
+    let Some(exe) = self_exe() else { return false };
+    let mut cmd = std::process::Command::new(&exe);
+    cmd.args(path)
+        .stdin(std::process::Stdio::null())
+        // Test hooks are for this window only.
+        .env_remove("AIRLOCK_DEMO")
+        .env_remove("AIRLOCK_TEST_SAVE_DIR")
+        .env_remove("AIRLOCK_TEST_SAVE_NAME");
+    match cmd.spawn() {
+        // Collect its exit status when it closes (no zombie left behind).
+        Ok(mut c) => {
+            std::thread::spawn(move || c.wait());
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 /// The first document opens here unless one already is; the rest get new windows.
@@ -623,6 +622,8 @@ fn main() {
                 .min_inner_size(720.0, 480.0)
                 .data_directory(data)
                 .build()?;
+            handle_sigterm(app.handle());
+            start_tray(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -657,4 +658,150 @@ fn main() {
         })
         .run(tauri::generate_context!())
         .expect("error while running airlock");
+}
+
+// ---------------------------------------------------------------- tray icon
+// Every document is its own window and process (its own VM). One of them
+// shows the tray icon (whoever holds the lock); if it closes, another
+// takes over. "Close all documents and quit" asks every airlock window to
+// shut down properly: VM stopped, its copy of the document deleted.
+
+/// The airlock windows of this user that are running (by executable).
+fn instances() -> Vec<u32> {
+    let Some(me) = self_exe() else { return Vec::new() };
+    let Ok(rd) = std::fs::read_dir("/proc") else { return Vec::new() };
+    rd.flatten()
+        .filter_map(|e| e.file_name().to_str()?.parse::<u32>().ok())
+        .filter(|pid| {
+            std::fs::read_link(format!("/proc/{pid}/exe")).is_ok_and(|p| {
+                let s = p.to_string_lossy();
+                PathBuf::from(s.strip_suffix(" (deleted)").unwrap_or(&s)) == me
+            }) && !std::fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|st| st.rsplit(')').next().is_some_and(|r| r.trim_start().starts_with('Z')))
+        })
+        .collect()
+}
+
+/// Holds the tray lock while this process lives (flock on an open file).
+fn take_tray_lock() -> bool {
+    use std::os::fd::AsRawFd;
+    static LOCK: Mutex<Option<std::fs::File>> = Mutex::new(None);
+    let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let Ok(f) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("airlock-tray.lock")) else { return false };
+    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        return false;
+    }
+    *LOCK.lock().unwrap() = Some(f);
+    true
+}
+
+fn open_count_label() -> String {
+    match instances().len() {
+        1 => "airlock · 1 window open".into(),
+        n => format!("airlock · {n} windows open"),
+    }
+}
+
+fn build_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
+    use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+    use tauri::tray::TrayIconBuilder;
+    let count = MenuItem::with_id(app, "count", open_count_label(), false, None::<&str>)?;
+    let open = MenuItem::with_id(app, "open", "Open a document…", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "Close all documents and quit", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&count, &PredefinedMenuItem::separator(app)?, &open, &quit])?;
+    let mut tray = TrayIconBuilder::with_id("airlock").tooltip("airlock: documents open in disposable VMs").menu(&menu);
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.on_menu_event(|app, e| match e.id.as_ref() {
+        "open" => {
+            open_window(None);
+        }
+        "quit" => quit_all(app),
+        _ => {}
+    })
+    .build(app)?;
+    // Keep the count current.
+    let handle = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        let label = open_count_label();
+        let c = count.clone();
+        if handle.run_on_main_thread(move || drop(c.set_text(label))).is_err() {
+            return;
+        }
+    });
+    Ok(())
+}
+
+/// One window shows the tray; the others wait to take over.
+fn start_tray(app: &tauri::AppHandle) {
+    if take_tray_lock() {
+        if let Err(e) = build_tray(app) {
+            log_event(&format!("tray icon unavailable: {e}"));
+        }
+        return;
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        if take_tray_lock() {
+            let h = handle.clone();
+            let _ = handle.run_on_main_thread(move || {
+                if let Err(e) = build_tray(&h) {
+                    log_event(&format!("tray icon unavailable: {e}"));
+                }
+            });
+            return;
+        }
+    });
+}
+
+/// Asks every other airlock window to close (SIGTERM, handled below), then closes this one.
+fn quit_all(app: &tauri::AppHandle) {
+    let me = std::process::id();
+    for pid in instances().into_iter().filter(|&p| p != me) {
+        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+    }
+    shutdown(app);
+}
+
+/// Closes this window's VM (deleting its copy of the document), then exits.
+fn shutdown(app: &tauri::AppHandle) {
+    let state = app.state::<AppState>();
+    if let Some(d) = state.doc.lock().unwrap().take() {
+        d.session.close();
+    }
+    app.exit(0);
+}
+
+static TERM_PIPE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+extern "C" fn on_term(_: libc::c_int) {
+    // Only async-signal-safe work here: wake the thread below.
+    let fd = TERM_PIPE.load(Ordering::SeqCst);
+    unsafe { libc::write(fd, b"x".as_ptr().cast(), 1) };
+}
+
+/// SIGTERM (from "Close all", logout or `kill`) shuts this window down
+/// properly instead of leaving its VM's run directory behind.
+fn handle_sigterm(app: &tauri::AppHandle) {
+    let mut fds = [0; 2];
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return;
+    }
+    TERM_PIPE.store(fds[1], Ordering::SeqCst);
+    unsafe {
+        let mut sa: libc::sigaction = std::mem::zeroed();
+        sa.sa_sigaction = on_term as *const () as usize;
+        libc::sigemptyset(&mut sa.sa_mask);
+        libc::sigaction(libc::SIGTERM, &sa, std::ptr::null_mut());
+    }
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        let mut b = [0u8; 1];
+        if unsafe { libc::read(fds[0], b.as_mut_ptr().cast(), 1) } == 1 {
+            let h = handle.clone();
+            let _ = handle.run_on_main_thread(move || shutdown(&h));
+        }
+    });
 }

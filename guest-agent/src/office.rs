@@ -129,7 +129,9 @@ pub fn convert(path: &str, work: &str, net: Net, ext: &str) -> Vec<(Ind, String)
     let profile = format!("-env:UserInstallation=file://{dir}");
     // Spreadsheets go through the profile's own macro (lo-sheets.xba): every
     // sheet fitted to the page width, so columns are not cut onto other pages.
-    let sheets = format!("macro:///Standard.Module1.SheetsToPdf(\"{path}\",\"{work}/office.pdf\")");
+    let single = std::fs::read_to_string("/proc/cmdline").unwrap_or_default().split_whitespace().any(|t| t == "airlock.sheets=single");
+    let layout = if single { "single" } else { "pages" };
+    let sheets = format!("macro:///Standard.Module1.SheetsToPdf(\"{path}\",\"{work}/office.pdf\",\"{layout}\")");
     let how: &[&str] = if matches!(ext, "xls" | "xlsx" | "ods") { &[&sheets] } else { &["--convert-to", "pdf", "--outdir", work, path] };
     let argv: Vec<&str> = [SOFFICE, &profile, "--headless", "--invisible", "--nologo", "--norestore", "--nolockcheck", "--nodefault"].iter().chain(how).copied().collect();
     let r = monitor::run(

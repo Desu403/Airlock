@@ -3,7 +3,7 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use airlock_core::live::LiveSession;
+use airlock_core::live::{is_spreadsheet, Layout, LiveSession};
 use airlock_core::proto::MAX_DOC_BYTES;
 use airlock_core::{analysis, report, text};
 use serde::Serialize;
@@ -35,6 +35,8 @@ struct AppState {
 #[derive(Serialize)]
 struct OpenInfo {
     name: String,
+    /// Offers the spreadsheet layout choice.
+    spreadsheet: bool,
     /// [width, height] in points.
     pages: Vec<[f32; 2]>,
     ready_ms: u64,
@@ -126,9 +128,11 @@ fn open_bytes(doc: Arc<Mutex<Option<Doc>>>, name: String, bytes: &[u8]) -> R<Ope
     if let Some(old) = doc.lock().unwrap().take() {
         old.session.close();
     }
-    let session = LiveSession::open(bytes).map_err(open_error)?;
+    let layout = if SHEETS_SINGLE.load(Ordering::SeqCst) { Layout::OnePagePerSheet } else { Layout::Pages };
+    let session = LiveSession::open_with(bytes, layout).map_err(open_error)?;
     let info = OpenInfo {
         name,
+        spreadsheet: is_spreadsheet(bytes),
         pages: session.pages.iter().map(|p| [p.width, p.height]).collect(),
         ready_ms: session.boot_time.as_millis() as u64,
     };
@@ -207,6 +211,14 @@ async fn reopen(state: State<'_, AppState>) -> R<OpenInfo> {
         open_bytes(doc, name, &bytes)
     })
     .await
+}
+
+/// Spreadsheet layout for documents opened from now on (the UI reopens).
+static SHEETS_SINGLE: AtomicBool = AtomicBool::new(false);
+
+#[tauri::command]
+fn set_sheet_layout(single: bool) {
+    SHEETS_SINGLE.store(single, Ordering::SeqCst);
 }
 
 /// "Exit airlock" from a window: every window closes properly.
@@ -669,6 +681,7 @@ fn main() {
             reopen,
             quit_everything,
             close_window,
+            set_sheet_layout,
             new_window,
             save_safe_copy,
             save_report,

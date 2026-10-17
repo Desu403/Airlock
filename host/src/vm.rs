@@ -289,6 +289,8 @@ pub struct Spec {
     pub drives: Vec<Drive>,
     /// Wire a NIC to the sinkhole; events are written to this file.
     pub sinkhole_events: Option<PathBuf>,
+    /// Extra kernel command line options for the agent (fixed strings only).
+    pub options: &'static [&'static str],
 }
 
 const SANDBOX_PATH: &str = "/usr/bin";
@@ -298,6 +300,10 @@ pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<C
     // Test hook: the guest's PID 1 dies mid-session -> real kernel panic.
     if std::env::var_os("AIRLOCK_CRASHTEST").is_some() && spec.mode != "autopsy" {
         boot_args.push_str(" airlock.crashtest");
+    }
+    for o in spec.options {
+        boot_args.push(' ');
+        boot_args.push_str(o);
     }
     let mut net_ifaces = vec![];
     if spec.sinkhole_events.is_some() {

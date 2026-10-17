@@ -89,6 +89,7 @@ fn view(doc: &[u8], out_dir: &Path, verbose: bool) -> Result<()> {
         mode: "view",
         drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }],
         sinkhole_events: None,
+        options: &[],
     };
     let s = session::run(&assets, &run, &spec, verbose, true)?;
     if let Some(e) = s.guest_error {

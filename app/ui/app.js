@@ -89,7 +89,7 @@ function resetDocument() {
   if (state.observer) state.observer.disconnect();
   Object.assign(state, { pages: [], hits: [], hitIndex: -1, queue: [], findings: null, docOpen: false });
   $("pages").replaceChildren();
-  for (const id of ["doc", "searchbox", "zoombox", "textbtn", "savewrap", "pixels", "analyze", "banner"]) $(id).hidden = true;
+  for (const id of ["doc", "searchbox", "zoombox", "textbtn", "sheetbtn", "savewrap", "pixels", "analyze", "banner"]) $(id).hidden = true;
   $("empty").hidden = false;
   closePanel();
 }
@@ -193,6 +193,7 @@ function setupDocument(info) {
   closePanel();
 
   $("docname").textContent = info.name;
+  $("sheetbtn").hidden = !info.spreadsheet;
   $("seal").classList.remove("stopped");
   $("seal").querySelector(".label").textContent = "Sealed · microVM · no network";
   for (const id of ["doc", "searchbox", "zoombox", "savewrap", "pixels", "analyze"]) $(id).hidden = false;
@@ -837,6 +838,7 @@ async function runDemo() {
       document.elementFromPoint(x, y).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: x, clientY: y }));
     }
     if (cmd === "click") $(arg).click();
+    if (cmd === "sheets") { setPref("airlock.sheetSingle", arg === "single" ? "1" : "0"); showSheetLayout(); await invoke("set_sheet_layout", { single: arg === "single" }); await reopenDocument(); }
     if (cmd === "tour") { startTour(); tourShow(Number(arg) || 0); }
     if (cmd === "wait") await new Promise((r) => setTimeout(r, Number(arg) || 0));
     if (cmd === "text") await showText();
@@ -869,6 +871,24 @@ async function runDemo() {
 }
 
 // Pixels-only preference: the environment (AIRLOCK_PIXELS_ONLY) or the last choice.
+// Spreadsheet layout: "One page" per sheet, or pages fitted to the width.
+// Converting happens in the VM, so switching reopens the document there.
+function sheetSingle() { return pref("airlock.sheetSingle", "0") === "1"; }
+function showSheetLayout() {
+  const on = sheetSingle();
+  $("sheetbtn").setAttribute("aria-pressed", String(on));
+  $("sheetbtn").title = on
+    ? "Showing each sheet as one continuous page. Click to split sheets into pages that fit the width."
+    : "Showing sheets split into pages that fit the width. Click to show each sheet as one continuous page (very large sheets stay split, to remain sharp).";
+}
+$("sheetbtn").onclick = async () => {
+  setPref("airlock.sheetSingle", sheetSingle() ? "0" : "1");
+  showSheetLayout();
+  await invoke("set_sheet_layout", { single: sheetSingle() });
+  await reopenDocument();
+};
+const sheetsReady = invoke("set_sheet_layout", { single: sheetSingle() }).then(showSheetLayout);
+
 const pixelsReady = invoke("pixels_only").then(async (on) => {
   let saved = null;
   try { saved = localStorage.getItem("airlock.pixelsOnly"); } catch {}
@@ -879,6 +899,7 @@ const pixelsReady = invoke("pixels_only").then(async (on) => {
 
 invoke("initial_path").then(async (p) => {
   await pixelsReady;
+  await sheetsReady;
   if (!p) return runDemo();
   await openWith(invoke("open_path", { path: p }), p.split(/[\\/]/).pop());
   runDemo();

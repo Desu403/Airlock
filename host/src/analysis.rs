@@ -25,6 +25,7 @@ pub fn run(doc: &[u8], mode: &'static str, verbose: bool, progress: &dyn Fn(&str
             vm::Drive { id: "scratch", path: scratch.clone(), read_only: false },
         ],
         sinkhole_events: Some(events.clone()),
+        options: &[],
     };
     let s = session::run(&assets, &run, &spec, verbose, verbose)?;
     progress(&format!("      VM destroyed after {:.1}s", s.elapsed.as_secs_f32()));
@@ -35,7 +36,7 @@ pub fn run(doc: &[u8], mode: &'static str, verbose: bool, progress: &dyn Fn(&str
     // Hand the disk over: each VM's spare uid can only reach its own run dir.
     let evidence = run2.path.join("evidence.img");
     std::fs::rename(&scratch, &evidence)?;
-    let spec2 = vm::Spec { mode: "autopsy", drives: vec![vm::Drive { id: "evidence", path: evidence, read_only: true }], sinkhole_events: None };
+    let spec2 = vm::Spec { mode: "autopsy", drives: vec![vm::Drive { id: "evidence", path: evidence, read_only: true }], sinkhole_events: None, options: &[] };
     let a = session::run(&assets, &run2, &spec2, verbose, false)?;
 
     let mut indicators = s.indicators.clone();

@@ -15,6 +15,38 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Start of the error when the document's VM is no longer running.
 pub const VM_STOPPED: &str = "the document's VM stopped";
 
+/// How spreadsheets are laid out (other documents keep their own pages).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Layout {
+    /// Fitted to the page width, as many pages down as needed.
+    Pages,
+    /// Each sheet on one page sized to its content, when that stays readable.
+    OnePagePerSheet,
+}
+
+impl Layout {
+    fn options(self) -> &'static [&'static str] {
+        match self {
+            Layout::Pages => &[],
+            Layout::OnePagePerSheet => &["airlock.sheets=single"],
+        }
+    }
+}
+
+/// Whether `doc` is a spreadsheet (content sniffing, as the guest does).
+pub fn is_spreadsheet(doc: &[u8]) -> bool {
+    let has = |n: &[u8]| doc.windows(n.len()).any(|w| w == n);
+    let utf16 = |s: &str| s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect::<Vec<u8>>();
+    if doc.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) {
+        return !has(&utf16("WordDocument")) && (has(&utf16("Workbook")) || has(&utf16("Book")));
+    }
+    if doc.starts_with(b"PK\x03\x04") {
+        let head = &doc[..doc.len().min(256)];
+        return (!has(b"word/") && has(b"xl/")) || head.windows(54).any(|w| w == b"mimetypeapplication/vnd.oasis.opendocument.spreadsheet");
+    }
+    false
+}
+
 pub struct PageSize {
     /// Points.
     pub width: f32,
@@ -58,12 +90,16 @@ pub struct LiveSession {
 impl LiveSession {
     /// Boots a live VM for `doc` (PDF or Office). The VM has no network device.
     pub fn open(doc: &[u8]) -> Result<Self> {
+        Self::open_with(doc, Layout::Pages)
+    }
+
+    pub fn open_with(doc: &[u8], layout: Layout) -> Result<Self> {
         let started = Instant::now();
         let assets = vm::Assets::locate()?;
         let run = vm::RunDir::create("live")?;
         let doc_disk = vm::write_doc_disk(&run.path, doc)?;
         let listener = run.listen()?;
-        let spec = vm::Spec { mode: "live", drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }], sinkhole_events: None };
+        let spec = vm::Spec { mode: "live", drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }], sinkhole_events: None, options: layout.options() };
         let mut child = vm::spawn(&assets, &run, &spec, &run.path.join("console.log"))?;
 
         let deadline = Instant::now() + BOOT_TIMEOUT;

@@ -4,7 +4,10 @@
 REM (columns never split across pages; rows flow onto as many pages as needed).
 REM The document&apos;s own macros never run (MacroExecutionMode NEVER_EXECUTE).
 
-Sub SheetsToPdf(src As String, dst As String)
+REM layout &quot;single&quot;: every sheet on one page sized to its content (no page
+REM breaks), as long as that page stays readable; otherwise as &quot;pages&quot;.
+Sub SheetsToPdf(src As String, dst As String, Optional layout As String)
+	If IsMissing(layout) Then layout = &quot;pages&quot;
 	Dim load(1) As New com.sun.star.beans.PropertyValue
 	load(0).Name = &quot;Hidden&quot; : load(0).Value = True
 	load(1).Name = &quot;MacroExecutionMode&quot; : load(1).Value = 0
@@ -17,6 +20,9 @@ Sub SheetsToPdf(src As String, dst As String)
 		For i = 0 To doc.Sheets.Count - 1
 			sheet = doc.Sheets.getByIndex(i)
 			ps = styles.getByName(sheet.PageStyle)
+			If layout = &quot;single&quot; Then
+				If OnePage(doc, sheet, ps) Then GoTo NextSheet
+			End If
 			REM Content width (1/100 mm) of the used area.
 			cur = sheet.createCursor()
 			cur.gotoEndOfUsedArea(False)
@@ -38,6 +44,7 @@ Sub SheetsToPdf(src As String, dst As String)
 			If w &gt; pw * 3 Then across = Int(w / (pw * 3)) + 1
 			ps.ScaleToPagesX = across
 			ps.ScaleToPagesY = 0
+NextSheet:
 		Next i
 	End If
 	Dim save(0) As New com.sun.star.beans.PropertyValue
@@ -46,4 +53,36 @@ Sub SheetsToPdf(src As String, dst As String)
 Done:
 	If Not IsNull(doc) And Not IsEmpty(doc) Then doc.close(True)
 End Sub
+
+REM One page exactly the size of the sheet&apos;s content. Sheets sharing a page
+REM style get their own copy of it. False (nothing changed) when the page
+REM would be too large to show sharply.
+Function OnePage(doc, sheet, ps) As Boolean
+	OnePage = False
+	cur = sheet.createCursor()
+	cur.gotoEndOfUsedArea(False)
+	used = sheet.getCellRangeByPosition(0, 0, cur.RangeAddress.EndColumn, cur.RangeAddress.EndRow)
+	m = 500
+	w = used.Size.Width + 2 * m
+	h = used.Size.Height + 2 * m
+	REM Sizes in 1/100 mm: at most about 1.2 m long and 8 times as long as wide.
+	If h &gt; 120000 Or h &gt; 8 * w Or w &gt; 120000 Then Exit Function
+	styles = doc.StyleFamilies.getByName(&quot;PageStyles&quot;)
+	name = &quot;airlock-&quot; &amp; sheet.Name
+	If Not styles.hasByName(name) Then styles.insertByName(name, doc.createInstance(&quot;com.sun.star.style.PageStyle&quot;))
+	p = styles.getByName(name)
+	p.HeaderIsOn = False
+	p.FooterIsOn = False
+	p.LeftMargin = m : p.RightMargin = m : p.TopMargin = m : p.BottomMargin = m
+	p.IsLandscape = w &gt; h
+	p.Width = w : p.Height = h
+	p.ScaleToPagesX = 1
+	p.ScaleToPagesY = 1
+	p.CenterHorizontally = False
+	sheet.PageStyle = name
+	REM The whole used area, not the print ranges set for paper.
+	Dim none() As New com.sun.star.table.CellRangeAddress
+	sheet.setPrintAreas(none())
+	OnePage = True
+End Function
 </script:module>

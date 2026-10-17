@@ -31,8 +31,9 @@ able to touch the host, and *see* what it tries to do.
 | 11 | Unexpected VM death (e.g. kernel panic) reported as an outside finding | done |
 | 12 | VMM runs as a spare uid from the user's /etc/subuid range (a different one per VM; rootless equivalent of Firecracker's jailer); run dir granted to that uid only by ACL; sandbox built from file descriptors; no further user namespaces | done (falls back to the user's uid where unsupported — `airlock doctor` says so) |
 | 13 | Page text and file names narrowed to plain visible characters before any UI; optional pixels-only mode | done |
-| 15 | App web view (where text is drawn) in WebKitGTK's bubblewrap + seccomp sandbox (forced on), own data dir, airlock-only cache dir — no home, no `.ssh`, no capabilities | done |
 | 14 | Every host-side parser fuzzed with hostile streams (`cargo test`; `AIRLOCK_FUZZ_ITERS` for long runs) | done |
+| 15 | App web view (where text is drawn) in WebKitGTK's bubblewrap + seccomp sandbox (forced on), own data dir, airlock-only cache dir — no home, no `.ssh`, no capabilities | done |
+| 16 | Staying patched: `scripts/update.sh` rebuilds the guest with current security fixes (base system too) and moves to the newest 6.1 LTS kernel (kernel.org GPG-signed checksums) / Firecracker / Alpine point release; regression suite gates the switch, automatic restore on failure; doctor warns when the image is >30 days old (`rootfs.info`: build date + package versions) | done |
 
 ## Roadmap
 
@@ -58,6 +59,19 @@ able to touch the host, and *see* what it tries to do.
     2009-0927/1492/1493/4324).
 - **M3 — static triage / explainable risk report** (oletools, pcodedmp
   p-code vs source diff, pdfid, YARA) — runs *inside* a VM too
+- **YARA signatures** — done (`guest-agent/src/yara.rs`). YARA-Forge's
+  "core" package (pinned release + SHA-256, ~5,000 rules) is compiled into
+  the image at build time (`yarac`); `guest/yara_meta.py` keeps each rule's
+  score, description and author, since yara prints only names. Scanned, as
+  nobody under the monitor without network: the file, the decompressed PDF,
+  and for Office files every ZIP part, OLE stream, OLE package and macro's
+  source (`guest/unpack.py`, bounded; written to a tmpfs so the autopsy
+  only ever sees what the document left). The autopsy VM scans dropped
+  files too (selftest: a dropped EICAR file must be named). Severity from
+  the rule's score (>=75 high, decisive; 60-74 medium); technique rules
+  (`SUSP_`, `INDICATOR_`, `GEN_`, ...) are capped at medium. The larger
+  "extended" package was tried and rejected: it named a criminal group
+  (TA505) on two harmless Atomic Red Team files.
 - **M4 — Office documents** — done. Content sniffing (OLE2/OOXML/ODF/RTF,
   never the extension). Static: oletools inside the VM (VBA source, AutoExec,
   suspicious keywords, IOCs, **VBA stomping via pcodedmp**, XLM), external
@@ -69,6 +83,33 @@ able to touch the host, and *see* what it tries to do.
   the pristine template (macro persistence).
 - **Regression suite**: `tests/run.sh` (fixtures: `tests/mkpdf.py`,
   `tests/fetch-fixtures.sh`) — expected verdict per sample + selftest.
+  Includes Atomic Red Team's Office files (real techniques, harmless
+  payloads; pinned commit + SHA-256), which exposed a gap now closed:
+  script-host execution (ScriptControl/AddCode/ExecuteStatement/CallByName,
+  the MirrorBlast loader) was not treated as code execution. Real samples:
+  `tests/malware-run.sh` (password zips, extracted to RAM one at a time).
+- **Corpus run** (`tests/fetch-pdfjs-corpus.sh` + `tests/corpus-run.sh`):
+  979 pdf.js test PDFs — 0 crashes, 0 errors, 0 MALICIOUS. An earlier
+  version of this note said every SUSPICIOUS file had "a feature it really
+  has"; that was not checked file by file, and it was wrong: a real tutorial
+  PDF was flagged because screenshot pixels spelled "/AA". Since then:
+  - PDF features come from the object graph (`guest/pdf_walk.js`: every
+    action with its type and trigger, embedded files with their real type,
+    XFA/RichMedia/media/encryption), never from a byte search; the byte
+    scan is only a fallback for files MuPDF cannot read, and says so.
+  - Severity follows what an action does: navigation is not reported,
+    "open a website / send data / open another file" by itself is medium,
+    "start a program" is high, a Launch of a document is not a program;
+    attachments are rated by their first bytes.
+  - The fake reader runs scripts like Reader does (one global scope, `this`
+    = the document, Acrobat's AF* helpers and ADBE object, realistic form
+    fields), so ordinary form logic no longer ends in errors. A script that
+    runs on open and did nothing risky there (automatic behaviour only;
+    clicks are reported separately) is low, not medium.
+  - Every remaining SUSPICIOUS file was reviewed by hand: password
+    protected (cannot be checked), deliberately broken, renderer hangs,
+    real rich media, one script the emulator cannot run. Rule: a corpus
+    result is only called correct after looking at it.
 - **M5 — live interactive viewing** — done (`host/src/live.rs`,
   `guest-agent/src/live.rs`). The VM stays up (no NIC) and answers
   Render{page,dpi} / Search{query} / GetText{page} / GetLayout{page}. One

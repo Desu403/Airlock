@@ -140,6 +140,7 @@ fn selftest(out_dir: PathBuf, verbose: bool) -> Result<()> {
         ("kernel attack surface blocked + logged", has("unshare()") && has("bpf()")),
         ("dropped ELF found by autopsy VM", has("stage2") && has("[Linux executable (ELF)]")),
         ("dropped script found by autopsy VM", has(".persist.sh")),
+        ("dropped file named by YARA (EICAR test file)", has("Malw_Eicar")),
     ];
     let mut failed = 0;
     eprintln!("selftest results:");
@@ -177,6 +178,37 @@ fn livecheck(doc: &[u8]) -> Result<()> {
     s.close();
     eprintln!("live: VM destroyed");
     Ok(())
+}
+
+/// Reports how fresh the guest image is: stale renderers are the realistic risk.
+fn image_age(rootfs: &std::path::Path) {
+    const MAX_DAYS: u64 = 30;
+    let info = std::fs::read_to_string(rootfs.with_extension("info")).unwrap_or_default();
+    let built = info.lines().find_map(|l| l.strip_prefix("built ")).and_then(|t| t.trim().parse::<u64>().ok());
+    let version = |pkg: &str| {
+        info.lines()
+            .find_map(|l| l.strip_prefix(pkg).and_then(|v| v.strip_prefix('-')).filter(|v| v.starts_with(|c: char| c.is_ascii_digit())))
+            .map(|v| v.rsplit_once("-r").map_or(v, |(ver, _)| ver).to_string())
+            .unwrap_or_else(|| "?".into())
+    };
+    let Some(built) = built else {
+        eprintln!("  warn  guest image age unknown\n        fix: scripts/update.sh (rebuilds it with current security fixes)");
+        return;
+    };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let days = now.saturating_sub(built) / 86_400;
+    let mut what = format!("MuPDF {}, LibreOffice {}", version("mupdf-tools"), version("libreoffice-common"));
+    // "rules yara-forge-rules-core-20261011 5140"
+    if let Some(r) = info.lines().find_map(|l| l.strip_prefix("rules ")) {
+        if let Some((pkg, n)) = r.split_once(' ') {
+            what += &format!(", {} YARA rules from {}", n.trim(), pkg.rsplit('-').next().unwrap_or(pkg));
+        }
+    }
+    if days > MAX_DAYS {
+        eprintln!("  warn  guest image is {days} days old ({what})\n        fix: scripts/update.sh (security fixes for the renderers, kernel and VMM)");
+    } else {
+        eprintln!("  ok    guest image built {days} day(s) ago ({what})");
+    }
 }
 
 /// Checks everything airlock needs on this machine, with a fix for each miss.
@@ -227,6 +259,7 @@ fn doctor() -> Result<()> {
             let hardened = a.kernel.ends_with("vmlinux-airlock") || a.kernel.ends_with("lib/airlock/vmlinux");
             check(hardened, &format!("guest kernel {}", a.kernel.display()), "run guest/build-kernel.sh for the hardened kernel");
             check(true, &format!("guest image {}", a.rootfs.display()), "");
+            image_age(&a.rootfs);
             check(true, &format!("sinkhole {}", a.sinkhole.display()), "");
         }
         Err(e) => check(false, &format!("build outputs ({e:#})"), "run scripts/bootstrap.sh"),

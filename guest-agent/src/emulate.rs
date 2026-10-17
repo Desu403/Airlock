@@ -38,8 +38,10 @@ pub fn run(t: &Triage, work: &str) -> Vec<(Ind, String)> {
         .collect();
     let mut prog = String::from(HARNESS);
     prog.push_str(&format!("\n__airlockSetup({{{}}}, [{}]);\n", info.join(", "), annots.join(", ")));
-    for (i, code) in t.scripts.iter().enumerate() {
-        prog.push_str(&format!("__airlockRun(\"script {}\", {});\n", i + 1, js_str(code)));
+    // Automatic scripts run first (as in a reader); the others are run too,
+    // to reveal intent, but what they do is labelled as needing a click.
+    for (i, sc) in t.scripts.iter().enumerate() {
+        prog.push_str(&format!("__airlockRun(\"script {}\", {});\n", i + 1, js_str(&sc.code)));
     }
     let path = format!("{work}/emulate.js");
     if std::fs::write(&path, prog).is_err() {
@@ -49,10 +51,15 @@ pub fn run(t: &Triage, work: &str) -> Vec<(Ind, String)> {
     let r = monitor::run(&["/usr/bin/qjs", &path], work, &monitor::Opts { mem_limit: Some(1 << 30), ..monitor::Opts::new(Net::Deny, Duration::from_secs(15)) });
     let mut out = r.events;
     let stdout = r.stdout.unwrap_or_default();
+    let mut current: Option<&crate::triage::Script> = None;
     for line in String::from_utf8_lossy(&stdout).lines() {
         let Some(rest) = line.strip_prefix("@@AIRLOCK ") else { continue };
         let mut parts = rest.splitn(3, ' ');
         let (kind, cat, text) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+        if kind == "RUN" {
+            current = text.strip_prefix("script ").and_then(|n| n.parse::<usize>().ok()).and_then(|n| t.scripts.get(n.wrapping_sub(1)));
+            continue;
+        }
         let ind = match kind {
             "CALL" => Ind::JsCall,
             "EXPLOIT" => Ind::JsExploit,
@@ -60,7 +67,13 @@ pub fn run(t: &Triage, work: &str) -> Vec<(Ind, String)> {
             "ERROR" => Ind::JsError,
             _ => continue,
         };
-        let text = if ind == Ind::JsCall { format!("{cat}: {text}") } else { text.to_string() };
+        let text = match current {
+            Some(sc) if ind == Ind::JsCall && !sc.auto => format!("{cat}: (on user action: {}) {text}", sc.trigger),
+            // A script that never runs by itself failing says little.
+            Some(sc) if ind == Ind::JsError && !sc.auto => format!("(on user action: {}) {text}", sc.trigger),
+            _ if ind == Ind::JsCall => format!("{cat}: {text}"),
+            _ => text.to_string(),
+        };
         if !out.iter().any(|(i, t)| *i == ind && *t == text) {
             out.push((ind, text));
         }

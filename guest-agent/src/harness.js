@@ -27,8 +27,11 @@
   // ---- deobfuscation hooks -------------------------------------------------
   var realEval = G.eval, realFunction = G.Function, realUnescape = G.unescape;
   var layers = 0;
+  // Like Reader: every script runs in the one global scope (functions a
+  // document-level script defines are there for the next script), and the
+  // global object stands in for the document (`this.getField(...)`).
   function runCode(code, self, label) {
-    try { return realFunction(String(code)).call(self); }
+    try { return (0, realEval)(String(code)); }
     catch (e) { emit("ERROR", "runtime", label + ": " + e); }
   }
   G.eval = function (code) {
@@ -91,7 +94,15 @@
     setPageAction: stub("doc.setPageAction", "persist"),
     getField: function (n) {
       emit("CALL", "info", "doc.getField(" + s(n) + ")");
-      return { name: n, value: "", display: 0, setAction: stub("field.setAction", "persist"), buttonImportIcon: stub("field.buttonImportIcon", "drop") };
+      var nop = function () {};
+      return {
+        name: n, value: "", valueAsString: "", type: "text", display: 0, numItems: 0, currentValueIndices: -1,
+        readonly: false, required: false, hidden: false, textColor: [], fillColor: [], strokeColor: [], page: 0, rect: [0, 0, 0, 0],
+        getItemAt: function () { return ""; }, getArray: function () { return []; }, isBoxChecked: function () { return false; },
+        setItems: nop, insertItemAt: nop, deleteItemAt: nop, clearItems: nop, setFocus: nop, checkThisBox: nop,
+        buttonSetCaption: nop, buttonGetCaption: function () { return ""; },
+        setAction: stub("field.setAction", "persist"), buttonImportIcon: stub("field.buttonImportIcon", "drop")
+      };
     },
     getAnnots: function () {
       emit("CALL", "info", "doc.getAnnots(" + args(arguments) + ")");
@@ -153,6 +164,13 @@
   var Net = { HTTP: { request: stub("Net.HTTP.request", "net") }, SOAP: SOAP };
   var console_ = { println: stub("console.println", "ui"), show: function () {}, clear: function () {} };
 
+  // Acrobat's built-in form helpers (number/date formatting, totals).
+  ["AFNumber_Format", "AFNumber_Keystroke", "AFPercent_Format", "AFPercent_Keystroke", "AFDate_Format", "AFDate_Keystroke",
+   "AFDate_FormatEx", "AFDate_KeystrokeEx", "AFTime_Format", "AFTime_Keystroke", "AFTime_FormatEx", "AFSpecial_Format",
+   "AFSpecial_Keystroke", "AFSpecial_KeystrokeEx", "AFSimple_Calculate", "AFRange_Validate", "AFMergeChange"
+  ].forEach(function (n) { G[n] = function () {}; });
+  G.AFMakeNumber = function (v) { var n = Number(v); return isNaN(n) ? null : n; };
+  G.ADBE = { Reader_Value_Asked: true, Viewer_Value_Asked: true };
   G.app = app; G.util = util; G.Collab = Collab; G.media = media; G.spell = spell; G.SOAP = SOAP; G.Net = Net;
   G.console = console_; G.event = { target: doc, name: "Open", type: "Doc", value: "", rc: true };
   G.global = {}; G.identity = { name: "", loginName: "user", email: "" }; G.security = {}; G.color = {};

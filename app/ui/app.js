@@ -64,20 +64,115 @@ async function openWith(promise, label) {
   status("Opening…");
   const t0 = performance.now();
   try {
-    const info = await promise;
-    if (!info) { status(state.docOpen ? "Ready" : "Ready"); return; }
+    const r = await promise;
+    // Older call sites return the info itself; open_many returns {info, elsewhere}.
+    const info = r && "elsewhere" in r ? r.info : r;
+    const more = r && r.elsewhere ? ` · ${r.elsewhere} more in new window${r.elsewhere > 1 ? "s" : ""} (one VM each)` : "";
+    if (!info) { status(more ? more.slice(3) : "Ready"); return; }
     setupDocument(info);
     const secs = ((performance.now() - t0) / 1000).toFixed(1);
-    status(`${info.pages.length} page(s) · VM ready in ${(info.ready_ms / 1000).toFixed(1)}s · opened in ${secs}s`);
+    status(`${info.pages.length} page(s) · VM ready in ${(info.ready_ms / 1000).toFixed(1)}s · opened in ${secs}s${more}`);
   } catch (e) {
+    resetDocument();
     status(`Could not open: ${e}`, true);
+    // The file was read but cannot be shown: it can still be analyzed.
+    const name = await invoke("chosen_name").catch(() => null);
+    if (name) showUndisplayable(name, String(e));
   } finally {
     busy(null);
   }
 }
 
+// Back to the empty state (the previous document's VM is already gone).
+function resetDocument() {
+  for (const p of state.pages) if (p.url) URL.revokeObjectURL(p.url);
+  if (state.observer) state.observer.disconnect();
+  Object.assign(state, { pages: [], hits: [], hitIndex: -1, queue: [], findings: null, docOpen: false });
+  $("pages").replaceChildren();
+  for (const id of ["doc", "searchbox", "zoombox", "textbtn", "savewrap", "pixels", "analyze", "banner"]) $(id).hidden = true;
+  $("empty").hidden = false;
+  closePanel();
+}
+
+function showUndisplayable(name, why) {
+  const body = openPanel("Cannot display");
+  const go = el("button", "primary", "Analyze anyway");
+  go.onclick = () => analyze(name);
+  body.replaceChildren(
+    el("p", "", `${name}: ${why}.`),
+    el("p", "note", "Analysis does not need anything visible: it detonates the file in a separate microVM wired to a fake internet and inspects its macros and structure."),
+    go,
+  );
+}
+
 function openDialog() {
   openWith(invoke("pick_and_open"), "the document");
+}
+
+function openPaths(paths) {
+  const name = state.docOpen ? "the documents" : paths[0].split(/[\\/]/).pop();
+  openWith(invoke("open_paths", { paths }), name);
+}
+
+// ---------------------------------------------------------------- saving
+
+function toggleSaveMenu(open) {
+  const m = $("savemenu");
+  m.hidden = open === undefined ? !m.hidden : !open;
+  $("savebtn").setAttribute("aria-expanded", String(!m.hidden));
+}
+
+async function saveSafeCopy() {
+  if (!state.docOpen) return;
+  toggleSaveMenu(false);
+  const stop = await window.__TAURI__.event.listen("export-progress", (e) => {
+    const [i, n] = e.payload;
+    status(`Saving safe copy: page ${i} of ${n}…`);
+  });
+  try {
+    const path = await invoke("save_safe_copy");
+    status(path ? `Saved a safe copy (pixels only) to ${path}` : "Ready");
+  } catch (e) {
+    status(`Could not save: ${e}`, true);
+  } finally {
+    stop();
+  }
+}
+
+// Prints the pixels: every page is drawn once more at print resolution.
+async function printDocument() {
+  if (!state.docOpen) return;
+  toggleSaveMenu(false);
+  const out = $("printout");
+  const urls = [];
+  try {
+    for (let i = 0; i < state.pages.length; i++) {
+      status(`Preparing to print: page ${i + 1} of ${state.pages.length}…`);
+      const buf = await invoke("render_page", { page: i, dpi: 150 });
+      const url = URL.createObjectURL(new Blob([buf], { type: "image/png" }));
+      urls.push(url);
+      const img = el("img");
+      img.src = url;
+      out.append(img);
+    }
+    await Promise.all([...out.querySelectorAll("img")].map((img) => img.decode().catch(() => {})));
+    window.print();
+    status("Ready");
+  } catch (e) {
+    status(`Could not print: ${e}`, true);
+  } finally {
+    // print() returns once the dialog is done with the pages.
+    setTimeout(() => { out.replaceChildren(); urls.forEach((u) => URL.revokeObjectURL(u)); }, 1000);
+  }
+}
+
+async function saveReport() {
+  try {
+    const path = await invoke("save_report");
+    if (path) status(`Saved the report to ${path}`);
+  } catch (e) {
+    status(`Could not save the report: ${e}`, true);
+  }
 }
 
 function openPath(path) {
@@ -98,7 +193,7 @@ function setupDocument(info) {
   closePanel();
 
   $("docname").textContent = info.name;
-  for (const id of ["doc", "searchbox", "zoombox", "pixels", "analyze"]) $(id).hidden = false;
+  for (const id of ["doc", "searchbox", "zoombox", "savewrap", "pixels", "analyze"]) $(id).hidden = false;
   $("textbtn").hidden = state.pixelsOnly;
   $("empty").hidden = true;
   $("analyze").disabled = false;
@@ -373,39 +468,72 @@ async function showText() {
   }
 }
 
-const SOURCE_TITLES = {
-  outside: "Seen from outside the VM — cannot be faked by the document",
-  monitor: "Seen by the in-VM monitor",
-  emulated: "What its JavaScript does in a (fake) Adobe Reader",
-  static: "Static structure of the file",
-};
-
+// Plain language first (title, why it matters); the evidence, who saw it
+// and the ATT&CK technique are one click away under each finding.
 function renderReport(body, report, title) {
   const v = report.verdict;
   const cls = v.startsWith("MALICIOUS") || v.startsWith("LIKELY") ? "malicious" : v.startsWith("SUSPICIOUS") ? "suspicious" : "clean";
   const box = el("div", `verdict ${cls}`);
-  box.append(el("h3", "", v), el("p", "", report.summary));
+  box.append(el("div", "label", v), el("h3", "", report.headline || v));
+  const advice = el("div", "advice");
+  advice.append(el("strong", "", "What to do"), el("p", "", report.advice || report.summary));
+  box.append(advice);
   const nodes = [box];
   if (title) nodes.push(el("p", "note", title));
-  for (const src of ["outside", "monitor", "emulated", "static"]) {
-    const items = report.findings.filter((f) => f.source === src);
-    if (!items.length) continue;
-    nodes.push(el("div", "source", SOURCE_TITLES[src]));
-    for (const f of items) {
-      const row = el("div", "finding");
-      row.append(el("span", `sev ${f.severity}`, f.severity === "medium" ? "med" : f.severity), el("span", "what", f.what));
-      if (f.attack && f.attack !== "-") row.append(el("span", "attack", `ATT&CK ${f.attack}`));
-      nodes.push(row);
+
+  const important = report.findings.filter((f) => f.severity !== "info");
+  const notes = report.findings.filter((f) => f.severity === "info");
+  if (important.length) {
+    const kinds = (s) => new Set(important.filter((f) => f.severity === s).map((f) => f.title + f.source)).size;
+    const counts = ["high", "medium", "low"].map((s) => [s, kinds(s)]).filter(([, n]) => n);
+    const row = el("div", "counts");
+    for (const [s, n] of counts) row.append(el("span", `sev ${s}`, `${n} ${s === "medium" ? "medium" : s}`));
+    nodes.push(el("h4", "section", "What we found"), row);
+  }
+  // One card per kind of finding; every piece of evidence inside it.
+  const groups = [];
+  for (const f of important) {
+    const g = groups.find((x) => x.f.title === f.title && x.f.severity === f.severity && x.f.source === f.source);
+    if (g) g.all.push(f); else groups.push({ f, all: [f] });
+  }
+  for (const { f, all } of groups) {
+    const card = el("div", `finding ${f.severity}`);
+    const head = el("div", "f-head");
+    head.append(el("span", `sev ${f.severity}`, f.severity === "medium" ? "med" : f.severity), el("span", "f-title", f.title || f.what));
+    if (all.length > 1) head.append(el("span", "f-count", `×${all.length}`));
+    card.append(head);
+    if (f.explain) card.append(el("p", "f-explain", f.explain));
+    const more = el("details", "tech");
+    more.append(el("summary", "", "Technical details"));
+    const dl = el("dl");
+    const row = (k, val) => { if (val && val !== "-") dl.append(el("dt", "", k), el("dd", "", val)); };
+    all.forEach((e, i) => row(i ? "" : "Evidence", e.what));
+    row("Seen by", f.seen_by);
+    row("ATT&CK", f.attack);
+    more.append(dl);
+    card.append(more);
+    nodes.push(card);
+  }
+  if (notes.length) {
+    const d = el("details", "notes");
+    d.append(el("summary", "", `Also noted · ${notes.length} harmless on ${notes.length > 1 ? "their" : "its"} own`));
+    const ul = el("ul");
+    for (const f of notes) {
+      const li = el("li");
+      li.append(el("strong", "", f.title || ""), el("span", "", ` ${f.what}`));
+      ul.append(li);
     }
+    d.append(ul);
+    nodes.push(d);
   }
   if (!report.findings.length) nodes.push(el("p", "note", "No findings."));
   body.replaceChildren(...nodes);
 }
 
-async function analyze() {
+async function analyze(name) {
   const btn = $("analyze");
   btn.disabled = true;
-  const body = openPanel("Analysis");
+  const body = openPanel(typeof name === "string" ? `Analysis · ${name}` : "Analysis");
   const wait = el("div", "row");
   wait.append(el("div", "spinner"), el("span", "note", "Detonating in a separate microVM wired to a fake internet, then examining its disk in a second VM. You can keep reading meanwhile."));
   body.replaceChildren(wait);
@@ -413,6 +541,10 @@ async function analyze() {
   try {
     const report = await invoke("analyze");
     renderReport(body, report, `${report.document} · analyzed in ${report.seconds.toFixed(1)}s`);
+    const save = el("button", "", "Save report…");
+    save.title = "Save as text (or .json for tools)";
+    save.onclick = saveReport;
+    body.append(save);
     status(`Analysis: ${report.verdict}`);
   } catch (e) {
     body.replaceChildren(el("p", "note", `Analysis failed: ${e}`));
@@ -429,6 +561,10 @@ $("zin").onclick = () => stepZoom(1);
 $("zout").onclick = () => stepZoom(-1);
 $("zfit").onclick = fitWidth;
 $("textbtn").onclick = showText;
+$("savebtn").onclick = (e) => { e.stopPropagation(); toggleSaveMenu(); };
+$("safecopy").onclick = saveSafeCopy;
+$("print").onclick = printDocument;
+document.addEventListener("click", (e) => { if (!$("savewrap").contains(e.target)) toggleSaveMenu(false); });
 $("pixels").onclick = () => setPixelsOnly(!state.pixelsOnly);
 $("analyze").onclick = analyze;
 $("panel-close").onclick = closePanel;
@@ -451,10 +587,12 @@ document.addEventListener("keydown", (e) => {
   if (mod && e.key.toLowerCase() === "o") { e.preventDefault(); openDialog(); return; }
   if (!state.docOpen) return;
   if (mod && e.key.toLowerCase() === "f") { e.preventDefault(); $("q").focus(); $("q").select(); return; }
+  if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveSafeCopy(); return; }
+  if (mod && e.key.toLowerCase() === "p") { e.preventDefault(); printDocument(); return; }
   if (e.target.tagName === "INPUT") return;
   if (e.key === "+" || e.key === "=") stepZoom(1);
   else if (e.key === "-") stepZoom(-1);
-  else if (e.key === "Escape") closePanel();
+  else if (e.key === "Escape") { toggleSaveMenu(false); closePanel(); }
 });
 
 let resizeTimer = null;
@@ -467,8 +605,196 @@ window.addEventListener("resize", () => {
 window.__TAURI__.webview.getCurrentWebview().onDragDropEvent((event) => {
   const t = event.payload.type;
   $("viewer").classList.toggle("drop", t === "over" || t === "enter");
-  if (t === "drop" && event.payload.paths.length) openPath(event.payload.paths[0]);
+  if (t === "drop" && event.payload.paths.length) openPaths(event.payload.paths);
 });
+
+// ---------------------------------------------------------------- updates
+// The VM's renderers, kernel and Firecracker are rebuilt from the source
+// checkout by scripts/update.sh (verified downloads, regression suite,
+// automatic restore on failure). Checked at most once a day.
+
+const updates = { status: null, running: false, log: [], restart: false };
+
+function pref(key, fallback) {
+  try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
+}
+function setPref(key, value) {
+  try { localStorage.setItem(key, value); } catch {}
+}
+
+function describeChanges(st, max) {
+  const list = st.changes.slice(0, max);
+  const more = st.changes.length - list.length + Math.max(0, st.packages - st.changes.filter((c) => !/^(Guest kernel|Firecracker|Alpine base) /.test(c)).length);
+  return { list, more };
+}
+
+function noteStatus(st) {
+  updates.status = st;
+  $("updates-dot").hidden = !(st && st.available);
+}
+
+async function checkUpdates(force) {
+  const st = await invoke("update_status", { force });
+  noteStatus(st);
+  return st;
+}
+
+// A small notice in the corner: title, text, [label, action] buttons.
+function notify(title, text, actions) {
+  $("toast-title").textContent = title;
+  $("toast-text").textContent = text;
+  $("toast-actions").replaceChildren(...actions.map(([label, fn], i) => {
+    const b = el("button", i === 0 && actions.length > 1 ? "primary" : "", label);
+    b.onclick = fn;
+    return b;
+  }));
+  $("toast").hidden = false;
+}
+
+function changeSummary(st) {
+  const { list, more } = describeChanges(st, 2);
+  return list.join(", ") + (more > 0 ? ` and ${more} more` : "");
+}
+
+function showToast(st) {
+  notify("Security updates for airlock", `${changeSummary(st)}. Installing them takes about two minutes; you can keep reading.`, [
+    ["Update now", () => runUpdate()],
+    ["Details", showUpdates],
+    ["Later", () => { hideToast(); setPref("airlock.updateSnooze", String(Date.now() + 86_400_000)); }],
+  ]);
+}
+
+function hideToast() { $("toast").hidden = true; }
+
+function renderUpdates(body) {
+  const st = updates.status;
+  const nodes = [];
+  if (!st || !st.supported) {
+    nodes.push(el("p", "", "This copy of airlock has no update kit."),
+      el("p", "note", "Install it with scripts/install.sh (which adds the kit), or set AIRLOCK_SOURCE to an airlock source folder."));
+    body.replaceChildren(...nodes);
+    return;
+  }
+  if (st.error) nodes.push(el("p", "note", `Last check failed: ${st.error}`));
+  else if (st.available) {
+    nodes.push(el("p", "", "Security updates are available:"));
+    const ul = el("ul", "changes");
+    for (const c of st.changes) ul.append(el("li", "", c));
+    if (st.packages > st.changes.length) ul.append(el("li", "", `… ${st.packages} packages in total`));
+    nodes.push(ul);
+  } else nodes.push(el("p", "", "Everything is up to date."));
+  const when = st.checked ? new Date(st.checked * 1000).toLocaleString() : "never";
+  nodes.push(el("p", "note", `Last checked: ${when} · VM image built ${st.image_age_days} day(s) ago.`));
+
+  const row = el("div", "row");
+  const check = el("button", "", "Check now");
+  const go = el("button", "primary", updates.running ? "Updating…" : "Update now");
+  go.disabled = updates.running;
+  check.disabled = updates.running;
+  check.onclick = async () => {
+    check.disabled = true; check.textContent = "Checking…";
+    try { await checkUpdates(true); } catch (e) { status(`Update check failed: ${e}`, true); }
+    renderUpdates(body);
+  };
+  go.onclick = () => runUpdate(body);
+  row.append(go, check);
+  nodes.push(row, el("p", "note", "Downloads are verified (kernel.org signatures, published checksums). The full test suite must pass before the new version is used; otherwise the current one stays."));
+
+  const toggle = (key, text, onChange) => {
+    const label = el("label", "check");
+    const box = el("input");
+    box.type = "checkbox";
+    box.checked = pref(key, "1") === "1";
+    box.onchange = () => { setPref(key, box.checked ? "1" : "0"); onChange?.(box.checked); };
+    label.append(box, document.createTextNode(text));
+    return [label, box];
+  };
+  const [checkLabel] = toggle("airlock.autoUpdateCheck", "Check for updates automatically (once a day: kernel.org, GitHub, Alpine)", () => renderUpdates(body));
+  const [installLabel, installBox] = toggle("airlock.autoInstall", "Install security updates automatically (in the background; you are told afterwards)");
+  installBox.disabled = pref("airlock.autoUpdateCheck", "1") !== "1";
+  nodes.push(checkLabel, installLabel);
+
+  if (updates.log.length) {
+    const ul = el("ul", "progress");
+    for (const l of updates.log) ul.append(el("li", "", l));
+    nodes.push(ul);
+  }
+  if (updates.restart) {
+    const r = el("button", "primary", "Restart airlock");
+    r.onclick = () => invoke("restart_app");
+    nodes.push(el("p", "", "airlock itself was updated too. Documents opened from now on already use the new VM; restart to use the new app."), r);
+  }
+  body.replaceChildren(...nodes);
+}
+
+function showUpdates() {
+  hideToast();
+  renderUpdates(openPanel("Updates"));
+}
+
+// quiet: started automatically — no panel, a notice when done.
+async function runUpdate(body, quiet = false) {
+  if (updates.running) return;
+  hideToast();
+  if (!updates.status) await checkUpdates(false).catch(() => {});
+  updates.running = true;
+  updates.restart = false;
+  updates.log = ["Starting…"];
+  if (!quiet) {
+    if (!body || $("panel-title").textContent !== "Updates") body = openPanel("Updates");
+    renderUpdates(body);
+  }
+  status("Updating airlock's VM in the background…");
+  let ok = false;
+  try {
+    const r = await invoke("run_update");
+    // The script's summary minus its command-line hints.
+    for (const l of r.lines) {
+      const t = l.trim();
+      if (t && !t.startsWith("==>") && !t.startsWith("undo:")) updates.log.push(t);
+    }
+    updates.log.push(r.ok ? "Done — all checks passed." : "The update failed its checks; the previous version is still in place.");
+    updates.restart = r.ok && r.restart;
+    ok = r.ok;
+    status(r.ok ? "airlock updated" : "Update failed — nothing was changed", !r.ok);
+    try { await checkUpdates(true); } catch {}
+  } catch (e) {
+    updates.log.push(`Update failed: ${e}`);
+    status(`Update failed: ${e}`, true);
+  } finally {
+    updates.running = false;
+    if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates($("panel-body"));
+  }
+  if (quiet) {
+    if (ok) notify("airlock was updated", "Security updates were installed and all checks passed. Documents you open now use the updated VM.", [
+      ...(updates.restart ? [["Restart airlock", () => invoke("restart_app")]] : []),
+      ["Details", showUpdates], ["OK", hideToast]]);
+    else notify("Automatic update failed", "Nothing was changed: airlock keeps using the current version. Details are in the Updates panel.", [["Details", showUpdates], ["OK", hideToast]]);
+  }
+}
+
+window.__TAURI__.event.listen("update-progress", (e) => {
+  const line = String(e.payload);
+  // Steps only ("==> Rebuilding…"); the full log is in build/update.log.
+  if (!line.startsWith("==>")) return;
+  updates.log.push(line.slice(4));
+  if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates($("panel-body"));
+});
+
+$("updates").onclick = showUpdates;
+
+async function autoCheckUpdates() {
+  if (pref("airlock.autoUpdateCheck", "1") !== "1") return;
+  try {
+    const st = await checkUpdates(false);
+    if (!st.available) return;
+    if (pref("airlock.autoInstall", "1") === "1") {
+      notify("Installing security updates", `${changeSummary(st)}. airlock is updating in the background; you can keep reading.`, [["Details", showUpdates], ["Hide", hideToast]]);
+      runUpdate(null, true);
+    } else if (Date.now() > Number(pref("airlock.updateSnooze", "0"))) showToast(st);
+  } catch {}
+}
+setTimeout(autoCheckUpdates, 3000);
 
 async function runDemo() {
   const script = await invoke("demo_script");
@@ -493,6 +819,15 @@ async function runDemo() {
       body.replaceChildren(el("pre", "", JSON.stringify(getSelection().toString()).slice(0, 2000)));
     }
     if (cmd === "analyze") await analyze();
+    if (cmd === "savemenu") toggleSaveMenu(true);
+    if (cmd === "print") await printDocument();
+    if (cmd === "safecopy") await saveSafeCopy();
+    if (cmd === "savereport") await saveReport();
+    if (cmd === "update") await runUpdate();
+    if (cmd === "restart") { await new Promise((r) => setTimeout(r, Number(arg) || 0)); await invoke("restart_app"); }
+    if (cmd === "updates") { await checkUpdates(arg === "force"); showUpdates(); }
+    if (cmd === "autotoast") notify("airlock was updated", "Security updates were installed and all checks passed. Documents you open now use the updated VM.", [["Restart airlock", () => {}], ["Details", showUpdates], ["OK", hideToast]]);
+    if (cmd === "toast") showToast({ changes: ["mupdf-tools 1.27.2-r0 → 1.27.3-r0", "Guest kernel 6.1.190 → 6.1.191"], packages: 14 });
   }
 }
 

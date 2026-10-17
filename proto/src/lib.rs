@@ -182,6 +182,24 @@ pub enum Ind {
     OfficeContainer = 41,
     /// Office: triage could not parse something.
     OfficeError = 42,
+    /// YARA: a known-malware rule matched (rule score >= 75).
+    YaraHigh = 50,
+    /// YARA: a rule for suspicious-but-not-conclusive traits (score 60-74).
+    YaraMedium = 51,
+    /// YARA: weak or generic rule.
+    YaraLow = 52,
+    /// PDF: an action that runs without the reader doing anything ("Launch: cmd.exe [document opened]").
+    PdfAutoAction = 60,
+    /// PDF: an action that runs if the reader clicks (links are PdfUri).
+    PdfClickAction = 61,
+    /// PDF: embedded file ("name (size, what it is)").
+    PdfAttachment = 62,
+    /// PDF: form scripts that only call Adobe's standard formatting functions.
+    PdfJsForm = 63,
+    /// PDF: JavaScript that only runs on a click or keystroke, or never.
+    PdfJsClick = 64,
+    /// PDF: structure could not be read (password, damage, deliberate malformation).
+    PdfUnreadable = 65,
 }
 
 impl Ind {
@@ -217,6 +235,15 @@ impl Ind {
             40 => OfficeLink,
             41 => OfficeContainer,
             42 => OfficeError,
+            50 => YaraHigh,
+            51 => YaraMedium,
+            52 => YaraLow,
+            60 => PdfAutoAction,
+            61 => PdfClickAction,
+            62 => PdfAttachment,
+            63 => PdfJsForm,
+            64 => PdfJsClick,
+            65 => PdfUnreadable,
             _ => return None,
         })
     }

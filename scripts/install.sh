@@ -34,7 +34,7 @@ DESKTOP=$DATA/applications/airlock.desktop
 ICON=$DATA/icons/hicolor/512x512/apps/airlock.png
 MIMEAPPS=${XDG_CONFIG_HOME:-$HOME/.config}/mimeapps.list
 # One line per type: "<type> <explicit default or -> <effective default or ->",
-# recorded on first install.
+# recorded the first time a type is registered.
 DEFAULTS=$LIB/previous-defaults
 # Everything airlock can open (type is still sniffed from content inside the VM).
 TYPES="application/pdf
@@ -51,9 +51,16 @@ application/vnd.oasis.opendocument.text
 application/vnd.oasis.opendocument.spreadsheet
 application/vnd.oasis.opendocument.presentation
 application/rtf
-text/rtf"
+text/rtf
+application/vnd.openxmlformats-officedocument.wordprocessingml.template
+application/vnd.ms-word.template.macroEnabled.12
+application/vnd.ms-excel.addin.macroEnabled.12
+application/vnd.ms-excel.template.macroEnabled.12
+application/vnd.ms-powerpoint.slideshow.macroEnabled.12"
 
 die() { echo "error: $*" >&2; exit 1; }
+# put MODE SRC DEST: replace atomically, so a running airlock keeps its copy.
+put() { install -m "$1" "$2" "$3.new" && mv -f "$3.new" "$3"; }
 refresh() {
     command -v update-desktop-database >/dev/null && update-desktop-database -q "$DATA/applications" 2>/dev/null || true
     command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$DATA/icons/hicolor" 2>/dev/null || true
@@ -72,9 +79,10 @@ drop_default() {
 # Records the current state, then pins today's effective defaults so the
 # new launcher does not silently take over.
 pin_defaults() {
-    [ -f "$DEFAULTS" ] && return 0
     mkdir -p "$LIB"
     for type in $TYPES; do
+        # Each type is recorded once, the first time airlock sees it.
+        grep -q "^$type " "$DEFAULTS" 2>/dev/null && continue
         explicit=$(explicit_default "$type")
         effective=$(xdg-mime query default "$type" 2>/dev/null || true)
         echo "$type ${explicit:--} ${effective:--}" >> "$DEFAULTS"
@@ -118,19 +126,40 @@ APP=0
 [ -f app/target/release/airlock-app ] && APP=1
 
 mkdir -p "$BIN" "$LIB"
-install -m 0755 host/target/release/airlock "$BIN/airlock"
-install -m 0755 host/target/release/sinkhole "$LIB/sinkhole"
-install -m 0755 vendor/bin/firecracker "$LIB/firecracker"
-install -m 0644 vendor/bin/vmlinux-airlock "$LIB/vmlinux"
+put 0755 host/target/release/airlock "$BIN/airlock"
+put 0755 host/target/release/sinkhole "$LIB/sinkhole"
+put 0755 vendor/bin/firecracker "$LIB/firecracker"
+put 0644 vendor/bin/vmlinux-airlock "$LIB/vmlinux"
 # Copy then rename: VMs already running keep their old image.
 cp --reflink=auto --sparse=always build/rootfs.ext4 "$LIB/rootfs.ext4.new"
 chmod 0644 "$LIB/rootfs.ext4.new"
 mv -f "$LIB/rootfs.ext4.new" "$LIB/rootfs.ext4"
+[ -f build/rootfs.info ] && put 0644 build/rootfs.info "$LIB/rootfs.info"
 echo "installed CLI:  $BIN/airlock"
+
+# Update kit: the recipe for rebuilding the VM (~250 KB: build scripts, the
+# in-VM agent's source, tests) plus today's inputs, so this install can update
+# itself from the official servers with no source checkout (scripts/update.sh).
+KIT=$LIB/kit
+mkdir -p "$KIT/vendor/bin" "$KIT/vendor/dl/kernel" "$KIT/build"
+rm -rf "$KIT/guest" "$KIT/guest-agent" "$KIT/proto" "$KIT/scripts" "$KIT/tests"
+if [ -d .git ] && command -v git >/dev/null; then
+    git ls-files guest guest-agent proto scripts tests | while read -r f; do install -D -m "$(stat -c %a "$f")" "$f" "$KIT/$f"; done
+else
+    for d in guest guest-agent proto scripts tests; do
+        (cd "$d" && find . -path ./target -prune -o -type f -print) | while read -r f; do install -D "$d/$f" "$KIT/$d/$f"; done
+    done
+fi
+cp vendor/bin/firecracker vendor/bin/vmlinux-airlock "$KIT/vendor/bin/"
+cp vendor/bin/vmlinux-airlock.stamp "$KIT/vendor/bin/" 2>/dev/null || true
+rm -f "$KIT"/vendor/dl/yara-forge-rules-*.zip
+for f in vendor/dl/alpine-minirootfs-*.tar.gz vendor/dl/firecracker-*.tgz vendor/dl/yara-forge-rules-*.zip; do [ -f "$f" ] && cp "$f" "$KIT/vendor/dl/"; done
+touch "$KIT/.airlock-kit"
+rm -f "$KIT/build/update-status"
 
 if [ "$APP" = 1 ]; then
     command -v xdg-mime >/dev/null && pin_defaults
-    install -m 0755 app/target/release/airlock-app "$BIN/airlock-app"
+    put 0755 app/target/release/airlock-app "$BIN/airlock-app"
     install -D -m 0644 app/icons/icon.png "$ICON"
     mkdir -p "$(dirname "$DESKTOP")"
     cat > "$DESKTOP" <<EOF

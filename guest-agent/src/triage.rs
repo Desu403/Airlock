@@ -105,30 +105,71 @@ fn one_line(b: &[u8], max: usize) -> String {
 }
 
 /// What the static pass found, plus the material the JS emulator needs.
+/// One piece of the document's JavaScript and what makes a reader run it.
+pub struct Script {
+    /// Plain ASCII, e.g. "document opened (/OpenAction)".
+    pub trigger: String,
+    /// Runs without the reader clicking or typing anything.
+    pub auto: bool,
+    pub code: Vec<u8>,
+}
+
 pub struct Triage {
     pub indicators: Vec<(Ind, String)>,
-    pub scripts: Vec<Vec<u8>>,
+    /// Automatic scripts first.
+    pub scripts: Vec<Script>,
     /// Document info dictionary (malware hides payloads in /Subject etc.).
     pub info: Vec<(&'static str, Vec<u8>)>,
     /// (subject, contents) of annotations, read back via getAnnots().
     pub annots: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
-/// All values of `key` (e.g. b"/Subj") in the document, in order.
+/// The document with every stream's data left out (keywords kept): PDF
+/// keys and actions live in dictionaries, so only these bytes are searched.
+/// Image or font data can spell "/AA" or "/JS" by chance.
+fn structure(doc: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(doc.len() / 4);
+    let mut i = 0;
+    while let Some(p) = doc[i..].windows(6).position(|w| w == b"stream") {
+        let at = i + p;
+        let kw_end = at + 6;
+        // Data starts at ">> stream" + EOL (a stream dictionary's end). In
+        // `mutool clean` output strings never hold a raw newline, so a
+        // string cannot fake this to hide the keys after it.
+        let after_dict = doc[..at].iter().rev().find(|c| !c.is_ascii_whitespace()) == Some(&b'>');
+        let starts_data = after_dict && matches!(doc.get(kw_end), Some(b'\r' | b'\n'));
+        if !starts_data {
+            out.extend_from_slice(&doc[i..kw_end]);
+            i = kw_end;
+            continue;
+        }
+        out.extend_from_slice(&doc[i..kw_end]);
+        out.push(b'\n');
+        match doc[kw_end..].windows(9).position(|w| w == b"endstream") {
+            Some(e) => i = kw_end + e,
+            None => return out,
+        }
+    }
+    out.extend_from_slice(&doc[i..]);
+    out
+}
+
+/// All values of `key` (e.g. b"/Subj") in the document, in order. Keys are
+/// searched in `hay` (the structure), references resolved in `doc`.
 /// With `strings_only`, indirect references (e.g. a page's /Contents stream) are skipped.
-fn values_of(doc: &[u8], key: &[u8], max: usize, strings_only: bool) -> Vec<Vec<u8>> {
+fn values_of(doc: &[u8], hay: &[u8], key: &[u8], max: usize, strings_only: bool) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut i = 0;
-    while let Some(p) = doc[i..].windows(key.len()).position(|w| w == key) {
+    while let Some(p) = hay[i..].windows(key.len()).position(|w| w == key) {
         let at = i + p + key.len();
         i = at;
-        if doc.get(at).is_some_and(|c| c.is_ascii_alphanumeric()) {
+        if hay.get(at).is_some_and(|c| c.is_ascii_alphanumeric()) {
             continue;
         }
-        if strings_only && !matches!(skip_ws(&doc[at..]).first(), Some(b'(' | b'<')) {
+        if strings_only && !matches!(skip_ws(&hay[at..]).first(), Some(b'(' | b'<')) {
             continue;
         }
-        if let Some(v) = value_text(doc, &doc[at..]) {
+        if let Some(v) = value_text(doc, &hay[at..]) {
             out.push(v);
             if out.len() >= max {
                 break;
@@ -138,15 +179,183 @@ fn values_of(doc: &[u8], key: &[u8], max: usize, strings_only: bool) -> Vec<Vec<
     out
 }
 
-pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
-    let mut out = Vec::new();
-    let clean_path = format!("{work}/clean.pdf");
-    let r = monitor::run(&["/usr/bin/mutool", "clean", "-d", doc_path, &clean_path], work, &monitor::Opts::new(Net::Deny, Duration::from_secs(60)));
-    out.extend(r.events);
-    let clean = std::fs::read(&clean_path).unwrap_or_default();
-    let doc: &[u8] = if clean.is_empty() { raw } else { &clean };
+/// Names whose escaping only makes sense to evade keyword scanners.
+const KEYWORDS: &[&[u8]] = &[
+    b"JavaScript", b"JS", b"OpenAction", b"AA", b"Launch", b"EmbeddedFile", b"EmbeddedFiles", b"URI", b"SubmitForm",
+    b"ImportData", b"RichMedia", b"XFA", b"GoToR", b"GoToE", b"AcroForm", b"Names", b"ObjStm", b"Filter", b"Encrypt",
+    b"FlateDecode", b"ASCIIHexDecode", b"ASCII85Decode", b"LZWDecode", b"RunLengthDecode", b"JBIG2Decode", b"Action", b"S",
+];
 
-    let js = count_name(doc, b"/JavaScript") + count_name(doc, b"/JS");
+/// Counts /Name tokens that contain #xx escapes and decode to a keyword.
+fn escaped_keywords(raw: &[u8]) -> (usize, Vec<String>) {
+    let delim = |c: u8| c.is_ascii_whitespace() || b"()<>[]{}/%".contains(&c);
+    let (mut n, mut examples) = (0, Vec::new());
+    let mut i = 0;
+    while i < raw.len() {
+        if raw[i] != b'/' {
+            i += 1;
+            continue;
+        }
+        let start = i + 1;
+        let mut end = start;
+        while end < raw.len() && end - start < 128 && !delim(raw[end]) {
+            end += 1;
+        }
+        let tok = &raw[start..end];
+        if tok.contains(&b'#') {
+            let mut dec = Vec::with_capacity(tok.len());
+            let mut k = 0;
+            while k < tok.len() {
+                let hex = |c: u8| (c as char).to_digit(16);
+                match (tok[k], tok.get(k + 1).and_then(|&c| hex(c)), tok.get(k + 2).and_then(|&c| hex(c))) {
+                    (b'#', Some(h), Some(l)) => {
+                        dec.push((h * 16 + l) as u8);
+                        k += 3;
+                    }
+                    (c, _, _) => {
+                        dec.push(c);
+                        k += 1;
+                    }
+                }
+            }
+            if KEYWORDS.contains(&dec.as_slice()) {
+                n += 1;
+                let shown = format!("/{}", String::from_utf8_lossy(&tok[..tok.len().min(40)]));
+                if examples.len() < 3 && !examples.contains(&shown) {
+                    examples.push(shown);
+                }
+            }
+        }
+        i = end.max(i + 1);
+    }
+    (n, examples)
+}
+
+const WALK_JS: &str = "/usr/lib/airlock/pdf_walk.js";
+
+#[derive(Default)]
+struct Walk {
+    scripts: Vec<Script>,
+    /// (trigger, automatic, action type, detail)
+    actions: Vec<(String, bool, String, String)>,
+    /// (name, size, first bytes)
+    embedded: Vec<(String, u64, Vec<u8>)>,
+    features: Vec<String>,
+}
+
+fn unhex(h: &str) -> Option<Vec<u8>> {
+    if h.len() % 2 != 0 {
+        return None;
+    }
+    (0..h.len()).step_by(2).map(|i| u8::from_str_radix(h.get(i..i + 2)?, 16).ok()).collect()
+}
+
+fn label(s: &str, max: usize) -> String {
+    s.chars().filter(|c| c.is_ascii_graphic() || *c == ' ').take(max).collect()
+}
+
+/// Runs guest/pdf_walk.js; None unless it got all the way through.
+fn run_walker(pdf: &str, work: &str, out: &mut Vec<(Ind, String)>) -> Option<Walk> {
+    let r = monitor::run(&["/usr/bin/mutool", "run", WALK_JS, pdf], work, &monitor::Opts::new(Net::Deny, Duration::from_secs(60)));
+    out.extend(r.events);
+    let text = String::from_utf8_lossy(r.stdout.as_deref()?).into_owned();
+    if !text.lines().any(|l| l == "@@DONE") {
+        return None;
+    }
+    let mut w = Walk { scripts: parse_scripts(text.as_bytes()), ..Default::default() };
+    for line in text.lines() {
+        let f: Vec<&str> = line.split('\t').collect();
+        match f[..] {
+            ["@@ACT", trigger, auto, kind, detail] if w.actions.len() < 256 => {
+                let detail = one_line(&utf16_to_utf8(&unhex(detail).unwrap_or_default()), 160);
+                w.actions.push((label(trigger, 80), auto == "1", label(kind, 32), detail));
+            }
+            ["@@EMB", name, size, head] if w.embedded.len() < 64 => {
+                let name = one_line(&utf16_to_utf8(&unhex(name).unwrap_or_default()), 100);
+                w.embedded.push((name, size.parse().unwrap_or(0), unhex(head).unwrap_or_default()));
+            }
+            ["@@FEAT", feat] => w.features.push(label(feat, 16)),
+            _ => {}
+        }
+    }
+    Some(w)
+}
+
+/// What an embedded file really is, from its first bytes (then its name).
+fn file_kind(name: &str, head: &[u8]) -> &'static str {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let program_ext = ["js", "jse", "vbs", "vbe", "wsf", "hta", "bat", "cmd", "ps1", "lnk", "scr", "exe", "dll", "jar", "msi", "com", "pif", "cpl", "reg"];
+    if head.starts_with(b"MZ") {
+        "Windows program"
+    } else if head.starts_with(b"\x7fELF") {
+        "Linux program"
+    } else if head.starts_with(b"#!") {
+        "script"
+    } else if program_ext.contains(&ext.as_str()) {
+        "program or script (by its name)"
+    } else if head.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]) {
+        "Office document (older format; can carry macros)"
+    } else if head.starts_with(b"PK\x03\x04") {
+        if ["docx", "xlsx", "pptx", "docm", "xlsm", "pptm"].contains(&ext.as_str()) {
+            "Office document"
+        } else {
+            "ZIP archive"
+        }
+    } else if head.starts_with(b"%PDF") {
+        "PDF"
+    } else if head.starts_with(b"{\\rt") {
+        "RTF document"
+    } else if head.starts_with(b"\x89PNG") || head.starts_with(b"\xff\xd8\xff") || head.starts_with(b"GIF8") {
+        "image"
+    } else if head.iter().all(|c| c.is_ascii_graphic() || c.is_ascii_whitespace()) {
+        "text or XML"
+    } else {
+        "data"
+    }
+}
+
+/// Page navigation and display actions: nothing to report.
+const QUIET_ACTIONS: &[&str] = &["GoTo", "GoToDp", "Thread", "Trans", "SetOCGState", "Hide", "ResetForm", "GoTo3DView"];
+const QUIET_NAMED: &[&str] = &["NextPage", "PrevPage", "FirstPage", "LastPage", "GoBack", "GoForward", "FitPage", "FullScreen", "Find"];
+
+fn report_walk(w: &Walk, out: &mut Vec<(Ind, String)>) {
+    for f in &w.features {
+        out.push(match f.as_str() {
+            "Password" => (Ind::PdfUnreadable, "password protected: nothing in it can be checked (or shown) without the password".into()),
+            "Encrypt" => (Ind::PdfFeature, "encryption (usually just permissions such as \"no printing\")".into()),
+            "XFA" => (Ind::PdfFeature, "an XFA form (an older Adobe form technology; legitimate, but a past source of reader exploits)".into()),
+            "RichMedia" => (Ind::PdfFeature, "rich media / Flash content".into()),
+            "Media" => (Ind::PdfFeature, "embedded media (video or sound player)".into()),
+            _ => continue,
+        });
+    }
+    let mut links = Vec::new();
+    for (trigger, auto, kind, detail) in &w.actions {
+        if QUIET_ACTIONS.contains(&kind.as_str()) || (kind == "Named" && QUIET_NAMED.contains(&detail.as_str())) {
+            continue;
+        }
+        // Clicked web links are ordinary links.
+        if !auto && kind == "URI" {
+            if !detail.is_empty() && !links.contains(detail) && links.len() < 20 {
+                links.push(detail.clone());
+            }
+            continue;
+        }
+        let entry = (if *auto { Ind::PdfAutoAction } else { Ind::PdfClickAction }, format!("{kind}: {detail} [{trigger}]"));
+        if !out.contains(&entry) && out.len() < 200 {
+            out.push(entry);
+        }
+    }
+    out.extend(links.into_iter().map(|u| (Ind::PdfUri, u)));
+    for (name, size, head) in &w.embedded {
+        let name = if name.is_empty() { "(unnamed)" } else { name.as_str() };
+        out.push((Ind::PdfAttachment, format!("{name} ({size} bytes, {})", file_kind(name, head))));
+    }
+}
+
+/// Fallback when MuPDF cannot walk the document: name counts on the structure.
+fn byte_scan(doc: &[u8], st: &[u8], out: &mut Vec<(Ind, String)>) {
+    let js = count_name(st, b"/JavaScript") + count_name(st, b"/JS");
     if js > 0 {
         out.push((Ind::PdfFeature, format!("JavaScript ({js} places)")));
     }
@@ -161,21 +370,18 @@ pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
         (b"/XFA", "an XFA form"),
         (b"/GoToR", "a link that opens another document (/GoToR)"),
         (b"/GoToE", "a link that opens an embedded document (/GoToE)"),
-        (b"/Encrypt", "encryption"),
     ];
     for (name, label) in features {
-        let n = count_name(doc, name);
+        let n = count_name(st, name);
         if n > 0 {
             out.push((Ind::PdfFeature, if n > 1 { format!("{label} x{n}") } else { label.to_string() }));
         }
     }
-
-    // Link targets.
     let mut uris = Vec::new();
     let mut i = 0;
-    while let Some(p) = doc[i..].windows(4).position(|w| w == b"/URI") {
+    while let Some(p) = st[i..].windows(4).position(|w| w == b"/URI") {
         let at = i + p + 4;
-        if let Some(v) = value_text(doc, &doc[at..]) {
+        if let Some(v) = value_text(doc, &st[at..]) {
             let u = one_line(&v, 200);
             if !u.is_empty() && !uris.contains(&u) && uris.len() < 20 {
                 uris.push(u);
@@ -184,42 +390,167 @@ pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
         i = at;
     }
     out.extend(uris.into_iter().map(|u| (Ind::PdfUri, u)));
+}
 
-    // JavaScript bodies: a preview for the report, the full code for the emulator.
-    let mut scripts: Vec<Vec<u8>> = Vec::new();
-    for v in values_of(doc, b"/JS", 32, false) {
-        if !v.iter().all(|c| c.is_ascii_whitespace()) && !scripts.contains(&v) {
-            scripts.push(v);
+/// Only calls to Adobe's built-in form helpers (AFNumber_Format(2, 0, ...);
+/// AFSimple_Calculate("SUM", ...)): what every fillable form uses.
+fn standard_form_script(code: &[u8]) -> Option<Vec<String>> {
+    let text = String::from_utf8_lossy(code);
+    let mut names = Vec::new();
+    for stmt in text.split([';', '\n', '\r']).map(str::trim).filter(|s| !s.is_empty()) {
+        let open = stmt.find('(')?;
+        let name = stmt[..open].trim();
+        let ok = name.starts_with("AF") && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') && stmt.ends_with(')');
+        if !ok || stmt[open..].contains(['{', '}', '=']) {
+            return None;
+        }
+        names.push(name.to_string());
+    }
+    (!names.is_empty()).then_some(names)
+}
+
+fn report_scripts(scripts: &[Script], out: &mut Vec<(Ind, String)>) {
+    let (mut form, mut form_names) = (0, Vec::<String>::new());
+    let (mut shown_auto, mut shown_click) = (0, 0);
+    for js in scripts {
+        if let Some(names) = standard_form_script(&js.code) {
+            form += 1;
+            for n in names {
+                if !form_names.contains(&n) && form_names.len() < 6 {
+                    form_names.push(n);
+                }
+            }
+            continue;
+        }
+        let text = format!("[{}] {}", js.trigger, one_line(&js.code, 160));
+        if js.auto && shown_auto < 5 {
+            shown_auto += 1;
+            out.push((Ind::PdfJs, text));
+        } else if !js.auto && shown_click < 5 {
+            shown_click += 1;
+            out.push((Ind::PdfJsClick, text));
         }
     }
-    for js in scripts.iter().take(5) {
-        out.push((Ind::PdfJs, one_line(js, 220)));
+    if form > 0 {
+        out.push((Ind::PdfJsForm, format!("{form} form-field script(s) that only use Adobe's standard formatting functions ({})", form_names.join(", "))));
     }
+}
+
+/// Lines "@@JS\t<trigger>\t<0|1>\t<hex>" from pdf_walk.js.
+fn parse_scripts(out: &[u8]) -> Vec<Script> {
+    let mut v: Vec<Script> = Vec::new();
+    for line in String::from_utf8_lossy(out).lines() {
+        let mut f = line.splitn(4, '\t');
+        let (Some("@@JS"), Some(trigger), Some(auto), Some(hex)) = (f.next(), f.next(), f.next(), f.next()) else { continue };
+        if hex.len() % 2 != 0 || v.len() >= 64 {
+            continue;
+        }
+        let Some(code) = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(&hex[i..i + 2], 16).ok()).collect::<Option<Vec<u8>>>() else { continue };
+        let code = utf16_to_utf8(&code);
+        if trimmed(&code).is_empty() || v.iter().any(|s| s.code == code) {
+            continue;
+        }
+        let trigger: String = trigger.chars().filter(|c| c.is_ascii_graphic() || *c == ' ').take(80).collect();
+        v.push(Script { trigger, auto: auto == "1", code });
+    }
+    v
+}
+
+/// PDF text strings may be UTF-16BE with a byte-order mark.
+fn utf16_to_utf8(b: &[u8]) -> Vec<u8> {
+    match b {
+        [0xFE, 0xFF, rest @ ..] => {
+            let units: Vec<u16> = rest.chunks_exact(2).map(|c| u16::from_be_bytes([c[0], c[1]])).collect();
+            String::from_utf16_lossy(&units).into_bytes()
+        }
+        _ => b.to_vec(),
+    }
+}
+
+fn trimmed(b: &[u8]) -> &[u8] {
+    let start = b.iter().position(|c| !c.is_ascii_whitespace()).unwrap_or(b.len());
+    let end = b.iter().rposition(|c| !c.is_ascii_whitespace()).map_or(start, |e| e + 1);
+    &b[start..end]
+}
+
+pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
+    let mut out = Vec::new();
+    let clean_path = format!("{work}/clean.pdf");
+    let r = monitor::run(&["/usr/bin/mutool", "clean", "-d", doc_path, &clean_path], work, &monitor::Opts::new(Net::Deny, Duration::from_secs(60)));
+    out.extend(r.events);
+    let clean = std::fs::read(&clean_path).unwrap_or_default();
+    let doc: &[u8] = if clean.is_empty() { raw } else { &clean };
+    let st = structure(doc);
+
+    // The PDF's real structure, read by MuPDF (in here, as nobody): every
+    // action with what triggers it, embedded files, risky features.
+    let mut walk = run_walker(doc_path, work, &mut out);
+    if walk.is_none() && !clean.is_empty() {
+        walk = run_walker(&clean_path, work, &mut out);
+    }
+    let walked = walk.is_some();
+    let walk = walk.unwrap_or_default();
+    if walked {
+        report_walk(&walk, &mut out);
+    } else {
+        out.push((Ind::PdfUnreadable, "MuPDF could not read the document's structure (damaged, or malformed on purpose); a rough byte scan was used instead".into()));
+        byte_scan(doc, &st, &mut out);
+    }
+
+    // Scripts the walk could not place (byte scan of the structure): they
+    // are not attached to anything a reader runs.
+    let mut scripts = walk.scripts;
+    for v in values_of(doc, &st, b"/JS", 32, false) {
+        let code = utf16_to_utf8(&v);
+        let key = trimmed(&code);
+        if key.is_empty() || scripts.iter().any(|s| trimmed(&s.code) == key) {
+            continue;
+        }
+        // Still-compressed or binary data under a /JS key is not a script
+        // (random bytes are ~12% control characters, text has next to none).
+        let control = key.iter().filter(|&&c| (c < 0x20 && !c.is_ascii_whitespace()) || c == 0x7f).count();
+        if control * 20 > key.len() {
+            continue;
+        }
+        let (trigger, auto) = if walked { ("not attached to any trigger", false) } else { ("unknown trigger", true) };
+        scripts.push(Script { trigger: trigger.into(), auto, code });
+    }
+    scripts.sort_by_key(|s| !s.auto);
+    report_scripts(&scripts, &mut out);
     let info = ["Title", "Author", "Subject", "Keywords", "Creator", "Producer"]
         .into_iter()
-        .filter_map(|k| values_of(doc, format!("/{k}").as_bytes(), 1, false).pop().map(|v| (k, v)))
+        .filter_map(|k| values_of(doc, &st, format!("/{k}").as_bytes(), 1, false).pop().map(|v| (k, v)))
         .collect();
-    let subj = values_of(doc, b"/Subj", 20, true);
-    let contents = values_of(doc, b"/Contents", 20, true);
+    let subj = values_of(doc, &st, b"/Subj", 20, true);
+    let contents = values_of(doc, &st, b"/Contents", 20, true);
     let annots = subj.into_iter().zip(contents.into_iter().chain(std::iter::repeat(Vec::new()))).collect();
 
-    // Obfuscation: names written with #xx escapes (/J#61vaScript).
-    // Only counts '#xx' inside a /Name token, not in ordinary text.
-    let in_name = |k: usize| {
-        let start = k.saturating_sub(40);
-        raw[start..k].iter().rposition(|&c| !(c.is_ascii_alphanumeric() || c == b'#')).is_some_and(|p| raw[start + p] == b'/')
-    };
-    let hex_names = (1..raw.len().saturating_sub(3))
-        .filter(|&k| raw[k] == b'#' && raw[k + 1].is_ascii_hexdigit() && raw[k + 2].is_ascii_hexdigit() && in_name(k))
-        .count();
-    if hex_names > 0 {
-        out.push((Ind::PdfObfuscation, format!("hex-escaped names x{hex_names} (hides keywords from scanners)")));
+    // Obfuscation: security-relevant names written with #xx escapes
+    // (/J#61vaScript). Escapes elsewhere are normal (font names with
+    // spaces or non-Latin characters: /Times#20New#20Roman).
+    let (hidden, examples) = escaped_keywords(raw);
+    if hidden > 0 {
+        out.push((Ind::PdfObfuscation, format!("hex-escaped keywords x{hidden} ({}) hide them from scanners", examples.join(", "))));
     }
     for kw in [&b"/JavaScript"[..], b"/OpenAction", b"/Launch"] {
-        if count_name(raw, kw) == 0 && count_name(doc, kw) > 0 {
+        if count_name(raw, kw) == 0 && count_name(&st, kw) > 0 {
             let k = String::from_utf8_lossy(&kw[1..]).into_owned();
             out.push((Ind::PdfObfuscation, format!("{k} only visible after decompression (hidden from naive scanners)")));
         }
     }
     Triage { indicators: out, scripts, info, annots }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn structure_skips_stream_data_only() {
+        let doc = b"1 0 obj\n<< /Length 9 >>\nstream\nxx/AA /JS\nendstream\nendobj\n2 0 obj\n<< /AA 3 0 R /S (stream) >>\nendobj\n";
+        let st = structure(doc);
+        assert_eq!(count_name(&st, b"/AA"), 1, "{}", String::from_utf8_lossy(&st));
+        assert_eq!(count_name(&st, b"/JS"), 0);
+        assert!(st.ends_with(b"/S (stream) >>\nendobj\n"));
+    }
 }

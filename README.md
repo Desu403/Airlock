@@ -12,8 +12,13 @@ the document, the VM is destroyed.
 - **Analyze** — detonate the file in a VM wired to a **fake internet** and
   report what it tries to do: contact servers, run programs, drop files,
   exploit the reader. Findings are grouped by *who saw them* (outside the VM,
-  in-VM monitor, JavaScript emulation, static structure) and mapped to
-  MITRE ATT&CK.
+  in-VM monitor, JavaScript emulation, known-malware signatures, static
+  structure) and mapped to MITRE ATT&CK.
+- **Known malware** — ~5,000 [YARA-Forge](https://github.com/YARAHQ/yara-forge)
+  rules (its quality-tested "core" package) run inside the VM over the file,
+  its unpacked insides (decompressed PDF; every ZIP part, OLE stream and
+  macro's source) and anything it drops, and name the family or exploit
+  when one is known.
 
 Supported: PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, ODT/ODS/ODP, RTF (type is
 detected from content, never from the file name).
@@ -93,7 +98,7 @@ Run this every few weeks (`airlock doctor` warns once the VM image is more
 than 30 days old):
 
 ```sh
-scripts/update.sh            # newest guest packages, 6.1 LTS kernel, Firecracker
+scripts/update.sh            # newest guest packages, 6.1 LTS kernel, Firecracker, YARA rules
 scripts/update.sh --check    # just show what is out of date
 scripts/update.sh --rollback # back to the version before the last update
 scripts/update.sh --status   # machine-readable check (used by the app)
@@ -112,7 +117,8 @@ MuPDF) and, unless switched off, installs them in the background and tells
 you afterwards.
 
 New kernels are verified against kernel.org's GPG-signed checksums,
-Firecracker and Alpine against their published checksums. The working
+Firecracker, Alpine and the YARA-Forge rules against their published
+checksums. The working
 version is kept aside and the full regression suite must pass before the new
 one is used; otherwise the old one is restored. An installed copy is
 updated too.
@@ -120,7 +126,7 @@ updated too.
 ## Usage
 
 ```sh
-airlock-app [file]           # desktop app (drag & drop works)
+airlock-app [files...]       # desktop app (drag & drop works)
 
 airlock view file.pdf        # safe copy: file.airlock/safe.pdf + PNGs
 airlock analyze file.docx    # behaviour report + report.json
@@ -133,6 +139,16 @@ Without installing, run them from the source tree:
 
 `safe.pdf` contains only images of the pages — no scripts, links, forms,
 fonts or embedded files survive.
+
+In the app:
+
+- **Save ▸ Safe PDF copy** (Ctrl+S) writes that same kind of pixels-only
+  PDF, safe to keep, share or open in any reader.
+- **Save ▸ Print** (Ctrl+P) prints the pixels the VM drew.
+- **Save report…** in the analysis panel exports the report as text (or
+  `.json` for tools).
+- Opening or dropping several files opens each in **its own window, with
+  its own VM**: documents never share a renderer.
 
 ## Troubleshooting
 
@@ -154,7 +170,12 @@ fonts or embedded files survive.
 
 Working: view (live), analyze, PDF JavaScript emulation, Office static
 triage (VBA incl. stomping, XLM, DDE, Follina, remote templates, RTF
-exploits), desktop app, regression suite (`tests/run.sh`).
+exploits), YARA signatures, desktop app, regression suite (`tests/run.sh`).
+
+Signatures name what is *known*: new or custom malware usually matches
+nothing, which is why the behaviour checks come first. Rules for a
+technique rather than a family (`SUSP_…`, `INDICATOR_…`) never decide the
+verdict on their own.
 
 Not yet: distribution packages (AppImage/.deb — waiting on a slimmer guest
 image; `scripts/install.sh` does a per-user install), Windows and macOS hosts, executing Office macros (needs a Windows guest — planned). The guest image is

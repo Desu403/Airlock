@@ -28,6 +28,8 @@ struct AppState {
     /// still be analyzed (e.g. an Excel add-in has nothing to show).
     chosen: Arc<Mutex<Option<(String, Arc<Vec<u8>>)>>>,
     updating: Arc<AtomicBool>,
+    /// The last analysis report, for "Save report".
+    report: Arc<Mutex<Option<serde_json::Value>>>,
 }
 
 #[derive(Serialize)]
@@ -36,6 +38,14 @@ struct OpenInfo {
     /// [width, height] in points.
     pages: Vec<[f32; 2]>,
     ready_ms: u64,
+}
+
+#[derive(Serialize)]
+struct OpenResult {
+    /// Opened in this window.
+    info: Option<OpenInfo>,
+    /// Opened in new windows (one process, hence one VM, each).
+    elsewhere: usize,
 }
 
 #[derive(Serialize)]
@@ -97,23 +107,59 @@ fn open_impl(doc: Arc<Mutex<Option<Doc>>>, chosen: Arc<Mutex<Option<(String, Arc
     Ok(info)
 }
 
+/// This program, for opening more windows (after an update replaced the
+/// binary, /proc/self/exe names the old, deleted one).
+fn self_exe() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let s = exe.to_string_lossy();
+    Some(s.strip_suffix(" (deleted)").map(PathBuf::from).unwrap_or(exe))
+}
+
+/// Opens each document in its own new window: a separate airlock process
+/// with its own VM, so documents never share a renderer.
+fn open_elsewhere(paths: &[PathBuf]) -> usize {
+    let Some(exe) = self_exe() else { return 0 };
+    paths
+        .iter()
+        .filter(|p| {
+            std::process::Command::new(&exe).arg(p).stdin(std::process::Stdio::null()).spawn().is_ok()
+        })
+        .count()
+}
+
+/// The first document opens here unless one already is; the rest get new windows.
+fn open_many(doc: Arc<Mutex<Option<Doc>>>, chosen: Arc<Mutex<Option<(String, Arc<Vec<u8>>)>>>, paths: Vec<PathBuf>) -> R<OpenResult> {
+    let Some((first, rest)) = paths.split_first() else { return Ok(OpenResult { info: None, elsewhere: 0 }) };
+    if doc.lock().unwrap().is_some() {
+        return Ok(OpenResult { info: None, elsewhere: open_elsewhere(&paths) });
+    }
+    let elsewhere = open_elsewhere(rest);
+    Ok(OpenResult { info: Some(open_impl(doc, chosen, first.clone())?), elsewhere })
+}
+
 #[tauri::command]
-async fn pick_and_open(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Option<OpenInfo>> {
+async fn pick_and_open(app: tauri::AppHandle, state: State<'_, AppState>) -> R<OpenResult> {
     let (doc, chosen) = (state.doc.clone(), state.chosen.clone());
     blocking(move || {
         let picked = app
             .dialog()
             .file()
-            .set_title("Open a document in airlock")
+            .set_title("Open documents in airlock")
             .add_filter("Documents", &["pdf", "doc", "docx", "docm", "xls", "xlsx", "xlsm", "ppt", "pptx", "pptm", "odt", "ods", "odp", "rtf", "dotm", "dotx", "xlam", "xltm", "xltx", "potm", "ppsm", "ppsx"])
             .add_filter("All files", &["*"])
-            .blocking_pick_file();
-        match picked {
-            None => Ok(None),
-            Some(p) => open_impl(doc, chosen, p.into_path().map_err(err)?).map(Some),
-        }
+            .blocking_pick_files()
+            .unwrap_or_default();
+        let paths = picked.into_iter().filter_map(|p| p.into_path().ok()).collect();
+        open_many(doc, chosen, paths)
     })
     .await
+}
+
+/// Dropped files.
+#[tauri::command]
+async fn open_paths(paths: Vec<String>, state: State<'_, AppState>) -> R<OpenResult> {
+    let (doc, chosen) = (state.doc.clone(), state.chosen.clone());
+    blocking(move || open_many(doc, chosen, paths.into_iter().map(PathBuf::from).collect())).await
 }
 
 #[tauri::command]
@@ -225,13 +271,129 @@ fn viewing_findings(state: State<'_, AppState>) -> serde_json::Value {
 #[tauri::command]
 async fn analyze(state: State<'_, AppState>) -> R<serde_json::Value> {
     let (name, bytes) = state.chosen.lock().unwrap().clone().ok_or("no document chosen")?;
+    let report = state.report.clone();
     blocking(move || {
         let started = std::time::Instant::now();
         let a = analysis::run(&bytes, "analyze", false, &|_| {}).map_err(err)?;
         let mut j = a.report.to_json();
         j["document"] = name.into();
         j["seconds"] = (started.elapsed().as_secs_f32() as f64).into();
+        *report.lock().unwrap() = Some(j.clone());
         Ok(j)
+    })
+    .await
+}
+
+/// "invoice.pdf" -> "invoice"
+fn stem(name: &str) -> &str {
+    name.rsplit_once('.').map_or(name, |(s, _)| s).trim()
+}
+
+fn save_dialog(app: &tauri::AppHandle, title: &str, name: &str, filters: &[(&str, &[&str])]) -> Option<PathBuf> {
+    let mut d = app.dialog().file().set_title(title).set_file_name(name);
+    for (label, ext) in filters {
+        d = d.add_filter(*label, ext);
+    }
+    d.blocking_save_file().and_then(|p| p.into_path().ok())
+}
+
+/// Write to a temporary name, then rename: never a half-written file.
+fn write_atomic(dest: &std::path::Path, f: impl FnOnce(std::fs::File) -> std::io::Result<()>) -> R<()> {
+    let part = dest.with_extension("part");
+    let r = std::fs::File::create(&part).and_then(f).and_then(|_| std::fs::rename(&part, dest));
+    if r.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    r.map_err(err)
+}
+
+/// A copy safe to keep, share or open anywhere: a new PDF of the VM's
+/// pixels only (no text, links, scripts, fonts or embedded files survive).
+#[tauri::command]
+async fn save_safe_copy(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Option<String>> {
+    const DPI: u32 = 150;
+    let (doc, chosen) = (state.doc.clone(), state.chosen.clone());
+    blocking(move || {
+        let name = chosen.lock().unwrap().as_ref().map(|(n, _)| n.clone()).unwrap_or_default();
+        let sizes: Vec<[f32; 2]> = doc.lock().unwrap().as_ref().ok_or("no document open")?.session.pages.iter().map(|p| [p.width, p.height]).collect();
+        let Some(dest) = save_dialog(&app, "Save a safe copy (pixels only)", &format!("{}-safe.pdf", stem(&name)), &[("PDF", &["pdf"])]) else {
+            return Ok(None);
+        };
+        write_atomic(&dest, |file| {
+            let mut w = airlock_core::pdf::Writer::new(std::io::BufWriter::new(file), sizes.len())?;
+            for (i, [wpt, hpt]) in sizes.iter().enumerate() {
+                let _ = app.emit("export-progress", (i + 1, sizes.len()));
+                // One page at a time, so viewing goes on in between.
+                let img = {
+                    let mut g = doc.lock().unwrap();
+                    let d = g.as_mut().ok_or_else(|| std::io::Error::other("document closed"))?;
+                    d.session.render(i as u32, DPI).map_err(|e| std::io::Error::other(format!("{e:#}")))?
+                };
+                w.add(&img, *wpt, *hpt)?;
+            }
+            w.finish()?.into_inner().map_err(|e| e.into_error())?.sync_all()
+        })?;
+        Ok(Some(dest.display().to_string()))
+    })
+    .await
+}
+
+/// The report as plain text (what `airlock analyze` prints).
+fn report_text(j: &serde_json::Value) -> String {
+    let s = |v: &serde_json::Value| v.as_str().unwrap_or("").to_string();
+    let mut t = format!("airlock report: {}
+{}
+
+", s(&j["verdict"]), s(&j["summary"]));
+    t += &format!("document: {}
+analyzed in: {:.1}s
+", s(&j["document"]), j["seconds"].as_f64().unwrap_or(0.0));
+    let empty = Vec::new();
+    let findings = j["findings"].as_array().unwrap_or(&empty);
+    for (src, title) in [
+        ("outside", "Seen from OUTSIDE the VM (cannot be faked by the document)"),
+        ("monitor", "Seen by the in-VM monitor"),
+        ("emulated", "What its JavaScript does in a (fake) Adobe Reader"),
+        ("signature", "Matches known malware (YARA rules)"),
+        ("static", "Static structure of the file"),
+    ] {
+        let items: Vec<_> = findings.iter().filter(|f| f["source"] == src).collect();
+        if items.is_empty() {
+            continue;
+        }
+        t += &format!("
+{title}:
+");
+        for f in items {
+            t += &format!("  [{:<6}] {}
+", s(&f["severity"]).to_uppercase(), s(&f["what"]));
+            if f["attack"] != "-" {
+                t += &format!("           ATT&CK {}
+", s(&f["attack"]));
+            }
+        }
+    }
+    if findings.is_empty() {
+        t += "
+(no findings)
+";
+    }
+    t
+}
+
+#[tauri::command]
+async fn save_report(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Option<String>> {
+    let report = state.report.clone();
+    blocking(move || {
+        let j = report.lock().unwrap().clone().ok_or("no analysis yet")?;
+        let name = format!("{}-airlock-report.txt", stem(j["document"].as_str().unwrap_or("document")));
+        let Some(dest) = save_dialog(&app, "Save the analysis report", &name, &[("Text", &["txt"]), ("JSON", &["json"])]) else {
+            return Ok(None);
+        };
+        let json = dest.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
+        let body = if json { serde_json::to_string_pretty(&j).map_err(err)? + "\n" } else { report_text(&j) };
+        write_atomic(&dest, |mut f| std::io::Write::write_all(&mut f, body.as_bytes()))?;
+        Ok(Some(dest.display().to_string()))
     })
     .await
 }
@@ -321,6 +483,7 @@ fn parse_status(text: &str) -> UpdateStatus {
             "kernel" => st.changes.extend(pair("Guest kernel")),
             "firecracker" => st.changes.extend(pair("Firecracker")),
             "alpine" => st.changes.extend(pair("Alpine base")),
+            "rules" => st.changes.extend(pair("Malware signatures")),
             "pkg" => {
                 let f: Vec<&str> = v.split_whitespace().collect();
                 if let [name, old, new] = f[..] {
@@ -416,7 +579,12 @@ fn restart_app(app: tauri::AppHandle, state: State<'_, AppState>) {
 fn main() {
     sandbox_web_content();
     let state = AppState::default();
-    *state.initial.lock().unwrap() = std::env::args_os().nth(1).map(PathBuf::from);
+    let mut args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
+    // "airlock-app a.pdf b.docx": the first here, the others in their own windows.
+    if args.len() > 1 {
+        open_elsewhere(&args.split_off(1));
+    }
+    *state.initial.lock().unwrap() = args.pop();
     state.pixels_only.store(std::env::var_os("AIRLOCK_PIXELS_ONLY").is_some(), Ordering::SeqCst);
     let doc = state.doc.clone();
     tauri::Builder::default()
@@ -437,6 +605,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             pick_and_open,
             open_path,
+            open_paths,
+            save_safe_copy,
+            save_report,
             initial_path,
             demo_script,
             render_page,

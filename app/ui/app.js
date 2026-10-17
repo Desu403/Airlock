@@ -64,11 +64,14 @@ async function openWith(promise, label) {
   status("Opening…");
   const t0 = performance.now();
   try {
-    const info = await promise;
-    if (!info) { status(state.docOpen ? "Ready" : "Ready"); return; }
+    const r = await promise;
+    // Older call sites return the info itself; open_many returns {info, elsewhere}.
+    const info = r && "elsewhere" in r ? r.info : r;
+    const more = r && r.elsewhere ? ` · ${r.elsewhere} more in new window${r.elsewhere > 1 ? "s" : ""} (one VM each)` : "";
+    if (!info) { status(more ? more.slice(3) : "Ready"); return; }
     setupDocument(info);
     const secs = ((performance.now() - t0) / 1000).toFixed(1);
-    status(`${info.pages.length} page(s) · VM ready in ${(info.ready_ms / 1000).toFixed(1)}s · opened in ${secs}s`);
+    status(`${info.pages.length} page(s) · VM ready in ${(info.ready_ms / 1000).toFixed(1)}s · opened in ${secs}s${more}`);
   } catch (e) {
     resetDocument();
     status(`Could not open: ${e}`, true);
@@ -86,7 +89,7 @@ function resetDocument() {
   if (state.observer) state.observer.disconnect();
   Object.assign(state, { pages: [], hits: [], hitIndex: -1, queue: [], findings: null, docOpen: false });
   $("pages").replaceChildren();
-  for (const id of ["doc", "searchbox", "zoombox", "textbtn", "pixels", "analyze", "banner"]) $(id).hidden = true;
+  for (const id of ["doc", "searchbox", "zoombox", "textbtn", "savewrap", "pixels", "analyze", "banner"]) $(id).hidden = true;
   $("empty").hidden = false;
   closePanel();
 }
@@ -104,6 +107,72 @@ function showUndisplayable(name, why) {
 
 function openDialog() {
   openWith(invoke("pick_and_open"), "the document");
+}
+
+function openPaths(paths) {
+  const name = state.docOpen ? "the documents" : paths[0].split(/[\\/]/).pop();
+  openWith(invoke("open_paths", { paths }), name);
+}
+
+// ---------------------------------------------------------------- saving
+
+function toggleSaveMenu(open) {
+  const m = $("savemenu");
+  m.hidden = open === undefined ? !m.hidden : !open;
+  $("savebtn").setAttribute("aria-expanded", String(!m.hidden));
+}
+
+async function saveSafeCopy() {
+  if (!state.docOpen) return;
+  toggleSaveMenu(false);
+  const stop = await window.__TAURI__.event.listen("export-progress", (e) => {
+    const [i, n] = e.payload;
+    status(`Saving safe copy: page ${i} of ${n}…`);
+  });
+  try {
+    const path = await invoke("save_safe_copy");
+    status(path ? `Saved a safe copy (pixels only) to ${path}` : "Ready");
+  } catch (e) {
+    status(`Could not save: ${e}`, true);
+  } finally {
+    stop();
+  }
+}
+
+// Prints the pixels: every page is drawn once more at print resolution.
+async function printDocument() {
+  if (!state.docOpen) return;
+  toggleSaveMenu(false);
+  const out = $("printout");
+  const urls = [];
+  try {
+    for (let i = 0; i < state.pages.length; i++) {
+      status(`Preparing to print: page ${i + 1} of ${state.pages.length}…`);
+      const buf = await invoke("render_page", { page: i, dpi: 150 });
+      const url = URL.createObjectURL(new Blob([buf], { type: "image/png" }));
+      urls.push(url);
+      const img = el("img");
+      img.src = url;
+      out.append(img);
+    }
+    await Promise.all([...out.querySelectorAll("img")].map((img) => img.decode().catch(() => {})));
+    window.print();
+    status("Ready");
+  } catch (e) {
+    status(`Could not print: ${e}`, true);
+  } finally {
+    // print() returns once the dialog is done with the pages.
+    setTimeout(() => { out.replaceChildren(); urls.forEach((u) => URL.revokeObjectURL(u)); }, 1000);
+  }
+}
+
+async function saveReport() {
+  try {
+    const path = await invoke("save_report");
+    if (path) status(`Saved the report to ${path}`);
+  } catch (e) {
+    status(`Could not save the report: ${e}`, true);
+  }
 }
 
 function openPath(path) {
@@ -124,7 +193,7 @@ function setupDocument(info) {
   closePanel();
 
   $("docname").textContent = info.name;
-  for (const id of ["doc", "searchbox", "zoombox", "pixels", "analyze"]) $(id).hidden = false;
+  for (const id of ["doc", "searchbox", "zoombox", "savewrap", "pixels", "analyze"]) $(id).hidden = false;
   $("textbtn").hidden = state.pixelsOnly;
   $("empty").hidden = true;
   $("analyze").disabled = false;
@@ -403,6 +472,7 @@ const SOURCE_TITLES = {
   outside: "Seen from outside the VM — cannot be faked by the document",
   monitor: "Seen by the in-VM monitor",
   emulated: "What its JavaScript does in a (fake) Adobe Reader",
+  signature: "Matches known malware (YARA rules)",
   static: "Static structure of the file",
 };
 
@@ -413,7 +483,7 @@ function renderReport(body, report, title) {
   box.append(el("h3", "", v), el("p", "", report.summary));
   const nodes = [box];
   if (title) nodes.push(el("p", "note", title));
-  for (const src of ["outside", "monitor", "emulated", "static"]) {
+  for (const src of ["outside", "monitor", "emulated", "signature", "static"]) {
     const items = report.findings.filter((f) => f.source === src);
     if (!items.length) continue;
     nodes.push(el("div", "source", SOURCE_TITLES[src]));
@@ -439,6 +509,10 @@ async function analyze(name) {
   try {
     const report = await invoke("analyze");
     renderReport(body, report, `${report.document} · analyzed in ${report.seconds.toFixed(1)}s`);
+    const save = el("button", "", "Save report…");
+    save.title = "Save as text (or .json for tools)";
+    save.onclick = saveReport;
+    body.append(save);
     status(`Analysis: ${report.verdict}`);
   } catch (e) {
     body.replaceChildren(el("p", "note", `Analysis failed: ${e}`));
@@ -455,6 +529,10 @@ $("zin").onclick = () => stepZoom(1);
 $("zout").onclick = () => stepZoom(-1);
 $("zfit").onclick = fitWidth;
 $("textbtn").onclick = showText;
+$("savebtn").onclick = (e) => { e.stopPropagation(); toggleSaveMenu(); };
+$("safecopy").onclick = saveSafeCopy;
+$("print").onclick = printDocument;
+document.addEventListener("click", (e) => { if (!$("savewrap").contains(e.target)) toggleSaveMenu(false); });
 $("pixels").onclick = () => setPixelsOnly(!state.pixelsOnly);
 $("analyze").onclick = analyze;
 $("panel-close").onclick = closePanel;
@@ -477,10 +555,12 @@ document.addEventListener("keydown", (e) => {
   if (mod && e.key.toLowerCase() === "o") { e.preventDefault(); openDialog(); return; }
   if (!state.docOpen) return;
   if (mod && e.key.toLowerCase() === "f") { e.preventDefault(); $("q").focus(); $("q").select(); return; }
+  if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); saveSafeCopy(); return; }
+  if (mod && e.key.toLowerCase() === "p") { e.preventDefault(); printDocument(); return; }
   if (e.target.tagName === "INPUT") return;
   if (e.key === "+" || e.key === "=") stepZoom(1);
   else if (e.key === "-") stepZoom(-1);
-  else if (e.key === "Escape") closePanel();
+  else if (e.key === "Escape") { toggleSaveMenu(false); closePanel(); }
 });
 
 let resizeTimer = null;
@@ -493,7 +573,7 @@ window.addEventListener("resize", () => {
 window.__TAURI__.webview.getCurrentWebview().onDragDropEvent((event) => {
   const t = event.payload.type;
   $("viewer").classList.toggle("drop", t === "over" || t === "enter");
-  if (t === "drop" && event.payload.paths.length) openPath(event.payload.paths[0]);
+  if (t === "drop" && event.payload.paths.length) openPaths(event.payload.paths);
 });
 
 // ---------------------------------------------------------------- updates
@@ -707,6 +787,8 @@ async function runDemo() {
       body.replaceChildren(el("pre", "", JSON.stringify(getSelection().toString()).slice(0, 2000)));
     }
     if (cmd === "analyze") await analyze();
+    if (cmd === "savemenu") toggleSaveMenu(true);
+    if (cmd === "print") await printDocument();
     if (cmd === "update") await runUpdate();
     if (cmd === "restart") { await new Promise((r) => setTimeout(r, Number(arg) || 0)); await invoke("restart_app"); }
     if (cmd === "updates") { await checkUpdates(arg === "force"); showUpdates(); }

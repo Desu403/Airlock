@@ -157,7 +157,7 @@ impl Assets {
                 .find(|p| p.exists())
                 .unwrap_or_else(|| base.join("vendor/bin/vmlinux")),
             rootfs: base.join("build/rootfs.ext4"),
-            sinkhole: [exe_dir.join("sinkhole"), base.join("host/target/release/sinkhole")]
+            sinkhole: [exe_dir.join("sinkhole"), exe_dir.join("../lib/airlock/sinkhole"), base.join("host/target/release/sinkhole")]
                 .into_iter()
                 .find(|p| p.exists())
                 .unwrap_or_else(|| exe_dir.join("sinkhole")),

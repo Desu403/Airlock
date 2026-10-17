@@ -9,6 +9,11 @@
 # otherwise it is restored untouched. On success an installed copy
 # (scripts/install.sh) is updated too.
 #
+# Runs from a source checkout, or from the update kit that scripts/install.sh
+# puts in <prefix>/lib/airlock/kit: then only official servers are needed
+# (Alpine, kernel.org, Firecracker's releases) and no tools beyond what
+# airlock itself needs; the build happens in a throwaway Alpine build root.
+#
 #   scripts/update.sh            update
 #   scripts/update.sh --check    only show what is out of date
 #   scripts/update.sh --rollback go back to the version before the last update
@@ -31,15 +36,53 @@ die() { echo "error: $*" >&2; exit 1; }
 pin() { sed -n "s/^$1=\([A-Za-z0-9.]*\)\$/\1/p" scripts/bootstrap.sh | head -1; }
 setpin() { sed -i "s|^$1=[A-Za-z0-9.]*\$|$1=$2|" scripts/bootstrap.sh; }
 installed() { [ -d "$HOME/.local/lib/airlock" ] && [ -x "$HOME/.local/bin/airlock" ]; }
+# put SRC DEST: replace atomically (running VMs keep their copy).
+put() { cp --reflink=auto --sparse=always "$1" "$2.new" && mv -f "$2.new" "$2"; }
+
+if [ -f .airlock-kit ]; then
+    # Update kit inside an install: <prefix>/lib/airlock/kit.
+    KIT=1
+    LIB=$(cd .. && pwd)
+    AIRLOCK=$(cd ../../.. && pwd)/bin/airlock
+    ROOTFS=$LIB/rootfs.ext4
+    INFO=$LIB/rootfs.info
+else
+    KIT=0
+    AIRLOCK=host/target/release/airlock
+    ROOTFS=build/rootfs.ext4
+    INFO=build/rootfs.info
+fi
+[ -x "$AIRLOCK" ] || die "airlock binary not found at $AIRLOCK"
+
+# Kit: the new VM goes live only now, after it passed the regression suite.
+deploy() {
+    put vendor/bin/firecracker "$LIB/firecracker"
+    put vendor/bin/vmlinux-airlock "$LIB/vmlinux"
+    put build/rootfs.ext4 "$LIB/rootfs.ext4"
+    put build/rootfs.info "$LIB/rootfs.info"
+}
+
+# Kit: drop the large build leftovers (the Alpine build root stays as a cache).
+tidy() {
+    rm -rf build/guestroot build/guestroot.tar build/rootfs.ext4 build/kernel build/tests vendor/dl/kernel/linux-*.tar.xz
+}
 
 restore() {
     [ -f "$PREV/bootstrap.sh" ] || die "nothing to roll back to"
     cp "$PREV/bootstrap.sh" scripts/bootstrap.sh
-    cp "$PREV/firecracker" vendor/bin/firecracker
-    cp "$PREV/vmlinux-airlock" vendor/bin/vmlinux-airlock
-    cp --reflink=auto --sparse=always "$PREV/rootfs.ext4" build/rootfs.ext4
-    cp "$PREV/rootfs.info" build/rootfs.info 2>/dev/null || true
-    if installed; then scripts/install.sh >/dev/null 2>&1; fi
+    cp "$PREV/firecracker" "$PREV/vmlinux-airlock" vendor/bin/
+    cp "$PREV/vmlinux-airlock.stamp" vendor/bin/ 2>/dev/null || rm -f vendor/bin/vmlinux-airlock.stamp
+    if [ "$KIT" = 1 ]; then
+        put vendor/bin/firecracker "$LIB/firecracker"
+        put vendor/bin/vmlinux-airlock "$LIB/vmlinux"
+        put "$PREV/rootfs.ext4" "$LIB/rootfs.ext4"
+        [ ! -f "$PREV/rootfs.info" ] || put "$PREV/rootfs.info" "$LIB/rootfs.info"
+        tidy
+    else
+        put "$PREV/rootfs.ext4" build/rootfs.ext4
+        [ ! -f "$PREV/rootfs.info" ] || cp "$PREV/rootfs.info" build/rootfs.info
+        if installed; then scripts/install.sh >/dev/null 2>&1; fi
+    fi
 }
 
 if [ "$MODE" = rollback ]; then
@@ -50,7 +93,7 @@ fi
 
 # Guest packages with a newer version in Alpine's index: "name old new".
 outdated_packages() {
-    [ -f build/rootfs.info ] || return 0
+    [ -f "$INFO" ] || return 0
     branch=v$(pin ALPINE_VERSION | cut -d. -f1,2)
     for repo in main community; do
         curl -fsS -m 120 "https://dl-cdn.alpinelinux.org/alpine/$branch/$repo/x86_64/APKINDEX.tar.gz" | python3 -I -c '
@@ -63,10 +106,10 @@ for block in idx.split("\n\n"):
     done | python3 -I -c '
 import sys
 latest = dict(l.split() for l in sys.stdin if len(l.split()) == 2)
-for line in open("build/rootfs.info"):
+for line in open(sys.argv[1]):
     p = line.strip().rsplit("-", 2)
     if len(p) == 3 and p[0] in latest and latest[p[0]] != p[1] + "-" + p[2]:
-        print(p[0], p[1] + "-" + p[2], latest[p[0]])'
+        print(p[0], p[1] + "-" + p[2], latest[p[0]])' "$INFO"
 }
 
 # --- what is the newest of everything? ----------------------------------------
@@ -83,7 +126,7 @@ STABLE=$(curl -fsS -m 30 https://alpinelinux.org/releases.json | python3 -I -c '
 
 PKGS=$(outdated_packages) || die "could not read Alpine's package index"
 NPKG=$(printf '%s' "$PKGS" | grep -c . || true)
-BUILT=$(sed -n 's/^built //p' build/rootfs.info 2>/dev/null || echo 0)
+BUILT=$(sed -n 's/^built //p' "$INFO" 2>/dev/null || echo 0)
 AGE=$(( ($(date +%s) - ${BUILT:-0}) / 86400 ))
 
 if [ "$MODE" = status ]; then
@@ -122,7 +165,7 @@ case "$(pin ALPINE_VERSION)" in
     "$STABLE".*|"") ;;
     *) echo "   note: Alpine $STABLE is out; moving branch is a manual step (ALPINE_VERSION in scripts/bootstrap.sh)" ;;
 esac
-host/target/release/airlock doctor 2>&1 | awk '/guest image (built|is)|image age/ {print; keep = /warn/; next} keep {print; keep = 0}' 
+"$AIRLOCK" doctor 2>&1 | awk '/guest image (built|is)|image age/ {print; keep = /warn/; next} keep {print; keep = 0}' 
 [ "$MODE" = check ] && exit 0
 
 # --- verify new inputs before touching anything -------------------------------
@@ -154,20 +197,28 @@ fi
 echo "==> Keeping the current version in $PREV"
 rm -rf "$PREV" && mkdir -p "$PREV"
 cp scripts/bootstrap.sh vendor/bin/firecracker vendor/bin/vmlinux-airlock "$PREV/"
-cp --reflink=auto --sparse=always build/rootfs.ext4 "$PREV/rootfs.ext4"
-cp build/rootfs.info "$PREV/rootfs.info" 2>/dev/null || true
+cp vendor/bin/vmlinux-airlock.stamp "$PREV/" 2>/dev/null || true
+cp --reflink=auto --sparse=always "$ROOTFS" "$PREV/rootfs.ext4"
+cp "$INFO" "$PREV/rootfs.info" 2>/dev/null || true
 
 [ -z "${KSHA:-}" ] || { setpin KERNEL_VERSION "$KV"; setpin KERNEL_SHA256 "$KSHA"; }
 [ -z "${FSHA:-}" ] || { setpin FC_VERSION "$FCV"; setpin FC_SHA256 "$FSHA"; setpin FC_CONFIG_SHA256 "$CSHA"; }
 [ -z "${ASHA:-}" ] || { setpin ALPINE_VERSION "$AV"; setpin ALPINE_SHA256 "$ASHA"; }
 
 echo "==> Rebuilding and running the regression suite (log: $LOG)"
-if ! scripts/bootstrap.sh --tests >"$LOG" 2>&1; then
+if [ "$KIT" = 1 ]; then
+    # Test the new VM with the installed airlock (AIRLOCK_HOME: use the kit's build).
+    build() { AIRLOCK="$AIRLOCK" AIRLOCK_HOME="$PWD" scripts/bootstrap.sh --vm-only --tests; }
+else
+    build() { scripts/bootstrap.sh --tests; }
+fi
+if ! build >"$LOG" 2>&1; then
     restore
     tail -15 "$LOG" >&2
     die "the new version failed its checks; the previous version is back in place (full log: $LOG)"
 fi
 
+[ "$KIT" = 0 ] || deploy
 echo "==> Updated"
 if [ -f "$PREV/rootfs.info" ]; then
     # Renderers and the parts an exploit would go through.
@@ -179,8 +230,13 @@ if [ -f "$PREV/rootfs.info" ]; then
     n=$(cat "$PREV/rootfs.info" build/rootfs.info | grep -v '^built' | sort | uniq -u | sed 's/-[0-9].*//' | sort -u | wc -l)
     echo "   $n guest package(s) changed in total"
 fi
-[ "$changes" = 0 ] || echo "   pins in scripts/bootstrap.sh changed — commit them"
-if installed; then
-    scripts/install.sh >/dev/null 2>&1 && echo "   installed copy updated"
+if [ "$KIT" = 1 ]; then
+    tidy
+    echo "   installed airlock updated"
+else
+    [ "$changes" = 0 ] || echo "   pins in scripts/bootstrap.sh changed — commit them"
+    if installed; then
+        scripts/install.sh >/dev/null 2>&1 && echo "   installed copy updated"
+    fi
 fi
 echo "   undo: $0 --rollback"

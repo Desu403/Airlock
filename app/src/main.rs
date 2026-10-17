@@ -275,12 +275,20 @@ fn sandbox_web_content() {
 }
 
 // ---------------------------------------------------------------- updates
-// Updates rebuild the VM from the source checkout this app was built from
-// (scripts/update.sh: verified downloads, regression suite, auto-restore).
+// Updates rebuild the VM with scripts/update.sh (verified downloads from the
+// official servers, regression suite, auto-restore). It runs from the update
+// kit installed next to this app, or else from the source checkout.
 
 fn source_tree() -> Option<PathBuf> {
-    let p = std::env::var_os("AIRLOCK_SOURCE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."));
-    p.join("scripts/update.sh").is_file().then_some(p)
+    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from));
+    [
+        std::env::var_os("AIRLOCK_SOURCE").map(PathBuf::from),
+        exe_dir.map(|d| d.join("../lib/airlock/kit")),
+        Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|p| p.join("scripts/update.sh").is_file())
 }
 
 #[derive(Serialize, Default)]

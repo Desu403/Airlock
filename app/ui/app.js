@@ -527,10 +527,29 @@ async function checkUpdates(force) {
   return st;
 }
 
-function showToast(st) {
-  const { list, more } = describeChanges(st, 2);
-  $("toast-text").textContent = list.join(", ") + (more > 0 ? ` and ${more} more` : "") + ". Installing them takes about two minutes; you can keep reading.";
+// A small notice in the corner: title, text, [label, action] buttons.
+function notify(title, text, actions) {
+  $("toast-title").textContent = title;
+  $("toast-text").textContent = text;
+  $("toast-actions").replaceChildren(...actions.map(([label, fn], i) => {
+    const b = el("button", i === 0 && actions.length > 1 ? "primary" : "", label);
+    b.onclick = fn;
+    return b;
+  }));
   $("toast").hidden = false;
+}
+
+function changeSummary(st) {
+  const { list, more } = describeChanges(st, 2);
+  return list.join(", ") + (more > 0 ? ` and ${more} more` : "");
+}
+
+function showToast(st) {
+  notify("Security updates for airlock", `${changeSummary(st)}. Installing them takes about two minutes; you can keep reading.`, [
+    ["Update now", () => runUpdate()],
+    ["Details", showUpdates],
+    ["Later", () => { hideToast(); setPref("airlock.updateSnooze", String(Date.now() + 86_400_000)); }],
+  ]);
 }
 
 function hideToast() { $("toast").hidden = true; }
@@ -539,8 +558,8 @@ function renderUpdates(body) {
   const st = updates.status;
   const nodes = [];
   if (!st || !st.supported) {
-    nodes.push(el("p", "", "Updates are built from airlock's source folder, which was not found."),
-      el("p", "note", "Run scripts/update.sh in your airlock checkout, or set AIRLOCK_SOURCE to its path."));
+    nodes.push(el("p", "", "This copy of airlock has no update kit."),
+      el("p", "note", "Install it with scripts/install.sh (which adds the kit), or set AIRLOCK_SOURCE to an airlock source folder."));
     body.replaceChildren(...nodes);
     return;
   }
@@ -569,13 +588,19 @@ function renderUpdates(body) {
   row.append(go, check);
   nodes.push(row, el("p", "note", "Downloads are verified (kernel.org signatures, published checksums). The full test suite must pass before the new version is used; otherwise the current one stays."));
 
-  const auto = el("label", "check");
-  const box = el("input");
-  box.type = "checkbox";
-  box.checked = pref("airlock.autoUpdateCheck", "1") === "1";
-  box.onchange = () => setPref("airlock.autoUpdateCheck", box.checked ? "1" : "0");
-  auto.append(box, document.createTextNode("Check for updates automatically (once a day: kernel.org, GitHub, Alpine)"));
-  nodes.push(auto);
+  const toggle = (key, text, onChange) => {
+    const label = el("label", "check");
+    const box = el("input");
+    box.type = "checkbox";
+    box.checked = pref(key, "1") === "1";
+    box.onchange = () => { setPref(key, box.checked ? "1" : "0"); onChange?.(box.checked); };
+    label.append(box, document.createTextNode(text));
+    return [label, box];
+  };
+  const [checkLabel] = toggle("airlock.autoUpdateCheck", "Check for updates automatically (once a day: kernel.org, GitHub, Alpine)", () => renderUpdates(body));
+  const [installLabel, installBox] = toggle("airlock.autoInstall", "Install security updates automatically (in the background; you are told afterwards)");
+  installBox.disabled = pref("airlock.autoUpdateCheck", "1") !== "1";
+  nodes.push(checkLabel, installLabel);
 
   if (updates.log.length) {
     const ul = el("ul", "progress");
@@ -595,16 +620,20 @@ function showUpdates() {
   renderUpdates(openPanel("Updates"));
 }
 
-async function runUpdate(body) {
+// quiet: started automatically — no panel, a notice when done.
+async function runUpdate(body, quiet = false) {
   if (updates.running) return;
   hideToast();
   if (!updates.status) await checkUpdates(false).catch(() => {});
   updates.running = true;
   updates.restart = false;
   updates.log = ["Starting…"];
-  if (!body || $("panel-title").textContent !== "Updates") body = openPanel("Updates");
-  renderUpdates(body);
+  if (!quiet) {
+    if (!body || $("panel-title").textContent !== "Updates") body = openPanel("Updates");
+    renderUpdates(body);
+  }
   status("Updating airlock's VM in the background…");
+  let ok = false;
   try {
     const r = await invoke("run_update");
     // The script's summary minus its command-line hints.
@@ -614,6 +643,7 @@ async function runUpdate(body) {
     }
     updates.log.push(r.ok ? "Done — all checks passed." : "The update failed its checks; the previous version is still in place.");
     updates.restart = r.ok && r.restart;
+    ok = r.ok;
     status(r.ok ? "airlock updated" : "Update failed — nothing was changed", !r.ok);
     try { await checkUpdates(true); } catch {}
   } catch (e) {
@@ -622,6 +652,12 @@ async function runUpdate(body) {
   } finally {
     updates.running = false;
     if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates($("panel-body"));
+  }
+  if (quiet) {
+    if (ok) notify("airlock was updated", "Security updates were installed and all checks passed. Documents you open now use the updated VM.", [
+      ...(updates.restart ? [["Restart airlock", () => invoke("restart_app")]] : []),
+      ["Details", showUpdates], ["OK", hideToast]]);
+    else notify("Automatic update failed", "Nothing was changed: airlock keeps using the current version. Details are in the Updates panel.", [["Details", showUpdates], ["OK", hideToast]]);
   }
 }
 
@@ -634,15 +670,16 @@ window.__TAURI__.event.listen("update-progress", (e) => {
 });
 
 $("updates").onclick = showUpdates;
-$("toast-update").onclick = () => runUpdate();
-$("toast-details").onclick = showUpdates;
-$("toast-later").onclick = () => { hideToast(); setPref("airlock.updateSnooze", String(Date.now() + 86_400_000)); };
 
 async function autoCheckUpdates() {
   if (pref("airlock.autoUpdateCheck", "1") !== "1") return;
   try {
     const st = await checkUpdates(false);
-    if (st.available && Date.now() > Number(pref("airlock.updateSnooze", "0"))) showToast(st);
+    if (!st.available) return;
+    if (pref("airlock.autoInstall", "1") === "1") {
+      notify("Installing security updates", `${changeSummary(st)}. airlock is updating in the background; you can keep reading.`, [["Details", showUpdates], ["Hide", hideToast]]);
+      runUpdate(null, true);
+    } else if (Date.now() > Number(pref("airlock.updateSnooze", "0"))) showToast(st);
   } catch {}
 }
 setTimeout(autoCheckUpdates, 3000);
@@ -673,6 +710,7 @@ async function runDemo() {
     if (cmd === "update") await runUpdate();
     if (cmd === "restart") { await new Promise((r) => setTimeout(r, Number(arg) || 0)); await invoke("restart_app"); }
     if (cmd === "updates") { await checkUpdates(arg === "force"); showUpdates(); }
+    if (cmd === "autotoast") notify("airlock was updated", "Security updates were installed and all checks passed. Documents you open now use the updated VM.", [["Restart airlock", () => {}], ["Details", showUpdates], ["OK", hideToast]]);
     if (cmd === "toast") showToast({ changes: ["mupdf-tools 1.27.2-r0 → 1.27.3-r0", "Guest kernel 6.1.190 → 6.1.191"], packages: 14 });
   }
 }

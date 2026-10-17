@@ -99,10 +99,17 @@ scripts/update.sh --rollback # back to the version before the last update
 scripts/update.sh --status   # machine-readable check (used by the app)
 ```
 
+`scripts/install.sh` also installs a small **update kit**, so an installed
+airlock updates itself from the official servers (Alpine, kernel.org,
+Firecracker's releases) with no source checkout and no compilers: the build
+runs in a throwaway Alpine build root (`~/.local/lib/airlock/kit/scripts/update.sh`;
+the kit keeps ~2 GB: a build cache and the previous version for rollback).
+
 The desktop app does the same from its **Updates** button: once a day it
 checks kernel.org, GitHub and Alpine's mirror (this can be switched off in
 the Updates panel), pops up a notice when security fixes are out (e.g. a new
-MuPDF), and updates in the background while you keep reading.
+MuPDF) and, unless switched off, installs them in the background and tells
+you afterwards.
 
 New kernels are verified against kernel.org's GPG-signed checksums,
 Firecracker and Alpine against their published checksums. The working

@@ -1,6 +1,8 @@
 #!/bin/sh
 # One-shot setup: fetch pinned, checksum-verified inputs and build everything.
-# No root needed. Usage: scripts/bootstrap.sh [--no-app] [--tests]
+# No root needed. Usage: scripts/bootstrap.sh [--no-app] [--tests] [--vm-only]
+# --vm-only (automatic in an installed update kit, which has no host/ or
+# app/): build only the VM (kernel, image, Firecracker); no Rust on the host.
 #
 # Pinned inputs (version + SHA-256). Bump both together.
 FC_VERSION=v1.17.0
@@ -16,13 +18,19 @@ set -eu
 cd "$(dirname "$0")/.."
 APP=1
 TESTS=0
+VM_ONLY=0
+[ -d host ] || VM_ONLY=1
 for a in "$@"; do
     case "$a" in
         --no-app) APP=0 ;;
         --tests) TESTS=1 ;;
-        *) echo "usage: $0 [--no-app] [--tests]" >&2; exit 2 ;;
+        --vm-only) VM_ONLY=1 ;;
+        *) echo "usage: $0 [--no-app] [--tests] [--vm-only]" >&2; exit 2 ;;
     esac
 done
+[ "$VM_ONLY" = 0 ] || APP=0
+# The airlock binary that tests and checks the result.
+AIRLOCK=${AIRLOCK:-host/target/release/airlock}
 
 step() { printf '\n==> %s\n' "$*"; }
 die() { echo "error: $*" >&2; exit 1; }
@@ -42,7 +50,9 @@ fetch() {
 step "Checking host prerequisites"
 [ "$(uname -m)" = x86_64 ] || die "only x86_64 is supported for now"
 missing=""
-for c in curl sha256sum tar xz bwrap mke2fs ip nft setpriv cargo python3 file; do
+NEED="curl sha256sum tar xz bwrap mke2fs ip nft setpriv python3 file"
+[ "$VM_ONLY" = 1 ] || NEED="$NEED cargo"
+for c in $NEED; do
     command -v "$c" >/dev/null 2>&1 || missing="$missing $c"
 done
 [ -z "$missing" ] || die "missing commands:$missing (see README: Requirements)"
@@ -57,22 +67,36 @@ fetch "https://github.com/firecracker-microvm/firecracker/releases/download/$FC_
     "vendor/dl/firecracker-$FC_VERSION-x86_64.tgz" "$FC_SHA256"
 fetch "https://dl-cdn.alpinelinux.org/alpine/v${ALPINE_VERSION%.*}/releases/x86_64/alpine-minirootfs-$ALPINE_VERSION-x86_64.tar.gz" \
     "vendor/dl/alpine-minirootfs-$ALPINE_VERSION-x86_64.tar.gz" "$ALPINE_SHA256"
-fetch "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KERNEL_VERSION.tar.xz" \
-    "vendor/dl/kernel/linux-$KERNEL_VERSION.tar.xz" "$KERNEL_SHA256"
-fetch "https://raw.githubusercontent.com/firecracker-microvm/firecracker/$FC_VERSION/resources/guest_configs/microvm-kernel-ci-x86_64-6.1.config" \
-    "vendor/dl/kernel/microvm-6.1.config" "$FC_CONFIG_SHA256"
+# The kernel is only rebuilt when its inputs change (version, base config,
+# hardening fragment).
+KSTAMP="$KERNEL_VERSION $FC_CONFIG_SHA256 $(sha256sum guest/kernel-hardening.config | cut -c1-64)"
+NEED_KERNEL=1
+[ -f vendor/bin/vmlinux-airlock ] && [ "$(cat vendor/bin/vmlinux-airlock.stamp 2>/dev/null)" = "$KSTAMP" ] && NEED_KERNEL=0
+if [ "$NEED_KERNEL" = 1 ]; then
+    fetch "https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KERNEL_VERSION.tar.xz" \
+        "vendor/dl/kernel/linux-$KERNEL_VERSION.tar.xz" "$KERNEL_SHA256"
+    fetch "https://raw.githubusercontent.com/firecracker-microvm/firecracker/$FC_VERSION/resources/guest_configs/microvm-kernel-ci-x86_64-6.1.config" \
+        "vendor/dl/kernel/microvm-6.1.config" "$FC_CONFIG_SHA256"
+fi
 
 tar xzf "vendor/dl/firecracker-$FC_VERSION-x86_64.tgz" -C vendor/dl
 install -m 0755 "vendor/dl/release-$FC_VERSION-x86_64/firecracker-$FC_VERSION-x86_64" vendor/bin/firecracker
 
-step "Building the hardened guest kernel (a few minutes)"
-KERNEL_VERSION=$KERNEL_VERSION guest/build-kernel.sh
+if [ "$NEED_KERNEL" = 1 ]; then
+    step "Building the hardened guest kernel (a few minutes)"
+    KERNEL_VERSION=$KERNEL_VERSION guest/build-kernel.sh
+    echo "$KSTAMP" > vendor/bin/vmlinux-airlock.stamp
+else
+    step "Guest kernel $KERNEL_VERSION is already built"
+fi
 
 step "Building the guest image (downloads Alpine packages incl. LibreOffice)"
 guest/build-rootfs.sh
 
-step "Building the airlock CLI"
-(cd host && cargo build --release)
+if [ "$VM_ONLY" = 0 ]; then
+    step "Building the airlock CLI"
+    (cd host && cargo build --release)
+fi
 
 if [ "$APP" = 1 ]; then
     step "Building the desktop app"
@@ -82,11 +106,12 @@ fi
 if [ "$TESTS" = 1 ]; then
     step "Fetching test fixtures and running the regression suite"
     tests/fetch-fixtures.sh
-    tests/run.sh
+    AIRLOCK=$AIRLOCK tests/run.sh
 fi
 
 step "Done"
-host/target/release/airlock doctor
+[ "$VM_ONLY" = 1 ] && exit 0
+"$AIRLOCK" doctor
 echo
 echo "CLI:  host/target/release/airlock view|analyze <file>"
 [ "$APP" = 1 ] && echo "App:  app/target/release/airlock-app [file]"

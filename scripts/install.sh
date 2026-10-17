@@ -137,6 +137,25 @@ mv -f "$LIB/rootfs.ext4.new" "$LIB/rootfs.ext4"
 [ -f build/rootfs.info ] && put 0644 build/rootfs.info "$LIB/rootfs.info"
 echo "installed CLI:  $BIN/airlock"
 
+# Update kit: the recipe for rebuilding the VM (~250 KB: build scripts, the
+# in-VM agent's source, tests) plus today's inputs, so this install can update
+# itself from the official servers with no source checkout (scripts/update.sh).
+KIT=$LIB/kit
+mkdir -p "$KIT/vendor/bin" "$KIT/vendor/dl/kernel" "$KIT/build"
+rm -rf "$KIT/guest" "$KIT/guest-agent" "$KIT/proto" "$KIT/scripts" "$KIT/tests"
+if [ -d .git ] && command -v git >/dev/null; then
+    git ls-files guest guest-agent proto scripts tests | while read -r f; do install -D -m "$(stat -c %a "$f")" "$f" "$KIT/$f"; done
+else
+    for d in guest guest-agent proto scripts tests; do
+        (cd "$d" && find . -path ./target -prune -o -type f -print) | while read -r f; do install -D "$d/$f" "$KIT/$d/$f"; done
+    done
+fi
+cp vendor/bin/firecracker vendor/bin/vmlinux-airlock "$KIT/vendor/bin/"
+cp vendor/bin/vmlinux-airlock.stamp "$KIT/vendor/bin/" 2>/dev/null || true
+for f in vendor/dl/alpine-minirootfs-*.tar.gz vendor/dl/firecracker-*.tgz; do [ -f "$f" ] && cp "$f" "$KIT/vendor/dl/"; done
+touch "$KIT/.airlock-kit"
+rm -f "$KIT/build/update-status"
+
 if [ "$APP" = 1 ]; then
     command -v xdg-mime >/dev/null && pin_defaults
     put 0755 app/target/release/airlock-app "$BIN/airlock-app"

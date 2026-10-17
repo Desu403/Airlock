@@ -4,14 +4,16 @@
 # (generated PDFs + benign oletools fixtures); nothing personal is needed.
 set -u
 cd "$(dirname "$0")/.."
-AIRLOCK=./host/target/release/airlock
+AIRLOCK=${AIRLOCK:-./host/target/release/airlock}
 OUT=build/tests
 rm -rf "$OUT" && mkdir -p "$OUT"
 fail=0
 
 # Unit tests + randomised hostile-input tests of every host-side parser
 # (AIRLOCK_FUZZ_ITERS raises the count for a long run).
-for crate in proto host; do
+# (Skipped in an installed update kit: no host sources, no Rust needed.)
+[ -d host ] && command -v cargo >/dev/null && CRATES="proto host" || CRATES=""
+for crate in $CRATES; do
     if (cd $crate && cargo test --release -q) >"$OUT/unit-$crate.log" 2>&1; then
         echo "ok   unit + fuzz tests ($crate: $(grep -o '[0-9]* passed' "$OUT/unit-$crate.log" | awk '{n+=$1} END {print n}') passed)"
     else

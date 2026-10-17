@@ -124,21 +124,52 @@ pub struct Triage {
     pub annots: Vec<(Vec<u8>, Vec<u8>)>,
 }
 
-/// All values of `key` (e.g. b"/Subj") in the document, in order.
+/// The document with every stream's data left out (keywords kept): PDF
+/// keys and actions live in dictionaries, so only these bytes are searched.
+/// Image or font data can spell "/AA" or "/JS" by chance.
+fn structure(doc: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(doc.len() / 4);
+    let mut i = 0;
+    while let Some(p) = doc[i..].windows(6).position(|w| w == b"stream") {
+        let at = i + p;
+        let kw_end = at + 6;
+        // Data starts at ">> stream" + EOL (a stream dictionary's end). In
+        // `mutool clean` output strings never hold a raw newline, so a
+        // string cannot fake this to hide the keys after it.
+        let after_dict = doc[..at].iter().rev().find(|c| !c.is_ascii_whitespace()) == Some(&b'>');
+        let starts_data = after_dict && matches!(doc.get(kw_end), Some(b'\r' | b'\n'));
+        if !starts_data {
+            out.extend_from_slice(&doc[i..kw_end]);
+            i = kw_end;
+            continue;
+        }
+        out.extend_from_slice(&doc[i..kw_end]);
+        out.push(b'\n');
+        match doc[kw_end..].windows(9).position(|w| w == b"endstream") {
+            Some(e) => i = kw_end + e,
+            None => return out,
+        }
+    }
+    out.extend_from_slice(&doc[i..]);
+    out
+}
+
+/// All values of `key` (e.g. b"/Subj") in the document, in order. Keys are
+/// searched in `hay` (the structure), references resolved in `doc`.
 /// With `strings_only`, indirect references (e.g. a page's /Contents stream) are skipped.
-fn values_of(doc: &[u8], key: &[u8], max: usize, strings_only: bool) -> Vec<Vec<u8>> {
+fn values_of(doc: &[u8], hay: &[u8], key: &[u8], max: usize, strings_only: bool) -> Vec<Vec<u8>> {
     let mut out = Vec::new();
     let mut i = 0;
-    while let Some(p) = doc[i..].windows(key.len()).position(|w| w == key) {
+    while let Some(p) = hay[i..].windows(key.len()).position(|w| w == key) {
         let at = i + p + key.len();
         i = at;
-        if doc.get(at).is_some_and(|c| c.is_ascii_alphanumeric()) {
+        if hay.get(at).is_some_and(|c| c.is_ascii_alphanumeric()) {
             continue;
         }
-        if strings_only && !matches!(skip_ws(&doc[at..]).first(), Some(b'(' | b'<')) {
+        if strings_only && !matches!(skip_ws(&hay[at..]).first(), Some(b'(' | b'<')) {
             continue;
         }
-        if let Some(v) = value_text(doc, &doc[at..]) {
+        if let Some(v) = value_text(doc, &hay[at..]) {
             out.push(v);
             if out.len() >= max {
                 break;
@@ -246,8 +277,9 @@ pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
     out.extend(r.events);
     let clean = std::fs::read(&clean_path).unwrap_or_default();
     let doc: &[u8] = if clean.is_empty() { raw } else { &clean };
+    let st = structure(doc);
 
-    let js = count_name(doc, b"/JavaScript") + count_name(doc, b"/JS");
+    let js = count_name(&st, b"/JavaScript") + count_name(&st, b"/JS");
     if js > 0 {
         out.push((Ind::PdfFeature, format!("JavaScript ({js} places)")));
     }
@@ -265,7 +297,7 @@ pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
         (b"/Encrypt", "encryption"),
     ];
     for (name, label) in features {
-        let n = count_name(doc, name);
+        let n = count_name(&st, name);
         if n > 0 {
             out.push((Ind::PdfFeature, if n > 1 { format!("{label} x{n}") } else { label.to_string() }));
         }
@@ -274,9 +306,9 @@ pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
     // Link targets.
     let mut uris = Vec::new();
     let mut i = 0;
-    while let Some(p) = doc[i..].windows(4).position(|w| w == b"/URI") {
+    while let Some(p) = st[i..].windows(4).position(|w| w == b"/URI") {
         let at = i + p + 4;
-        if let Some(v) = value_text(doc, &doc[at..]) {
+        if let Some(v) = value_text(doc, &st[at..]) {
             let u = one_line(&v, 200);
             if !u.is_empty() && !uris.contains(&u) && uris.len() < 20 {
                 uris.push(u);
@@ -293,7 +325,7 @@ pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
     out.extend(r.events);
     let walked = r.stdout.is_some();
     let mut scripts = r.stdout.as_deref().map(parse_scripts).unwrap_or_default();
-    for v in values_of(doc, b"/JS", 32, false) {
+    for v in values_of(doc, &st, b"/JS", 32, false) {
         let code = utf16_to_utf8(&v);
         let key = trimmed(&code);
         if key.is_empty() || scripts.iter().any(|s| trimmed(&s.code) == key) {
@@ -308,10 +340,10 @@ pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
     }
     let info = ["Title", "Author", "Subject", "Keywords", "Creator", "Producer"]
         .into_iter()
-        .filter_map(|k| values_of(doc, format!("/{k}").as_bytes(), 1, false).pop().map(|v| (k, v)))
+        .filter_map(|k| values_of(doc, &st, format!("/{k}").as_bytes(), 1, false).pop().map(|v| (k, v)))
         .collect();
-    let subj = values_of(doc, b"/Subj", 20, true);
-    let contents = values_of(doc, b"/Contents", 20, true);
+    let subj = values_of(doc, &st, b"/Subj", 20, true);
+    let contents = values_of(doc, &st, b"/Contents", 20, true);
     let annots = subj.into_iter().zip(contents.into_iter().chain(std::iter::repeat(Vec::new()))).collect();
 
     // Obfuscation: security-relevant names written with #xx escapes
@@ -322,10 +354,24 @@ pub fn analyze(raw: &[u8], work: &str, doc_path: &str) -> Triage {
         out.push((Ind::PdfObfuscation, format!("hex-escaped keywords x{hidden} ({}) hide them from scanners", examples.join(", "))));
     }
     for kw in [&b"/JavaScript"[..], b"/OpenAction", b"/Launch"] {
-        if count_name(raw, kw) == 0 && count_name(doc, kw) > 0 {
+        if count_name(raw, kw) == 0 && count_name(&st, kw) > 0 {
             let k = String::from_utf8_lossy(&kw[1..]).into_owned();
             out.push((Ind::PdfObfuscation, format!("{k} only visible after decompression (hidden from naive scanners)")));
         }
     }
     Triage { indicators: out, scripts, info, annots }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn structure_skips_stream_data_only() {
+        let doc = b"1 0 obj\n<< /Length 9 >>\nstream\nxx/AA /JS\nendstream\nendobj\n2 0 obj\n<< /AA 3 0 R /S (stream) >>\nendobj\n";
+        let st = structure(doc);
+        assert_eq!(count_name(&st, b"/AA"), 1, "{}", String::from_utf8_lossy(&st));
+        assert_eq!(count_name(&st, b"/JS"), 0);
+        assert!(st.ends_with(b"/S (stream) >>\nendobj\n"));
+    }
 }

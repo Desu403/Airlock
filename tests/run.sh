@@ -12,7 +12,7 @@ fail=0
 # Unit tests + randomised hostile-input tests of every host-side parser
 # (AIRLOCK_FUZZ_ITERS raises the count for a long run).
 # (Skipped in an installed update kit: no host sources, no Rust needed.)
-[ -d host ] && command -v cargo >/dev/null && CRATES="proto host" || CRATES=""
+[ -d host ] && command -v cargo >/dev/null && CRATES="proto host guest-agent" || CRATES=""
 for crate in $CRATES; do
     if (cd $crate && cargo test --release -q) >"$OUT/unit-$crate.log" 2>&1; then
         echo "ok   unit + fuzz tests ($crate: $(grep -o '[0-9]* passed' "$OUT/unit-$crate.log" | awk '{n+=$1} END {print n}') passed)"

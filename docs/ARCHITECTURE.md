@@ -76,7 +76,13 @@ able to touch the host, and *see* what it tries to do.
   never the extension). Static: oletools inside the VM (VBA source, AutoExec,
   suspicious keywords, IOCs, **VBA stomping via pcodedmp**, XLM), external
   relationships (remote template, Follina `mhtml:`/`ms-msdt`), DDE fields,
-  RTF objects (Equation Editor, OLE2Link). Render: LibreOffice headless as
+  RTF objects (Equation Editor, OLE2Link); embedded OLE objects by class id
+  (Equation Editor) and link flag + URL moniker (CVE-2017-0199); RTF parts
+  inside .docx (altChunk); self-loading objects in malformed RTF; data hidden
+  after an RTF's end; relationships read with an XML parser (any namespace
+  prefix); Word field codes assembled across runs (split DDE). Links to free
+  hosting / file sharing, bare IPs, program downloads and network shares are
+  rated medium (host/src/report.rs link_risk). Render: LibreOffice headless as
   nobody under the monitor with a prebuilt profile; macros never run.
   Spreadsheets are exported by the profile's one macro (`guest/lo-sheets.xba`,
   loading with MacroExecutionMode NEVER_EXECUTE): each sheet is fitted to the

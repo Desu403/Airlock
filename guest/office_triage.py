@@ -3,7 +3,10 @@ under the seccomp monitor, without network). Never executes macros.
 
 Prints lines "@@AIRLOCK <KIND> <text>" for the agent to forward.
 """
+import html
 import re
+import struct
+import xml.etree.ElementTree as ET
 import sys
 import zipfile
 
@@ -92,6 +95,72 @@ EXTERNAL_KINDS = {
 }
 
 
+def local(name):
+    """'{namespace}Relationship' or 'ns0:Relationship' -> 'Relationship'."""
+    return name.rsplit("}", 1)[-1].rsplit(":", 1)[-1]
+
+
+def external_rels(xml):
+    """(type, target) of every external relationship, read with an XML parser:
+    any namespace prefix (<ns0:Relationship>), attribute order, quoting or
+    character references, as Office itself reads them."""
+    out = []
+    try:
+        root = ET.fromstring(xml)
+        for el in root.iter():
+            if local(el.tag) != "Relationship":
+                continue
+            a = {local(k): v for k, v in el.attrib.items()}
+            if a.get("TargetMode", "").strip().lower() == "external":
+                out.append((a.get("Type", "?").rsplit("/", 1)[-1], a.get("Target", "?")))
+        return out
+    except ET.ParseError:
+        pass
+    # Not well-formed: a tolerant scan, so a broken file is still examined.
+    for tag in re.findall(r"<(?:[\w.-]+:)?Relationship\b[^>]*>", xml):
+        if not re.search(r"""TargetMode\s*=\s*["']\s*External""", tag, re.I):
+            continue
+        target = (re.search(r"""Target\s*=\s*["']([^"']*)""", tag) or [None, "?"])[1]
+        rtype = (re.search(r"""Type\s*=\s*["']([^"']*)""", tag) or [None, "?"])[1].rsplit("/", 1)[-1]
+        out.append((rtype, target))
+    return out
+
+
+def field_codes(xml):
+    """Word field instructions as Word assembles them: a complex field's code
+    is the instrText of all runs between its begin and separate/end marks
+    (attackers split "DDE" over several runs), plus simple fields' w:instr.
+    Any namespace prefix."""
+    codes, depth, cur = [], 0, []
+    tok = re.compile(r"<(?:[\w.-]+:)?(fldChar|instrText|fldSimple)\b([^>]*?)(/?)>(?:([^<]*)</(?:[\w.-]+:)?instrText>)?")
+    for m in tok.finditer(xml):
+        kind, attrs, text = m.group(1), m.group(2), m.group(4) or ""
+        if kind == "fldChar":
+            t = (re.search(r"""fldCharType\s*=\s*["'](\w+)""", attrs) or [None, ""])[1]
+            if t == "begin":
+                if depth == 0:
+                    cur = []
+                depth += 1
+            elif t in ("separate", "end") and depth:
+                if depth == 1 and cur:
+                    codes.append("".join(cur))
+                    cur = []
+                if t == "end":
+                    depth -= 1
+        elif kind == "instrText":
+            if depth == 1:
+                cur.append(html.unescape(text))
+            elif depth == 0:
+                codes.append(html.unescape(text))
+        else:
+            v = re.search(r"""instr\s*=\s*(["'])(.*?)\1""", attrs, re.S)
+            if v:
+                codes.append(html.unescape(v.group(2)))
+    if cur:
+        codes.append("".join(cur))
+    return codes
+
+
 def ooxml(path):
     try:
         z = zipfile.ZipFile(path)
@@ -105,8 +174,24 @@ def ooxml(path):
         emit("CONTAINER", "macro-enabled document format")
     for n in names:
         low = n.lower()
+        if "/embeddings/" in low or ("/activex/" in low and low.endswith(".bin")):
+            try:
+                with z.open(n) as f:
+                    head = f.read(8)
+                if head == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" and z.getinfo(n).file_size <= 64 << 20:
+                    ole_objects(z.read(n), f" in {n}")
+            except Exception:
+                pass
         if "/embeddings/" in low:
             emit("EMBEDDED", f"embedded object {n}")
+        # Parts Word renders as part of the document (altChunk), by content.
+        try:
+            if z.getinfo(n).file_size <= 64 << 20:
+                with z.open(n) as f:
+                    if f.read(4) == b"{\\rt":
+                        rtf(z.read(n), f" (inside the document as {n})")
+        except Exception:
+            pass
         if "/activex/" in low and low.endswith(".xml"):
             emit("EMBEDDED", f"ActiveX control {n}")
     for n in names:
@@ -116,11 +201,7 @@ def ooxml(path):
             x = z.read(n)[:1000000].decode("utf-8", "replace")
         except Exception:
             continue
-        for tag in re.findall(r"<Relationship\b[^>]*>", x):
-            if 'TargetMode="External"' not in tag:
-                continue
-            target = (re.search(r'Target="([^"]*)"', tag) or [None, "?"])[1]
-            rtype = (re.search(r'Type="([^"]*)"', tag) or [None, "?"])[1].rsplit("/", 1)[-1]
+        for rtype, target in external_rels(x):
             what = EXTERNAL_KINDS.get(rtype, f"external {rtype}")
             t = target.lower()
             if "ms-msdt" in t or (rtype == "oleObject" and t.startswith("mhtml:")) or t.rstrip("/").endswith(".html!"):
@@ -133,12 +214,94 @@ def ooxml(path):
     for n in names:
         if re.match(r"(word/document|xl/externalLinks/|word/(header|footer)\d*)", n) and n.endswith(".xml"):
             x = z.read(n)[:5000000].decode("utf-8", "replace")
-            for instr in re.findall(r"<w:instrText[^>]*>([^<]*)</w:instrText>", x):
-                if re.search(r"\bDDE(AUTO)?\b", instr, re.I):
+            for instr in field_codes(x):
+                if re.match(r"\s*DDE(AUTO)?\b", instr, re.I):
                     emit("EXPLOIT", f"DDE field runs a command: {instr.strip()[:160]}")
 
 
-def rtf(data):
+# Embedded OLE objects, identified by class id (not by name, which is free text).
+EQUATION_CLSIDS = {"0002CE02-0000-0000-C000-000000000046", "0002CE03-0000-0000-C000-000000000046"}
+URL_MONIKER = bytes.fromhex("e0c9ea79f9bace118c8200aa004ba90b")
+
+
+def moniker_url(stream):
+    """The address in a URL moniker: its class id, a 4-byte length, UTF-16 text."""
+    i = stream.find(URL_MONIKER)
+    if i < 0 or i + 20 > len(stream):
+        return None
+    n = struct.unpack_from("<I", stream, i + 16)[0]
+    raw = stream[i + 20 : i + 20 + min(n, 4096)]
+    return raw.decode("utf-16-le", "replace").split("\x00", 1)[0] or None
+
+
+def ole_objects(data, where):
+    """Equation Editor objects (CVE-2017-11882 / CVE-2018-0802) and linked
+    objects whose source is a web address (CVE-2017-0199), in an OLE file."""
+    try:
+        import olefile
+        ole = olefile.OleFileIO(data)
+    except Exception:
+        return
+    try:
+        if any(e is not None and (e.clsid or "").upper() in EQUATION_CLSIDS for e in ole.direntries[:5000]) or any(
+            p[-1].lower() == "equation native" for p in ole.listdir(streams=True)[:5000]
+        ):
+            emit("EXPLOIT", f"Equation Editor object{where} - exploit for CVE-2017-11882 / CVE-2018-0802")
+        for p in ole.listdir(streams=True)[:5000]:
+            if p[-1] != "\x01Ole":
+                continue
+            st = ole.openstream(p).read(1 << 20)
+            # [MS-OLEDS] OLEStream: version, then flags; bit 0 = linked object.
+            if len(st) >= 8 and struct.unpack_from("<I", st, 4)[0] & 1:
+                url = moniker_url(st)
+                if url and re.match(r"(?i)(https?|ftp|file)://|\\\\", url):
+                    emit("EXPLOIT", f"object{where} is a link that loads {url} when opened (CVE-2017-0199 style)")
+    except Exception:
+        pass
+    finally:
+        ole.close()
+
+
+def rtf_end(data):
+    """Offset just after the document's outer group closes (escapes and \\binN skipped)."""
+    depth, i, n = 0, 0, len(data)
+    while i < n:
+        c = data[i]
+        if c == 0x5C:  # backslash
+            m = re.match(rb"\\bin(-?\d{1,10}) ?", data[i : i + 16])
+            if m:
+                i += m.end() + max(0, int(m.group(1)))
+                continue
+            i += 2
+            continue
+        if c == 0x7B:
+            depth += 1
+        elif c == 0x7D:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def rtf_structure(data, objects, where=""):
+    # Word only reads the outer group; anything after it is a hiding place.
+    tail = data[rtf_end(data):].strip(b" \t\r\n\x00")
+    if len(tail) > 256:
+        emit("EMBEDDED", f"hidden data after the end of the document{where} ({len(tail)} bytes Word never shows)")
+    auto = len(re.findall(rb"\\objupdate", data))
+    has_obj = objects or re.search(rb"\\object\b|\\objdata", data)
+    if auto and has_obj:
+        # Exploit kits pair a self-loading object with a header no editor
+        # writes ("{\\rt" instead of "{\\rtf1") to break other parsers.
+        if not data.startswith(b"{\\rtf1"):
+            emit("EXPLOIT", f"object set to load by itself (\\objupdate) in a deliberately malformed RTF{where} - exploit pattern (CVE-2017-11882 / CVE-2017-0199)")
+        else:
+            emit("EMBEDDED", f"object set to load by itself when the file opens (\\objupdate){where}")
+
+
+def rtf(data, where=""):
+    rtf_structure(data, 0, where)
     try:
         from oletools.rtfobj import RtfObjParser
     except Exception:
@@ -150,15 +313,15 @@ def rtf(data):
         if getattr(obj, "is_ole", False):
             cls = (obj.class_name or b"").decode("latin-1", "replace")
         if cls.lower().startswith("equation"):
-            emit("EXPLOIT", f"RTF embeds {cls} - Equation Editor exploit (CVE-2017-11882 / CVE-2018-0802)")
+            emit("EXPLOIT", f"RTF{where} embeds {cls} - Equation Editor exploit (CVE-2017-11882 / CVE-2018-0802)")
         elif cls == "OLE2Link":
-            emit("EXPLOIT", "RTF embeds OLE2Link - remote object exploit (CVE-2017-0199)")
+            emit("EXPLOIT", f"RTF{where} embeds OLE2Link - remote object exploit (CVE-2017-0199)")
         elif getattr(obj, "is_package", False):
-            emit("EMBEDDED", f"RTF embeds a file: {obj.filename or '?'}")
+            emit("EMBEDDED", f"RTF{where} embeds a file: {obj.filename or '?'}")
         elif cls:
-            emit("EMBEDDED", f"RTF embeds OLE object {cls}")
+            emit("EMBEDDED", f"RTF{where} embeds OLE object {cls}")
         else:
-            emit("EMBEDDED", "RTF embeds raw object data")
+            emit("EMBEDDED", f"RTF{where} embeds raw object data")
 
 
 def main():
@@ -172,6 +335,8 @@ def main():
         vba(path)
         if head.startswith(b"PK"):
             ooxml(path)
+        elif head.startswith(b"\xd0\xcf\x11\xe0"):
+            ole_objects(path, "")
 
 
 if __name__ == "__main__":

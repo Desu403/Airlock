@@ -8,14 +8,38 @@
   <script src="app.js" defer></script>
 </head>
 <body>
+  <div class="menu ctx" id="ctxmenu" role="menu" hidden>
+    <button role="menuitem" id="c-copy" data-doc>Copy <kbd>Ctrl+C</kbd></button>
+    <button role="menuitem" id="c-zin" data-doc>Zoom in <kbd>+</kbd></button>
+    <button role="menuitem" id="c-zout" data-doc>Zoom out <kbd>−</kbd></button>
+    <button role="menuitem" id="c-fit" data-doc>Fit width</button>
+    <hr data-doc>
+    <button role="menuitem" id="c-safe" data-doc>Save safe PDF copy <kbd>Ctrl+S</kbd></button>
+    <button role="menuitem" id="c-print" data-doc>Print <kbd>Ctrl+P</kbd></button>
+    <button role="menuitem" id="c-analyze" data-doc>Analyze for malware</button>
+    <hr data-doc>
+    <button role="menuitem" id="c-new">New window</button>
+    <button role="menuitem" id="c-close">Close this window <kbd>Ctrl+W</kbd></button>
+    <button role="menuitem" id="c-quit">Exit airlock (all windows) <kbd>Ctrl+Q</kbd></button>
+  </div>
   <header class="bar">
-    <div class="brand"><span class="logo" aria-hidden="true"></span>airlock</div>
+    <div class="menu-wrap" id="appwrap">
+      <button class="brand" id="appbtn" aria-haspopup="menu" aria-expanded="false" title="airlock menu"><span class="logo" aria-hidden="true"></span>airlock</button>
+      <div class="menu left" id="appmenu" role="menu" hidden>
+        <button role="menuitem" id="m-new">New window</button>
+        <button role="menuitem" id="m-auto" aria-checked="true" title="Check every file you open for malware, in the background">Check files automatically <span class="tick">✓</span></button>
+        <button role="menuitem" id="m-tour">Guided tour</button>
+        <button role="menuitem" id="m-close">Close this window <kbd>Ctrl+W</kbd></button>
+        <button role="menuitem" id="m-quit">Exit airlock (all windows) <kbd>Ctrl+Q</kbd></button>
+      </div>
+    </div>
     <button id="open" title="Open a document (Ctrl+O)">Open…</button>
     <div class="doc" id="doc" hidden>
       <span class="doc-name" id="docname"></span>
       <span class="seal" id="seal" title="The document is open inside a disposable Firecracker microVM with no network device. Only pixels, page sizes, search positions and cleaned text come out. The VM is destroyed when you close the document.">
         <span class="dot"></span><span class="label">Sealed · microVM · no network</span>
       </span>
+      <button class="check" id="check" hidden><span class="dot"></span><span class="label"></span></button>
     </div>
     <div class="spacer"></div>
     <div class="group search" id="searchbox" hidden>
@@ -30,6 +54,7 @@
       <button id="zin" class="icon" title="Zoom in (+)" aria-label="Zoom in">+</button>
       <button id="zfit" title="Fit width">Fit</button>
     </div>
+    <button id="sheetbtn" hidden aria-pressed="false" title="Spreadsheet layout: each sheet as one continuous page, or split into pages that fit the width">One page</button>
     <button id="textbtn" hidden title="Show the text of the current page">Text</button>
     <div class="menu-wrap" id="savewrap" hidden>
       <button id="savebtn" aria-haspopup="menu" aria-expanded="false" title="Save a safe copy or print">Save ▾</button>
@@ -40,6 +65,7 @@
     </div>
     <button id="pixels" hidden aria-pressed="false" title="Pixels only: no document text leaves the VM (no text selection or Text panel). Search still works.">Pixels only</button>
     <button id="updates" title="Updates for airlock's VM (renderers, kernel, Firecracker)">Updates<span class="badge" id="updates-dot" hidden></span></button>
+    <button id="tourbtn" class="icon" title="Show the guided tour of airlock" aria-label="Guided tour">?</button>
     <button id="analyze" class="primary" hidden title="Detonate in a separate microVM wired to a fake internet and report what the document tries to do">Analyze</button>
   </header>
 
@@ -75,6 +101,25 @@
     <h3 id="toast-title"></h3>
     <p id="toast-text"></p>
     <div class="row" id="toast-actions"></div>
+  </div>
+  <div class="tour" id="tour" hidden>
+    <div class="tour-spot" id="tour-spot"></div>
+    <div class="tour-card" id="tour-card" role="dialog" aria-modal="true" aria-labelledby="tour-title">
+      <div class="tour-top">
+        <span class="tour-step" id="tour-step"></span>
+        <button class="tour-skip" id="tour-skip">Skip tour</button>
+      </div>
+      <div class="tour-bar"><div class="tour-fill" id="tour-fill"></div></div>
+      <div class="tour-kicker" id="tour-kicker"></div>
+      <h2 id="tour-title"></h2>
+      <p id="tour-text"></p>
+      <p class="tour-how" id="tour-how"></p>
+      <div class="tour-nav">
+        <button id="tour-back">Back</button>
+        <span class="tour-keys"><kbd>←</kbd> <kbd>→</kbd> <kbd>Esc</kbd></span>
+        <button class="primary" id="tour-next">Next</button>
+      </div>
+    </div>
   </div>
   <div id="printout" aria-hidden="true"></div>
   <footer class="status" id="status">Ready</footer>

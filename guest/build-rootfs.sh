@@ -47,6 +47,8 @@ fakeroot_sh $B/guestroot '
         -env:UserInstallation=file:///usr/lib/airlock/lo-profile-template \
         --headless --invisible --nologo --norestore --terminate_after_init >/dev/null 2>&1 || true
     test -d /usr/lib/airlock/lo-profile-template/user
+    # Our only macro (spreadsheets: fit columns to the page width). Documents never run theirs.
+    install -D -m 0644 /src/guest/lo-sheets.xba /usr/lib/airlock/lo-profile-template/user/basic/Standard/Module1.xba
     apk info -v 2>/dev/null | sort > /src/'"$B"'/rootfs.packages.tmp
     rm -rf /sbin/apk /etc/apk /lib/apk /var/cache/apk /usr/share/apk
     install -m 0755 -o 0 -g 0 /src/'"$AGENT"' /sbin/airlock-agent

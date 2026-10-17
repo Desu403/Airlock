@@ -12,6 +12,40 @@ use std::time::{Duration, Instant};
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(150);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
+/// Start of the error when the document's VM is no longer running.
+pub const VM_STOPPED: &str = "the document's VM stopped";
+
+/// How spreadsheets are laid out (other documents keep their own pages).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Layout {
+    /// Fitted to the page width, as many pages down as needed.
+    Pages,
+    /// Each sheet on one page sized to its content, when that stays readable.
+    OnePagePerSheet,
+}
+
+impl Layout {
+    fn options(self) -> &'static [&'static str] {
+        match self {
+            Layout::Pages => &[],
+            Layout::OnePagePerSheet => &["airlock.sheets=single"],
+        }
+    }
+}
+
+/// Whether `doc` is a spreadsheet (content sniffing, as the guest does).
+pub fn is_spreadsheet(doc: &[u8]) -> bool {
+    let has = |n: &[u8]| doc.windows(n.len()).any(|w| w == n);
+    let utf16 = |s: &str| s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect::<Vec<u8>>();
+    if doc.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]) {
+        return !has(&utf16("WordDocument")) && (has(&utf16("Workbook")) || has(&utf16("Book")));
+    }
+    if doc.starts_with(b"PK\x03\x04") {
+        let head = &doc[..doc.len().min(256)];
+        return (!has(b"word/") && has(b"xl/")) || head.windows(54).any(|w| w == b"mimetypeapplication/vnd.oasis.opendocument.spreadsheet");
+    }
+    false
+}
 
 pub struct PageSize {
     /// Points.
@@ -44,7 +78,7 @@ enum Msg {
 }
 
 pub struct LiveSession {
-    _run: vm::RunDir,
+    run: vm::RunDir,
     child: std::process::Child,
     stream: UnixStream,
     pub pages: Vec<PageSize>,
@@ -56,12 +90,16 @@ pub struct LiveSession {
 impl LiveSession {
     /// Boots a live VM for `doc` (PDF or Office). The VM has no network device.
     pub fn open(doc: &[u8]) -> Result<Self> {
+        Self::open_with(doc, Layout::Pages)
+    }
+
+    pub fn open_with(doc: &[u8], layout: Layout) -> Result<Self> {
         let started = Instant::now();
         let assets = vm::Assets::locate()?;
         let run = vm::RunDir::create("live")?;
         let doc_disk = vm::write_doc_disk(&run.path, doc)?;
         let listener = run.listen()?;
-        let spec = vm::Spec { mode: "live", drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }], sinkhole_events: None };
+        let spec = vm::Spec { mode: "live", drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }], sinkhole_events: None, options: layout.options() };
         let mut child = vm::spawn(&assets, &run, &spec, &run.path.join("console.log"))?;
 
         let deadline = Instant::now() + BOOT_TIMEOUT;
@@ -80,7 +118,7 @@ impl LiveSession {
         stream.set_nonblocking(false)?;
         // Opening includes Office conversion, which can take a while.
         stream.set_read_timeout(Some(BOOT_TIMEOUT))?;
-        let mut s = LiveSession { _run: run, child, stream, pages: Vec::new(), indicators: Vec::new(), boot_time: Duration::ZERO };
+        let mut s = LiveSession { run, child, stream, pages: Vec::new(), indicators: Vec::new(), boot_time: Duration::ZERO };
 
         let count = match s.next()? {
             Msg::Hello(n) => n,
@@ -102,11 +140,29 @@ impl LiveSession {
         anyhow!("protocol violation: {what} — VM killed, guest treated as hostile")
     }
 
+    /// Whether the VM is still running.
+    pub fn alive(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+
+    /// An I/O error on the stream: if the VM is gone, say so and why (exit
+    /// status and the last lines of its console), for the log.
+    fn io_error(&mut self, e: anyhow::Error) -> anyhow::Error {
+        std::thread::sleep(Duration::from_millis(50));
+        match self.child.try_wait() {
+            Ok(Some(status)) => {
+                let console = std::fs::read_to_string(self.run.path.join("console.log")).unwrap_or_default();
+                let tail: Vec<&str> = console.lines().rev().take(3).collect();
+                anyhow!("{VM_STOPPED} ({status}; last console lines: {})", tail.into_iter().rev().collect::<Vec<_>>().join(" | "))
+            }
+            _ => e,
+        }
+    }
+
     fn send(&mut self, cmd: Cmd, a: u32, b: u32, payload: &[u8]) -> Result<()> {
         let h = Header { kind: cmd as u32, a, b, c: 0, len: payload.len() as u32 };
-        self.stream.write_all(&h.encode())?;
-        self.stream.write_all(payload)?;
-        Ok(())
+        let r = self.stream.write_all(&h.encode()).and_then(|_| self.stream.write_all(payload));
+        r.map_err(|e| self.io_error(e.into()))
     }
 
     /// Reads one message; indicators are collected on the side.
@@ -114,7 +170,7 @@ impl LiveSession {
         match read_msg(&mut self.stream, &mut self.indicators) {
             Ok(m) => Ok(m),
             Err(Bad::Hostile(what)) => Err(self.hostile(what)),
-            Err(Bad::Other(e)) => Err(e),
+            Err(Bad::Other(e)) => Err(self.io_error(e)),
         }
     }
 

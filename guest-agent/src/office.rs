@@ -55,6 +55,9 @@ pub fn detect(doc: &[u8]) -> Option<Kind> {
         if contains(doc, b"ppt/") {
             return Some(Kind::Office("pptx"));
         }
+        if contains(&doc[..doc.len().min(256)], b"mimetypeapplication/vnd.oasis.opendocument.spreadsheet") {
+            return Some(Kind::Office("ods"));
+        }
         if contains(&doc[..doc.len().min(256)], b"mimetypeapplication/vnd.oasis.opendocument") {
             return Some(Kind::Office("odt"));
         }
@@ -117,15 +120,22 @@ fn copy_tree(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()
 
 /// Converts to `<work>/office.pdf`. Returns monitor events; the caller checks
 /// whether the PDF appeared.
-pub fn convert(path: &str, work: &str, net: Net) -> Vec<(Ind, String)> {
+pub fn convert(path: &str, work: &str, net: Net, ext: &str) -> Vec<(Ind, String)> {
     let dir = format!("{work}/lo-profile");
     if let Err(e) = copy_tree(std::path::Path::new(PROFILE_TEMPLATE), std::path::Path::new(&dir)) {
         return vec![(Ind::RendererAbnormal, format!("could not prepare LibreOffice profile: {e}"))];
     }
     let cache = format!("{dir}/cache");
     let profile = format!("-env:UserInstallation=file://{dir}");
+    // Spreadsheets go through the profile's own macro (lo-sheets.xba): every
+    // sheet fitted to the page width, so columns are not cut onto other pages.
+    let single = std::fs::read_to_string("/proc/cmdline").unwrap_or_default().split_whitespace().any(|t| t == "airlock.sheets=single");
+    let layout = if single { "single" } else { "pages" };
+    let sheets = format!("macro:///Standard.Module1.SheetsToPdf(\"{path}\",\"{work}/office.pdf\",\"{layout}\")");
+    let how: &[&str] = if matches!(ext, "xls" | "xlsx" | "ods") { &[&sheets] } else { &["--convert-to", "pdf", "--outdir", work, path] };
+    let argv: Vec<&str> = [SOFFICE, &profile, "--headless", "--invisible", "--nologo", "--norestore", "--nolockcheck", "--nodefault"].iter().chain(how).copied().collect();
     let r = monitor::run(
-        &[SOFFICE, &profile, "--headless", "--invisible", "--nologo", "--norestore", "--nolockcheck", "--nodefault", "--convert-to", "pdf", "--outdir", work, path],
+        &argv,
         work,
         &Opts {
             mem_limit: None,

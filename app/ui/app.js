@@ -69,7 +69,12 @@ async function openWith(promise, label) {
     const info = r && "elsewhere" in r ? r.info : r;
     const more = r && r.elsewhere ? ` · ${r.elsewhere} more in new window${r.elsewhere > 1 ? "s" : ""} (one VM each)` : "";
     if (!info) { status(more ? more.slice(3) : "Ready"); return; }
+    const sameFile = state.reopening;
     setupDocument(info);
+    if (!sameFile || (!check.report && !check.running)) {
+      clearCheck();
+      if (autoCheckOn()) startCheck();
+    } else showCheck();
     const secs = ((performance.now() - t0) / 1000).toFixed(1);
     status(`${info.pages.length} page(s) · VM ready in ${(info.ready_ms / 1000).toFixed(1)}s · opened in ${secs}s${more}`);
   } catch (e) {
@@ -80,6 +85,7 @@ async function openWith(promise, label) {
     if (name) showUndisplayable(name, String(e));
   } finally {
     busy(null);
+    state.reopening = false;
   }
 }
 
@@ -89,7 +95,8 @@ function resetDocument() {
   if (state.observer) state.observer.disconnect();
   Object.assign(state, { pages: [], hits: [], hitIndex: -1, queue: [], findings: null, docOpen: false });
   $("pages").replaceChildren();
-  for (const id of ["doc", "searchbox", "zoombox", "textbtn", "savewrap", "pixels", "analyze", "banner"]) $(id).hidden = true;
+  clearCheck();
+  for (const id of ["doc", "searchbox", "zoombox", "textbtn", "sheetbtn", "savewrap", "pixels", "analyze", "banner"]) $(id).hidden = true;
   $("empty").hidden = false;
   closePanel();
 }
@@ -193,6 +200,9 @@ function setupDocument(info) {
   closePanel();
 
   $("docname").textContent = info.name;
+  $("sheetbtn").hidden = !info.spreadsheet;
+  $("seal").classList.remove("stopped");
+  $("seal").querySelector(".label").textContent = "Sealed · microVM · no network";
   for (const id of ["doc", "searchbox", "zoombox", "savewrap", "pixels", "analyze"]) $(id).hidden = false;
   $("textbtn").hidden = state.pixelsOnly;
   $("empty").hidden = true;
@@ -267,7 +277,7 @@ async function pump() {
         p.key = dpi;
         p.el.classList.remove("loading");
       } catch (e) {
-        status(`Page ${i + 1}: ${e}`, true);
+        if (!vmStopped(e)) status(`Page ${i + 1}: ${e}`, true);
         break;
       }
       if (!p.textState && !state.pixelsOnly) await loadTextLayer(p, i);
@@ -290,7 +300,7 @@ async function loadTextLayer(p, i) {
     lines = await invoke("page_lines", { page: i });
   } catch (e) {
     p.textState = null;
-    status(`Page ${i + 1} text: ${e}`, true);
+    if (!vmStopped(e)) status(`Page ${i + 1} text: ${e}`, true);
     return;
   }
   const spans = [];
@@ -396,8 +406,34 @@ async function runSearch() {
     drawHighlights();
     showHit();
   } catch (e) {
-    status(`Search failed: ${e}`, true);
+    if (!vmStopped(e)) status(`Search failed: ${e}`, true);
   }
+}
+
+// The document's VM is gone (it stopped, or was shut down as hostile):
+// say so plainly and offer a fresh one. Why is in ~/.local/state/airlock/app.log.
+function vmStopped(e) {
+  const msg = String(e);
+  const stopped = msg.startsWith("the document's VM stopped");
+  const hostile = msg.startsWith("protocol violation");
+  if (!stopped && !hostile) return false;
+  status(hostile ? "The document's VM broke airlock's rules and was shut down" : "The document's VM stopped", true);
+  $("seal").classList.add("stopped");
+  $("seal").querySelector(".label").textContent = "VM stopped · nothing is running";
+  notify(
+    hostile ? "VM shut down for safety" : "This document's VM stopped",
+    hostile
+      ? "The VM showing this document broke airlock's rules (what an exploit looks like from outside), so it was destroyed. Run Analyze for details. Reopening starts a new, clean VM."
+      : "The disposable VM showing this document is no longer running, so pages, search and text are unavailable. Reopening starts a new one in a second.",
+    [["Reopen", reopenDocument], ["Close", hideToast]],
+  );
+  return true;
+}
+
+function reopenDocument() {
+  hideToast();
+  state.reopening = true;
+  return openWith(invoke("reopen"), $("docname").textContent || "the document");
 }
 
 function drawHighlights() {
@@ -530,29 +566,103 @@ function renderReport(body, report, title) {
   body.replaceChildren(...nodes);
 }
 
-async function analyze(name) {
-  const btn = $("analyze");
-  btn.disabled = true;
-  const body = openPanel(typeof name === "string" ? `Analysis · ${name}` : "Analysis");
-  const wait = el("div", "row");
-  wait.append(el("div", "spinner"), el("span", "note", "Detonating in a separate microVM wired to a fake internet, then examining its disk in a second VM. You can keep reading meanwhile."));
-  body.replaceChildren(wait);
-  status("Analyzing in separate microVMs…");
-  try {
-    const report = await invoke("analyze");
+// The malware check (the same one whether automatic or from Analyze): one
+// run per opened file, shared by the badge, the Analyze button and the panel.
+const check = { gen: 0, running: null, report: null, error: null };
+
+function autoCheckOn() { return pref("airlock.autoCheck", "1") === "1"; }
+
+function verdictClass(v) {
+  return /MALICIOUS/.test(v) ? "malicious" : /SUSPICIOUS/.test(v) ? "suspicious" : "clean";
+}
+
+function showCheck() {
+  const b = $("check");
+  const [cls, label, title] = check.running
+    ? ["checking", "Checking…", "Checking this file for malware in two separate microVMs (one wired to a fake internet). Keep reading meanwhile. Click to watch."]
+    : check.report
+      ? [verdictClass(check.report.verdict), { malicious: /LIKELY/.test(check.report.verdict) ? "Likely malicious" : "Malicious", suspicious: "Suspicious", clean: "No threats found" }[verdictClass(check.report.verdict)], `${check.report.headline || check.report.verdict}. Click for the full report.`]
+      : check.error
+        ? ["failed", "Check failed", `The malware check could not finish: ${check.error}. Click to try again.`]
+        : [null];
+  b.hidden = !cls || !state.docOpen;
+  if (!cls) return;
+  b.className = `check ${cls}`;
+  b.querySelector(".label").textContent = label;
+  b.title = title;
+  b.setAttribute("aria-label", `Malware check: ${label}`);
+}
+
+function clearCheck() {
+  Object.assign(check, { gen: check.gen + 1, running: null, report: null, error: null });
+  showCheck();
+}
+
+function startCheck() {
+  const gen = ++check.gen;
+  Object.assign(check, { report: null, error: null });
+  const p = invoke("analyze").then(
+    (r) => {
+      if (gen !== check.gen) return r;
+      check.report = r;
+      return r;
+    },
+    (e) => {
+      if (gen === check.gen) check.error = String(e);
+      throw e;
+    },
+  ).finally(() => {
+    if (gen !== check.gen) return;
+    check.running = null;
+    showCheck();
+    // Something found: show it without waiting for a click (unless the
+    // analysis panel is already open and waiting for this result).
+    if (check.report && verdictClass(check.report.verdict) !== "clean" && !(!$("panel").hidden && $("panel-title").textContent.startsWith("Analysis"))) showAnalysis();
+  });
+  check.running = p;
+  showCheck();
+  return p;
+}
+
+// The report panel: the finished check, or a spinner until it finishes.
+async function showAnalysis(name, again = false) {
+  const title = typeof name === "string" ? `Analysis · ${name}` : "Analysis";
+  const body = openPanel(title);
+  if (again || (!check.report && !check.running)) startCheck();
+  if (check.running) {
+    const wait = el("div", "row");
+    wait.append(el("div", "spinner"), el("span", "note", "Detonating in a separate microVM wired to a fake internet, then examining its disk in a second VM. You can keep reading meanwhile."));
+    body.replaceChildren(wait);
+    status("Checking for malware in separate microVMs…");
+    try { await check.running; } catch {}
+    if ($("panel-title").textContent !== title || body.firstChild !== wait) return;
+  }
+  if (check.report) {
+    const report = check.report;
     renderReport(body, report, `${report.document} · analyzed in ${report.seconds.toFixed(1)}s`);
     const save = el("button", "", "Save report…");
     save.title = "Save as text (or .json for tools)";
     save.onclick = saveReport;
-    body.append(save);
+    const again = el("button", "", "Check again");
+    again.title = "Run the whole analysis again in new microVMs";
+    again.onclick = () => showAnalysis(name, true);
+    const row = el("div", "row");
+    row.append(save, again);
+    body.append(row);
     status(`Analysis: ${report.verdict}`);
-  } catch (e) {
-    body.replaceChildren(el("p", "note", `Analysis failed: ${e}`));
-    status(`Analysis failed: ${e}`, true);
-  } finally {
-    btn.disabled = false;
+  } else {
+    const retry = el("button", "", "Try again");
+    retry.onclick = () => showAnalysis(name, true);
+    body.replaceChildren(el("p", "note", `Analysis failed: ${check.error}`), retry);
+    status(`Analysis failed: ${check.error}`, true);
   }
 }
+
+function analyze(name) {
+  return showAnalysis(name);
+}
+
+$("check").onclick = () => showAnalysis();
 
 // ---------------------------------------------------------------- wiring
 
@@ -802,6 +912,17 @@ async function runDemo() {
   for (const step of script.split(";")) {
     const [cmd, arg] = step.split("=");
     if (cmd === "search") { $("q").value = arg; await runSearch(); }
+    if (cmd === "open") openPaths([arg]);
+    if (cmd === "reopen") await reopenDocument();
+    if (cmd === "appmenu") toggleAppMenu(true);
+    if (cmd === "ctx") {
+      const [x, y] = arg.split(",").map(Number);
+      document.elementFromPoint(x, y).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: x, clientY: y }));
+    }
+    if (cmd === "click") $(arg).click();
+    if (cmd === "sheets") { setPref("airlock.sheetSingle", arg === "single" ? "1" : "0"); showSheetLayout(); await invoke("set_sheet_layout", { single: arg === "single" }); await reopenDocument(); }
+    if (cmd === "tour") { startTour(); tourShow(Number(arg) || 0); }
+    if (cmd === "wait") await new Promise((r) => setTimeout(r, Number(arg) || 0));
     if (cmd === "text") await showText();
     if (cmd === "reveal") {
       // Paint the invisible text layer red to check its alignment.
@@ -832,6 +953,24 @@ async function runDemo() {
 }
 
 // Pixels-only preference: the environment (AIRLOCK_PIXELS_ONLY) or the last choice.
+// Spreadsheet layout: "One page" per sheet, or pages fitted to the width.
+// Converting happens in the VM, so switching reopens the document there.
+function sheetSingle() { return pref("airlock.sheetSingle", "0") === "1"; }
+function showSheetLayout() {
+  const on = sheetSingle();
+  $("sheetbtn").setAttribute("aria-pressed", String(on));
+  $("sheetbtn").title = on
+    ? "Showing each sheet as one continuous page. Click to split sheets into pages that fit the width."
+    : "Showing sheets split into pages that fit the width. Click to show each sheet as one continuous page (very large sheets stay split, to remain sharp).";
+}
+$("sheetbtn").onclick = async () => {
+  setPref("airlock.sheetSingle", sheetSingle() ? "0" : "1");
+  showSheetLayout();
+  await invoke("set_sheet_layout", { single: sheetSingle() });
+  await reopenDocument();
+};
+const sheetsReady = invoke("set_sheet_layout", { single: sheetSingle() }).then(showSheetLayout);
+
 const pixelsReady = invoke("pixels_only").then(async (on) => {
   let saved = null;
   try { saved = localStorage.getItem("airlock.pixelsOnly"); } catch {}
@@ -842,7 +981,210 @@ const pixelsReady = invoke("pixels_only").then(async (on) => {
 
 invoke("initial_path").then(async (p) => {
   await pixelsReady;
-  if (!p) return;
+  await sheetsReady;
+  if (!p) return runDemo();
   await openWith(invoke("open_path", { path: p }), p.split(/[\\/]/).pop());
   runDemo();
 });
+
+// ---------------------------------------------------------------- guided tour
+// A spotlight glides over each control while a glass card explains what it
+// does and how it works. Runs once on first start; the ? button replays it.
+
+const TOUR = [
+  { target: null, kicker: "Welcome", title: "Open anything. Risk nothing.",
+    text: "airlock opens every PDF and Office file inside its own throwaway virtual machine, a tiny separate computer with no network.",
+    how: "Your computer never reads the file itself. It only receives pictures of the pages and cleaned-up text. Close the document and the whole VM is destroyed." },
+  { target: "open", kicker: "Open", title: "Open a document",
+    text: "Pick files here, press Ctrl+O, or drag them onto the window.",
+    how: "Each document gets a brand-new VM that boots in about a second. Open several at once and each gets its own window and VM, so documents never share anything." },
+  { target: "seal", kicker: "Status", title: "The seal",
+    text: "Green means the document is sealed in its VM, with no network card at all.",
+    how: "If the VM ever stops, the seal turns grey and airlock offers to reopen the document in a fresh one." },
+  { target: "searchbox", kicker: "Find", title: "Search inside the VM",
+    text: "Type to find words. Enter and Shift+Enter jump between matches.",
+    how: "The search runs inside the VM. Only the positions of the matches come back as numbers, and airlock draws the highlights itself." },
+  { target: "zoombox", kicker: "View", title: "Zoom",
+    text: "Zoom in and out, or Fit to match the window width. The + and − keys work too.",
+    how: "The VM redraws each page sharply at the new size: no blurry scaling." },
+  { target: "textbtn", kicker: "Read", title: "Page text",
+    text: "Shows the text of the current page. You can also select and copy text straight from the page.",
+    how: "The text is strictly cleaned before it leaves the VM: only normal visible characters, nothing hidden or invisible." },
+  { target: "savewrap", kicker: "Keep", title: "Save a safe copy, or print",
+    text: "Safe PDF copy (Ctrl+S) writes a new PDF made only of the page pictures. Print (Ctrl+P) prints them.",
+    how: "Nothing from the original survives in the copy (no scripts, links, fonts or attachments), so it is safe to keep, share or open anywhere." },
+  { target: "pixels", kicker: "Lock down", title: "Pixels only",
+    text: "For files you really distrust: no text leaves the VM at all, only pictures.",
+    how: "Text selection and the Text panel turn off. Search still works, because it only needs positions." },
+  { target: "updates", kicker: "Stay patched", title: "Updates",
+    text: "Keeps the VM's document readers, kernel and malware signatures current. It checks daily and installs automatically.",
+    how: "Every update is checked against official signatures and must pass airlock's full test suite before it is used. If anything fails, the old version stays." },
+  { target: "analyze", kicker: "Investigate", title: "Analyze",
+    text: "Finds out what a file tries to do: contact servers, run programs, drop files, exploit the reader. Every file you open is checked automatically; the badge next to Sealed shows the result (turn it off in the airlock logo menu).",
+    how: "It runs the file in a second VM wired to a fake internet, then inspects that VM's disk from a third one. The report explains every finding in plain words, with the technical evidence underneath." },
+  { target: "tourbtn", kicker: "That's it", title: "You're ready",
+    text: "Replay this tour anytime with the ? button. Right-click anywhere (or click the airlock logo) for a new window, Close this window (Ctrl+W) or Exit airlock, which closes every document (Ctrl+Q). The same is in the tray icon and in the launcher's right-click menu.",
+    how: "Tip: when a file looks suspicious, press Analyze before you trust it." },
+];
+
+const tour = { i: 0, revealed: [], onKey: null };
+
+function tourPlace() {
+  const step = TOUR[tour.i];
+  const spot = $("tour-spot"), card = $("tour-card");
+  const target = step.target && $(step.target);
+  const r = target && !target.hidden ? target.getBoundingClientRect() : null;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  if (r && r.width) {
+    const pad = 6;
+    Object.assign(spot.style, { left: `${r.left - pad}px`, top: `${r.top - pad}px`, width: `${r.width + pad * 2}px`, height: `${r.height + pad * 2}px` });
+    spot.classList.remove("center");
+  } else {
+    Object.assign(spot.style, { left: `${vw / 2}px`, top: `${vh / 2}px`, width: "0px", height: "0px" });
+    spot.classList.add("center");
+  }
+  // The card sits below the target (or above it if there is no room), kept on screen.
+  const cw = Math.min(380, vw - 32), ch = card.offsetHeight || 260;
+  let left, top;
+  if (r && r.width) {
+    left = Math.min(Math.max(16, r.left + r.width / 2 - cw / 2), vw - cw - 16);
+    top = r.bottom + 18 + ch < vh ? r.bottom + 18 : Math.max(16, r.top - ch - 18);
+  } else {
+    left = (vw - cw) / 2;
+    top = Math.max(16, (vh - ch) / 2);
+  }
+  Object.assign(card.style, { left: `${left}px`, top: `${top}px`, width: `${cw}px` });
+}
+
+function tourShow(i) {
+  tour.i = Math.max(0, Math.min(TOUR.length - 1, i));
+  const step = TOUR[tour.i];
+  const card = $("tour-card");
+  card.classList.remove("enter");
+  void card.offsetWidth; // restart the entrance animation
+  card.classList.add("enter");
+  $("tour-step").textContent = `${String(tour.i + 1).padStart(2, "0")} / ${String(TOUR.length).padStart(2, "0")}`;
+  $("tour-fill").style.width = `${((tour.i + 1) / TOUR.length) * 100}%`;
+  $("tour-kicker").textContent = step.kicker;
+  $("tour-title").textContent = step.title;
+  $("tour-text").textContent = step.text;
+  $("tour-how").textContent = step.how;
+  $("tour-back").disabled = tour.i === 0;
+  $("tour-next").textContent = tour.i === TOUR.length - 1 ? "Start using airlock" : "Next";
+  tourPlace();
+  // Placement uses the card's height, which the new text may have changed.
+  requestAnimationFrame(tourPlace);
+}
+
+function startTour() {
+  closePanel();
+  toggleSaveMenu(false);
+  // Show the whole toolbar, as it looks with a document open; put it back afterwards.
+  tour.revealed = ["doc", "searchbox", "zoombox", "textbtn", "savewrap", "pixels", "analyze"].filter((id) => $(id).hidden);
+  for (const id of tour.revealed) $(id).hidden = false;
+  if (!$("docname").textContent) { $("docname").textContent = "your-document.pdf"; tour.placeholder = true; }
+  document.body.classList.add("touring");
+  $("tour").hidden = false;
+  requestAnimationFrame(() => $("tour").classList.add("on"));
+  tourShow(0);
+  tour.onKey = (e) => {
+    if (e.key === "ArrowRight" || e.key === "Enter") { e.preventDefault(); tour.i === TOUR.length - 1 ? endTour() : tourShow(tour.i + 1); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); tourShow(tour.i - 1); }
+    else if (e.key === "Escape") { e.preventDefault(); endTour(); }
+    e.stopImmediatePropagation();
+  };
+  document.addEventListener("keydown", tour.onKey, true);
+  window.addEventListener("resize", tourPlace);
+}
+
+function endTour() {
+  try { localStorage.setItem("airlock.tourDone", "1"); } catch {}
+  document.removeEventListener("keydown", tour.onKey, true);
+  window.removeEventListener("resize", tourPlace);
+  $("tour").classList.remove("on");
+  document.body.classList.remove("touring");
+  setTimeout(() => { $("tour").hidden = true; }, 350);
+  for (const id of tour.revealed) $(id).hidden = true;
+  if (tour.placeholder) { $("docname").textContent = ""; tour.placeholder = false; }
+  if (state.docOpen) fitWidth();
+}
+
+$("tourbtn").onclick = startTour;
+
+// ---------------------------------------------------------------- app menu
+// Works on every desktop (with or without a tray): new window, tour, exit.
+function toggleAppMenu(open) {
+  const m = $("appmenu");
+  m.hidden = open === undefined ? !m.hidden : !open;
+  $("appbtn").setAttribute("aria-expanded", String(!m.hidden));
+}
+function quitEverything() {
+  status("Closing every airlock window and its VM…");
+  invoke("quit_everything");
+}
+$("appbtn").onclick = (e) => { e.stopPropagation(); toggleAppMenu(); };
+$("m-new").onclick = () => { toggleAppMenu(false); invoke("new_window"); };
+$("m-tour").onclick = () => { toggleAppMenu(false); startTour(); };
+$("m-quit").onclick = quitEverything;
+$("m-close").onclick = closeWindow;
+function showAutoCheck() { $("m-auto").setAttribute("aria-checked", String(autoCheckOn())); }
+$("m-auto").onclick = () => {
+  setPref("airlock.autoCheck", autoCheckOn() ? "0" : "1");
+  showAutoCheck();
+  if (autoCheckOn() && state.docOpen && !check.report && !check.running) startCheck();
+  status(autoCheckOn() ? "Files are checked for malware automatically when opened" : "Automatic check off: press Analyze to check a file");
+};
+showAutoCheck();
+function closeWindow() {
+  status("Closing this window and its VM…");
+  invoke("close_window");
+}
+
+// Right-click: airlock's own menu instead of WebKit's (whose Reload would
+// throw away the open document). Text boxes keep the native one (paste).
+function hideCtx() { $("ctxmenu").hidden = true; }
+document.addEventListener("contextmenu", (e) => {
+  if (e.target.closest("input, textarea")) return;
+  e.preventDefault();
+  toggleAppMenu(false);
+  const m = $("ctxmenu");
+  m.querySelectorAll("[data-doc]").forEach((b) => (b.hidden = !state.docOpen));
+  $("c-copy").hidden = !String(getSelection() || "").trim();
+  m.hidden = false;
+  const x = Math.min(e.clientX, innerWidth - m.offsetWidth - 4), y = Math.min(e.clientY, innerHeight - m.offsetHeight - 4);
+  m.style.left = Math.max(4, x) + "px";
+  m.style.top = Math.max(4, y) + "px";
+});
+const ctxActions = {
+  "c-copy": () => document.execCommand("copy"),
+  "c-zin": () => stepZoom(1),
+  "c-zout": () => stepZoom(-1),
+  "c-fit": fitWidth,
+  "c-safe": saveSafeCopy,
+  "c-print": printDocument,
+  "c-analyze": () => analyze(),
+  "c-new": () => invoke("new_window"),
+  "c-close": closeWindow,
+  "c-quit": quitEverything,
+};
+for (const [id, fn] of Object.entries(ctxActions)) $(id).onclick = () => { hideCtx(); fn(); };
+document.addEventListener("click", (e) => { if (!$("ctxmenu").contains(e.target)) hideCtx(); });
+window.addEventListener("blur", hideCtx);
+window.addEventListener("scroll", hideCtx, true);
+document.addEventListener("click", (e) => { if (!$("appwrap").contains(e.target)) toggleAppMenu(false); });
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "q") { e.preventDefault(); quitEverything(); }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "w") { e.preventDefault(); closeWindow(); }
+  if (e.key === "Escape") { toggleAppMenu(false); hideCtx(); }
+});
+$("tour-next").onclick = () => (tour.i === TOUR.length - 1 ? endTour() : tourShow(tour.i + 1));
+$("tour-back").onclick = () => tourShow(tour.i - 1);
+$("tour-skip").onclick = endTour;
+
+// First start: the tour, unless a test script is driving the app.
+(async () => {
+  let done = false;
+  try { done = localStorage.getItem("airlock.tourDone") === "1"; } catch {}
+  const demo = await invoke("demo_script").catch(() => null);
+  if (!done && !demo) setTimeout(startTour, 700);
+})();

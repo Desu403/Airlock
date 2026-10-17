@@ -36,6 +36,7 @@ name = "airlock-app"
 version = "0.1.0"
 dependencies = [
  "airlock",
+ "libc",
  "png 0.17.16",
  "serde",
  "serde_json",

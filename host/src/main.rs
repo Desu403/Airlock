@@ -89,6 +89,7 @@ fn view(doc: &[u8], out_dir: &Path, verbose: bool) -> Result<()> {
         mode: "view",
         drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }],
         sinkhole_events: None,
+        options: &[],
     };
     let s = session::run(&assets, &run, &spec, verbose, true)?;
     if let Some(e) = s.guest_error {
@@ -157,7 +158,12 @@ fn selftest(out_dir: PathBuf, verbose: bool) -> Result<()> {
 
 /// Smoke test for live mode: boot, render, search, extract text + layout, quit.
 fn livecheck(doc: &[u8]) -> Result<()> {
-    let mut s = live::LiveSession::open(doc)?;
+    // Opened from a thread that then exits, like the app's worker threads:
+    // the VM must outlive it (it was once killed with that thread).
+    let doc = doc.to_vec();
+    let mut s = std::thread::spawn(move || live::LiveSession::open(&doc)).join().map_err(|_| anyhow::anyhow!("open thread panicked"))??;
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    anyhow::ensure!(s.alive(), "the VM died when the thread that started it exited");
     eprintln!("live: {} page(s), ready in {:.1}s", s.pages.len(), s.boot_time.as_secs_f32());
     let t = std::time::Instant::now();
     let p = s.render(0, 96)?;

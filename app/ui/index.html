@@ -32,6 +32,7 @@
     </div>
     <button id="textbtn" hidden title="Show the text of the current page">Text</button>
     <button id="pixels" hidden aria-pressed="false" title="Pixels only: no document text leaves the VM (no text selection or Text panel). Search still works.">Pixels only</button>
+    <button id="updates" title="Updates for airlock's VM (renderers, kernel, Firecracker)">Updates<span class="badge" id="updates-dot" hidden></span></button>
     <button id="analyze" class="primary" hidden title="Detonate in a separate microVM wired to a fake internet and report what the document tries to do">Analyze</button>
   </header>
 
@@ -63,6 +64,15 @@
       <div class="panel-body" id="panel-body"></div>
     </aside>
   </main>
+  <div class="toast" id="toast" role="status" hidden>
+    <h3>Security updates for airlock</h3>
+    <p id="toast-text"></p>
+    <div class="row">
+      <button id="toast-update" class="primary">Update now</button>
+      <button id="toast-details">Details</button>
+      <button id="toast-later">Later</button>
+    </div>
+  </div>
   <footer class="status" id="status">Ready</footer>
 </body>
 </html>

@@ -225,3 +225,20 @@ main { flex: 1; display: flex; min-height: 0; }
   main { position: relative; }
   .search input { width: 120px; }
 }
+
+/* ---- updates ---- */
+#updates { position: relative; }
+.badge { position: absolute; top: -3px; right: -3px; width: 9px; height: 9px; border-radius: 50%; background: var(--med); box-shadow: 0 0 0 2px var(--surface); }
+.toast {
+  position: fixed; right: 16px; bottom: 36px; z-index: 20; width: min(380px, calc(100vw - 32px));
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); padding: 14px;
+}
+.toast h3 { margin: 0 0 6px; font-size: 14px; }
+.toast p { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+.toast .row { margin: 0; }
+.changes { margin: 0 0 12px; padding-left: 18px; font-size: 13px; }
+.changes li { margin: 2px 0; font-variant-numeric: tabular-nums; }
+.progress { list-style: none; padding: 0; margin: 12px 0 0; font-size: 13px; }
+.progress li { padding: 3px 0; color: var(--muted); }
+.progress li:last-child { color: var(--text); font-weight: 600; }
+label.check { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); margin-top: 14px; }

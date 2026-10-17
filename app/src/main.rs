@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tauri::ipc::Response;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 struct Doc {
@@ -27,6 +27,7 @@ struct AppState {
     /// The last file chosen, even if it could not be displayed: it can
     /// still be analyzed (e.g. an Excel add-in has nothing to show).
     chosen: Arc<Mutex<Option<(String, Arc<Vec<u8>>)>>>,
+    updating: Arc<AtomicBool>,
 }
 
 #[derive(Serialize)]
@@ -273,6 +274,137 @@ fn sandbox_web_content() {
     }
 }
 
+// ---------------------------------------------------------------- updates
+// Updates rebuild the VM from the source checkout this app was built from
+// (scripts/update.sh: verified downloads, regression suite, auto-restore).
+
+fn source_tree() -> Option<PathBuf> {
+    let p = std::env::var_os("AIRLOCK_SOURCE").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".."));
+    p.join("scripts/update.sh").is_file().then_some(p)
+}
+
+#[derive(Serialize, Default)]
+struct UpdateStatus {
+    /// A source checkout to update from was found.
+    supported: bool,
+    available: bool,
+    /// Unix time of the check.
+    checked: u64,
+    /// "MuPDF 1.27.2-r0 → 1.27.3-r0", renderers first.
+    changes: Vec<String>,
+    packages: u32,
+    image_age_days: u32,
+    error: Option<String>,
+}
+
+fn parse_status(text: &str) -> UpdateStatus {
+    let mut st = UpdateStatus { supported: true, ..Default::default() };
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once('=') else { continue };
+        let pair = |label: &str| {
+            let (a, b) = v.split_once(' ').unwrap_or((v, v));
+            (a != b).then(|| format!("{label} {a} → {b}"))
+        };
+        match k {
+            "checked" => st.checked = v.parse().unwrap_or(0),
+            "available" => st.available = v == "1",
+            "packages" => st.packages = v.parse().unwrap_or(0),
+            "image_age_days" => st.image_age_days = v.parse().unwrap_or(0),
+            "kernel" => st.changes.extend(pair("Guest kernel")),
+            "firecracker" => st.changes.extend(pair("Firecracker")),
+            "alpine" => st.changes.extend(pair("Alpine base")),
+            "pkg" => {
+                let f: Vec<&str> = v.split_whitespace().collect();
+                if let [name, old, new] = f[..] {
+                    st.changes.push(format!("{name} {old} → {new}"));
+                }
+            }
+            _ => {}
+        }
+    }
+    st
+}
+
+/// Checks for updates (network: kernel.org, GitHub, Alpine's mirror). The
+/// result is cached for a day unless `force`.
+#[tauri::command]
+async fn update_status(force: bool) -> R<UpdateStatus> {
+    blocking(move || {
+        let Some(tree) = source_tree() else { return Ok(UpdateStatus::default()) };
+        let cache = tree.join("build/update-status");
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        if !force {
+            if let Ok(text) = std::fs::read_to_string(&cache) {
+                let st = parse_status(&text);
+                if now.saturating_sub(st.checked) < 86_400 {
+                    return Ok(st);
+                }
+            }
+        }
+        let out = std::process::Command::new(tree.join("scripts/update.sh")).arg("--status").output().map_err(err)?;
+        if !out.status.success() {
+            let msg = String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("check failed").to_string();
+            return Ok(UpdateStatus { supported: true, error: Some(msg), ..Default::default() });
+        }
+        Ok(parse_status(&String::from_utf8_lossy(&out.stdout)))
+    })
+    .await
+}
+
+#[derive(Serialize)]
+struct UpdateResult {
+    ok: bool,
+    /// Summary (success) or the end of the log (failure).
+    lines: Vec<String>,
+    /// This app's own binary was replaced: restart to use the new one.
+    restart: bool,
+}
+
+/// Runs scripts/update.sh, streaming its progress as "update-progress" events.
+#[tauri::command]
+async fn run_update(app: tauri::AppHandle, state: State<'_, AppState>) -> R<UpdateResult> {
+    let updating = state.updating.clone();
+    if updating.swap(true, Ordering::SeqCst) {
+        return Err("an update is already running".into());
+    }
+    let result = blocking(move || {
+        use std::io::BufRead;
+        let tree = source_tree().ok_or("no airlock source checkout found to update from")?;
+        let mut child = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exec scripts/update.sh 2>&1")
+            .current_dir(&tree)
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .map_err(err)?;
+        let mut tail: Vec<String> = Vec::new();
+        for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
+            let line = text::sanitize_line(line.as_bytes());
+            let _ = app.emit("update-progress", line.clone());
+            tail.push(line);
+            if tail.len() > 40 {
+                tail.remove(0);
+            }
+        }
+        let ok = child.wait().map_err(err)?.success();
+        let _ = std::fs::remove_file(tree.join("build/update-status"));
+        let lines = if ok { tail.iter().skip_while(|l| !l.starts_with("==> Updated")).cloned().collect() } else { tail };
+        let restart = std::fs::read_link("/proc/self/exe").is_ok_and(|p| p.to_string_lossy().ends_with(" (deleted)"));
+        Ok(UpdateResult { ok, lines, restart })
+    })
+    .await;
+    updating.store(false, Ordering::SeqCst);
+    result
+}
+
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle, state: State<'_, AppState>) {
+    if let Some(d) = state.doc.lock().unwrap().take() {
+        d.session.close();
+    }
+    app.restart();
+}
+
 fn main() {
     sandbox_web_content();
     let state = AppState::default();
@@ -305,6 +437,9 @@ fn main() {
             page_lines,
             pixels_only,
             chosen_name,
+            update_status,
+            run_update,
+            restart_app,
             set_pixels_only,
             viewing_findings,
             analyze,

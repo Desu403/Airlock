@@ -12,14 +12,17 @@
 #   scripts/update.sh            update
 #   scripts/update.sh --check    only show what is out of date
 #   scripts/update.sh --rollback go back to the version before the last update
+#   scripts/update.sh --status   machine-readable check for the app (key=value),
+#                                also cached in build/update-status
 set -eu
 cd "$(dirname "$0")/.."
 MODE=update
 case "${1:-}" in
     "") ;;
     --check) MODE=check ;;
+    --status) MODE=status ;;
     --rollback) MODE=rollback ;;
-    *) echo "usage: $0 [--check|--rollback]" >&2; exit 2 ;;
+    *) echo "usage: $0 [--check|--status|--rollback]" >&2; exit 2 ;;
 esac
 PREV=build/previous
 LOG=build/update.log
@@ -45,8 +48,29 @@ if [ "$MODE" = rollback ]; then
     exit 0
 fi
 
+# Guest packages with a newer version in Alpine's index: "name old new".
+outdated_packages() {
+    [ -f build/rootfs.info ] || return 0
+    branch=v$(pin ALPINE_VERSION | cut -d. -f1,2)
+    for repo in main community; do
+        curl -fsS -m 120 "https://dl-cdn.alpinelinux.org/alpine/$branch/$repo/x86_64/APKINDEX.tar.gz" | python3 -I -c '
+import io, sys, tarfile
+idx = tarfile.open(fileobj=io.BytesIO(sys.stdin.buffer.read())).extractfile("APKINDEX").read().decode()
+for block in idx.split("\n\n"):
+    f = dict(l.split(":", 1) for l in block.splitlines() if ":" in l)
+    if "P" in f and "V" in f:
+        print(f["P"], f["V"])'
+    done | python3 -I -c '
+import sys
+latest = dict(l.split() for l in sys.stdin if len(l.split()) == 2)
+for line in open("build/rootfs.info"):
+    p = line.strip().rsplit("-", 2)
+    if len(p) == 3 and p[0] in latest and latest[p[0]] != p[1] + "-" + p[2]:
+        print(p[0], p[1] + "-" + p[2], latest[p[0]])'
+}
+
 # --- what is the newest of everything? ----------------------------------------
-echo "==> Checking upstream versions"
+[ "$MODE" = status ] || echo "==> Checking upstream versions"
 KV=$(curl -fsS -m 30 https://www.kernel.org/releases.json | python3 -I -c '
 import json, sys
 v = [r["version"] for r in json.load(sys.stdin)["releases"] if r["version"].startswith("6.1.")]
@@ -57,6 +81,30 @@ AV=$(curl -fsS -m 30 "https://dl-cdn.alpinelinux.org/alpine/v$(pin ALPINE_VERSIO
 STABLE=$(curl -fsS -m 30 https://alpinelinux.org/releases.json | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["latest_stable"].lstrip("v"))' || true)
 [ -n "$KV" ] && [ -n "$FCV" ] && [ -n "$AV" ] || die "could not read upstream versions"
 
+PKGS=$(outdated_packages) || die "could not read Alpine's package index"
+NPKG=$(printf '%s' "$PKGS" | grep -c . || true)
+BUILT=$(sed -n 's/^built //p' build/rootfs.info 2>/dev/null || echo 0)
+AGE=$(( ($(date +%s) - ${BUILT:-0}) / 86400 ))
+
+if [ "$MODE" = status ]; then
+    avail=0
+    [ "$KV" = "$(pin KERNEL_VERSION)" ] && [ "$FCV" = "$(pin FC_VERSION)" ] && [ "$AV" = "$(pin ALPINE_VERSION)" ] && [ "$NPKG" = 0 ] || avail=1
+    {
+        echo "checked=$(date +%s)"
+        echo "available=$avail"
+        echo "kernel=$(pin KERNEL_VERSION) $KV"
+        echo "firecracker=$(pin FC_VERSION) $FCV"
+        echo "alpine=$(pin ALPINE_VERSION) $AV"
+        echo "image_age_days=$AGE"
+        echo "packages=$NPKG"
+        # The renderers first: they are what a document attacks.
+        printf '%s\n' "$PKGS" | grep . | sort -k1,1 | awk '{k = ($1 ~ /^(mupdf|libreoffice|quickjs|python3|py3-oletools|musl)/) ? 0 : 1; print k, $0}' |
+            sort -s -k1,1n | head -30 | cut -d' ' -f2- | sed 's/^/pkg=/'
+    } | tee build/update-status.new
+    mv -f build/update-status.new build/update-status
+    exit 0
+fi
+
 changes=0
 show() { # name current latest
     if [ "$2" = "$3" ]; then echo "   $1: $2 (newest)"; else echo "   $1: $2 -> $3"; changes=$((changes + 1)); fi
@@ -64,7 +112,12 @@ show() { # name current latest
 show "guest kernel (6.1 LTS)" "$(pin KERNEL_VERSION)" "$KV"
 show "Firecracker" "$(pin FC_VERSION)" "$FCV"
 show "Alpine base" "$(pin ALPINE_VERSION)" "$AV"
-echo "   guest packages: rebuilt with current security fixes on every update"
+if [ "$NPKG" = 0 ]; then
+    echo "   guest packages: all current"
+else
+    echo "   guest packages: $NPKG with newer versions"
+    printf '%s\n' "$PKGS" | head -8 | awk '{print "      " $1 " " $2 " -> " $3}'
+fi
 case "$(pin ALPINE_VERSION)" in
     "$STABLE".*|"") ;;
     *) echo "   note: Alpine $STABLE is out; moving branch is a manual step (ALPINE_VERSION in scripts/bootstrap.sh)" ;;

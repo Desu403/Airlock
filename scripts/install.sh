@@ -59,6 +59,8 @@ application/vnd.ms-excel.template.macroEnabled.12
 application/vnd.ms-powerpoint.slideshow.macroEnabled.12"
 
 die() { echo "error: $*" >&2; exit 1; }
+# put MODE SRC DEST: replace atomically, so a running airlock keeps its copy.
+put() { install -m "$1" "$2" "$3.new" && mv -f "$3.new" "$3"; }
 refresh() {
     command -v update-desktop-database >/dev/null && update-desktop-database -q "$DATA/applications" 2>/dev/null || true
     command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t "$DATA/icons/hicolor" 2>/dev/null || true
@@ -124,20 +126,20 @@ APP=0
 [ -f app/target/release/airlock-app ] && APP=1
 
 mkdir -p "$BIN" "$LIB"
-install -m 0755 host/target/release/airlock "$BIN/airlock"
-install -m 0755 host/target/release/sinkhole "$LIB/sinkhole"
-install -m 0755 vendor/bin/firecracker "$LIB/firecracker"
-install -m 0644 vendor/bin/vmlinux-airlock "$LIB/vmlinux"
+put 0755 host/target/release/airlock "$BIN/airlock"
+put 0755 host/target/release/sinkhole "$LIB/sinkhole"
+put 0755 vendor/bin/firecracker "$LIB/firecracker"
+put 0644 vendor/bin/vmlinux-airlock "$LIB/vmlinux"
 # Copy then rename: VMs already running keep their old image.
 cp --reflink=auto --sparse=always build/rootfs.ext4 "$LIB/rootfs.ext4.new"
 chmod 0644 "$LIB/rootfs.ext4.new"
 mv -f "$LIB/rootfs.ext4.new" "$LIB/rootfs.ext4"
-[ -f build/rootfs.info ] && install -m 0644 build/rootfs.info "$LIB/rootfs.info"
+[ -f build/rootfs.info ] && put 0644 build/rootfs.info "$LIB/rootfs.info"
 echo "installed CLI:  $BIN/airlock"
 
 if [ "$APP" = 1 ]; then
     command -v xdg-mime >/dev/null && pin_defaults
-    install -m 0755 app/target/release/airlock-app "$BIN/airlock-app"
+    put 0755 app/target/release/airlock-app "$BIN/airlock-app"
     install -D -m 0644 app/icons/icon.png "$ICON"
     mkdir -p "$(dirname "$DESKTOP")"
     cat > "$DESKTOP" <<EOF

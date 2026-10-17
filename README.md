@@ -96,7 +96,13 @@ than 30 days old):
 scripts/update.sh            # newest guest packages, 6.1 LTS kernel, Firecracker
 scripts/update.sh --check    # just show what is out of date
 scripts/update.sh --rollback # back to the version before the last update
+scripts/update.sh --status   # machine-readable check (used by the app)
 ```
+
+The desktop app does the same from its **Updates** button: once a day it
+checks kernel.org, GitHub and Alpine's mirror (this can be switched off in
+the Updates panel), pops up a notice when security fixes are out (e.g. a new
+MuPDF), and updates in the background while you keep reading.
 
 New kernels are verified against kernel.org's GPG-signed checksums,
 Firecracker and Alpine against their published checksums. The working

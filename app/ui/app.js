@@ -69,7 +69,12 @@ async function openWith(promise, label) {
     const info = r && "elsewhere" in r ? r.info : r;
     const more = r && r.elsewhere ? ` · ${r.elsewhere} more in new window${r.elsewhere > 1 ? "s" : ""} (one VM each)` : "";
     if (!info) { status(more ? more.slice(3) : "Ready"); return; }
+    const sameFile = state.reopening;
     setupDocument(info);
+    if (!sameFile || (!check.report && !check.running)) {
+      clearCheck();
+      if (autoCheckOn()) startCheck();
+    } else showCheck();
     const secs = ((performance.now() - t0) / 1000).toFixed(1);
     status(`${info.pages.length} page(s) · VM ready in ${(info.ready_ms / 1000).toFixed(1)}s · opened in ${secs}s${more}`);
   } catch (e) {
@@ -80,6 +85,7 @@ async function openWith(promise, label) {
     if (name) showUndisplayable(name, String(e));
   } finally {
     busy(null);
+    state.reopening = false;
   }
 }
 
@@ -89,6 +95,7 @@ function resetDocument() {
   if (state.observer) state.observer.disconnect();
   Object.assign(state, { pages: [], hits: [], hitIndex: -1, queue: [], findings: null, docOpen: false });
   $("pages").replaceChildren();
+  clearCheck();
   for (const id of ["doc", "searchbox", "zoombox", "textbtn", "sheetbtn", "savewrap", "pixels", "analyze", "banner"]) $(id).hidden = true;
   $("empty").hidden = false;
   closePanel();
@@ -425,7 +432,8 @@ function vmStopped(e) {
 
 function reopenDocument() {
   hideToast();
-  openWith(invoke("reopen"), $("docname").textContent || "the document");
+  state.reopening = true;
+  return openWith(invoke("reopen"), $("docname").textContent || "the document");
 }
 
 function drawHighlights() {
@@ -558,29 +566,103 @@ function renderReport(body, report, title) {
   body.replaceChildren(...nodes);
 }
 
-async function analyze(name) {
-  const btn = $("analyze");
-  btn.disabled = true;
-  const body = openPanel(typeof name === "string" ? `Analysis · ${name}` : "Analysis");
-  const wait = el("div", "row");
-  wait.append(el("div", "spinner"), el("span", "note", "Detonating in a separate microVM wired to a fake internet, then examining its disk in a second VM. You can keep reading meanwhile."));
-  body.replaceChildren(wait);
-  status("Analyzing in separate microVMs…");
-  try {
-    const report = await invoke("analyze");
+// The malware check (the same one whether automatic or from Analyze): one
+// run per opened file, shared by the badge, the Analyze button and the panel.
+const check = { gen: 0, running: null, report: null, error: null };
+
+function autoCheckOn() { return pref("airlock.autoCheck", "1") === "1"; }
+
+function verdictClass(v) {
+  return /MALICIOUS/.test(v) ? "malicious" : /SUSPICIOUS/.test(v) ? "suspicious" : "clean";
+}
+
+function showCheck() {
+  const b = $("check");
+  const [cls, label, title] = check.running
+    ? ["checking", "Checking…", "Checking this file for malware in two separate microVMs (one wired to a fake internet). Keep reading meanwhile. Click to watch."]
+    : check.report
+      ? [verdictClass(check.report.verdict), { malicious: /LIKELY/.test(check.report.verdict) ? "Likely malicious" : "Malicious", suspicious: "Suspicious", clean: "No threats found" }[verdictClass(check.report.verdict)], `${check.report.headline || check.report.verdict}. Click for the full report.`]
+      : check.error
+        ? ["failed", "Check failed", `The malware check could not finish: ${check.error}. Click to try again.`]
+        : [null];
+  b.hidden = !cls || !state.docOpen;
+  if (!cls) return;
+  b.className = `check ${cls}`;
+  b.querySelector(".label").textContent = label;
+  b.title = title;
+  b.setAttribute("aria-label", `Malware check: ${label}`);
+}
+
+function clearCheck() {
+  Object.assign(check, { gen: check.gen + 1, running: null, report: null, error: null });
+  showCheck();
+}
+
+function startCheck() {
+  const gen = ++check.gen;
+  Object.assign(check, { report: null, error: null });
+  const p = invoke("analyze").then(
+    (r) => {
+      if (gen !== check.gen) return r;
+      check.report = r;
+      return r;
+    },
+    (e) => {
+      if (gen === check.gen) check.error = String(e);
+      throw e;
+    },
+  ).finally(() => {
+    if (gen !== check.gen) return;
+    check.running = null;
+    showCheck();
+    // Something found: show it without waiting for a click (unless the
+    // analysis panel is already open and waiting for this result).
+    if (check.report && verdictClass(check.report.verdict) !== "clean" && !(!$("panel").hidden && $("panel-title").textContent.startsWith("Analysis"))) showAnalysis();
+  });
+  check.running = p;
+  showCheck();
+  return p;
+}
+
+// The report panel: the finished check, or a spinner until it finishes.
+async function showAnalysis(name, again = false) {
+  const title = typeof name === "string" ? `Analysis · ${name}` : "Analysis";
+  const body = openPanel(title);
+  if (again || (!check.report && !check.running)) startCheck();
+  if (check.running) {
+    const wait = el("div", "row");
+    wait.append(el("div", "spinner"), el("span", "note", "Detonating in a separate microVM wired to a fake internet, then examining its disk in a second VM. You can keep reading meanwhile."));
+    body.replaceChildren(wait);
+    status("Checking for malware in separate microVMs…");
+    try { await check.running; } catch {}
+    if ($("panel-title").textContent !== title || body.firstChild !== wait) return;
+  }
+  if (check.report) {
+    const report = check.report;
     renderReport(body, report, `${report.document} · analyzed in ${report.seconds.toFixed(1)}s`);
     const save = el("button", "", "Save report…");
     save.title = "Save as text (or .json for tools)";
     save.onclick = saveReport;
-    body.append(save);
+    const again = el("button", "", "Check again");
+    again.title = "Run the whole analysis again in new microVMs";
+    again.onclick = () => showAnalysis(name, true);
+    const row = el("div", "row");
+    row.append(save, again);
+    body.append(row);
     status(`Analysis: ${report.verdict}`);
-  } catch (e) {
-    body.replaceChildren(el("p", "note", `Analysis failed: ${e}`));
-    status(`Analysis failed: ${e}`, true);
-  } finally {
-    btn.disabled = false;
+  } else {
+    const retry = el("button", "", "Try again");
+    retry.onclick = () => showAnalysis(name, true);
+    body.replaceChildren(el("p", "note", `Analysis failed: ${check.error}`), retry);
+    status(`Analysis failed: ${check.error}`, true);
   }
 }
+
+function analyze(name) {
+  return showAnalysis(name);
+}
+
+$("check").onclick = () => showAnalysis();
 
 // ---------------------------------------------------------------- wiring
 
@@ -938,7 +1020,7 @@ const TOUR = [
     text: "Keeps the VM's document readers, kernel and malware signatures current. It checks daily and installs automatically.",
     how: "Every update is checked against official signatures and must pass airlock's full test suite before it is used. If anything fails, the old version stays." },
   { target: "analyze", kicker: "Investigate", title: "Analyze",
-    text: "Finds out what a file tries to do: contact servers, run programs, drop files, exploit the reader.",
+    text: "Finds out what a file tries to do: contact servers, run programs, drop files, exploit the reader. Every file you open is checked automatically; the badge next to Sealed shows the result (turn it off in the airlock logo menu).",
     how: "It runs the file in a second VM wired to a fake internet, then inspects that VM's disk from a third one. The report explains every finding in plain words, with the technical evidence underneath." },
   { target: "tourbtn", kicker: "That's it", title: "You're ready",
     text: "Replay this tour anytime with the ? button. Right-click anywhere (or click the airlock logo) for a new window, Close this window (Ctrl+W) or Exit airlock, which closes every document (Ctrl+Q). The same is in the tray icon and in the launcher's right-click menu.",
@@ -1045,6 +1127,14 @@ $("m-new").onclick = () => { toggleAppMenu(false); invoke("new_window"); };
 $("m-tour").onclick = () => { toggleAppMenu(false); startTour(); };
 $("m-quit").onclick = quitEverything;
 $("m-close").onclick = closeWindow;
+function showAutoCheck() { $("m-auto").setAttribute("aria-checked", String(autoCheckOn())); }
+$("m-auto").onclick = () => {
+  setPref("airlock.autoCheck", autoCheckOn() ? "0" : "1");
+  showAutoCheck();
+  if (autoCheckOn() && state.docOpen && !check.report && !check.running) startCheck();
+  status(autoCheckOn() ? "Files are checked for malware automatically when opened" : "Automatic check off: press Analyze to check a file");
+};
+showAutoCheck();
 function closeWindow() {
   status("Closing this window and its VM…");
   invoke("close_window");
@@ -1072,7 +1162,7 @@ const ctxActions = {
   "c-fit": fitWidth,
   "c-safe": saveSafeCopy,
   "c-print": printDocument,
-  "c-analyze": () => $("analyze").disabled || analyze(),
+  "c-analyze": () => analyze(),
   "c-new": () => invoke("new_window"),
   "c-close": closeWindow,
   "c-quit": quitEverything,

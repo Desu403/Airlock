@@ -27,6 +27,7 @@
       <button class="brand" id="appbtn" aria-haspopup="menu" aria-expanded="false" title="airlock menu"><span class="logo" aria-hidden="true"></span>airlock</button>
       <div class="menu left" id="appmenu" role="menu" hidden>
         <button role="menuitem" id="m-new">New window</button>
+        <button role="menuitem" id="m-auto" aria-checked="true" title="Check every file you open for malware, in the background">Check files automatically <span class="tick">✓</span></button>
         <button role="menuitem" id="m-tour">Guided tour</button>
         <button role="menuitem" id="m-close">Close this window <kbd>Ctrl+W</kbd></button>
         <button role="menuitem" id="m-quit">Exit airlock (all windows) <kbd>Ctrl+Q</kbd></button>
@@ -38,6 +39,7 @@
       <span class="seal" id="seal" title="The document is open inside a disposable Firecracker microVM with no network device. Only pixels, page sizes, search positions and cleaned text come out. The VM is destroyed when you close the document.">
         <span class="dot"></span><span class="label">Sealed · microVM · no network</span>
       </span>
+      <button class="check" id="check" hidden><span class="dot"></span><span class="label"></span></button>
     </div>
     <div class="spacer"></div>
     <div class="group search" id="searchbox" hidden>

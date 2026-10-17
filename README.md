@@ -13,7 +13,9 @@ the document, the VM is destroyed.
   report what it tries to do: contact servers, run programs, drop files,
   exploit the reader. Findings are grouped by *who saw them* (outside the VM,
   in-VM monitor, JavaScript emulation, known-malware signatures, static
-  structure) and mapped to MITRE ATT&CK.
+  structure) and mapped to MITRE ATT&CK. The app runs this **automatically**
+  for every file you open (a badge next to *Sealed* shows the result; anything
+  suspicious opens the report by itself). It can be turned off in the logo menu.
 - **Known malware** — ~5,000 [YARA-Forge](https://github.com/YARAHQ/yara-forge)
   rules (its quality-tested "core" package) run inside the VM over the file,
   its unpacked insides (decompressed PDF; every ZIP part, OLE stream and

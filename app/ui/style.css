@@ -115,6 +115,21 @@ kbd { font: 12px ui-monospace, monospace; border: 1px solid var(--border); borde
 .seal .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--seal); box-shadow: 0 0 0 3px color-mix(in srgb, var(--seal) 25%, transparent); }
 .seal.stopped { background: var(--info-bg); color: var(--info); }
 .seal.stopped .dot { background: var(--info); box-shadow: none; }
+/* Automatic malware check: a pill next to the seal, click for the report. */
+.check {
+  display: inline-flex; align-items: center; gap: 6px; border: 0;
+  font-size: 12px; font-weight: 600; padding: 3px 10px; border-radius: 999px; white-space: nowrap;
+  background: var(--info-bg); color: var(--info); cursor: pointer;
+}
+.check .dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.check.checking .dot { animation: check-pulse 1.1s ease-in-out infinite; }
+.check.clean { background: var(--ok-bg); color: var(--ok); }
+.check.suspicious { background: var(--med-bg); color: var(--med); }
+.check.malicious { background: var(--high-bg); color: var(--high); }
+@keyframes check-pulse { 50% { opacity: 0.25; transform: scale(0.7); } }
+@media (prefers-reduced-motion: reduce) { .check.checking .dot { animation: none; } }
+.menu .tick { color: var(--seal); visibility: hidden; }
+.menu [aria-checked="true"] .tick { visibility: visible; }
 .spacer { flex: 1; }
 .group { display: flex; align-items: center; gap: 4px; }
 .search input {
@@ -238,6 +253,7 @@ details.notes li span { color: var(--muted); }
 
 @media (max-width: 1240px) {
   .seal .label { display: none; }
+  .check .label { display: none; }
   .seal { padding: 6px; }
   .search input { width: 130px; }
 }

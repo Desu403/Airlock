@@ -354,14 +354,18 @@ fn viewing_findings(state: State<'_, AppState>) -> serde_json::Value {
 #[tauri::command]
 async fn analyze(state: State<'_, AppState>) -> R<serde_json::Value> {
     let (name, bytes) = state.chosen.lock().unwrap().clone().ok_or("no document chosen")?;
-    let report = state.report.clone();
+    let (report, chosen) = (state.report.clone(), state.chosen.clone());
     blocking(move || {
         let started = std::time::Instant::now();
         let a = analysis::run(&bytes, "analyze", false, &|_| {}).map_err(err)?;
         let mut j = a.report.to_json();
         j["document"] = name.into();
         j["seconds"] = (started.elapsed().as_secs_f32() as f64).into();
-        *report.lock().unwrap() = Some(j.clone());
+        // Kept for "Save report" only if that file is still the one open
+        // (an automatic check can finish after another file was opened).
+        if chosen.lock().unwrap().as_ref().is_some_and(|(_, b)| Arc::ptr_eq(b, &bytes)) {
+            *report.lock().unwrap() = Some(j.clone());
+        }
         Ok(j)
     })
     .await

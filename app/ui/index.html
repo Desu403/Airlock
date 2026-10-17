@@ -40,6 +40,7 @@
     </div>
     <button id="pixels" hidden aria-pressed="false" title="Pixels only: no document text leaves the VM (no text selection or Text panel). Search still works.">Pixels only</button>
     <button id="updates" title="Updates for airlock's VM (renderers, kernel, Firecracker)">Updates<span class="badge" id="updates-dot" hidden></span></button>
+    <button id="tourbtn" class="icon" title="Show the guided tour of airlock" aria-label="Guided tour">?</button>
     <button id="analyze" class="primary" hidden title="Detonate in a separate microVM wired to a fake internet and report what the document tries to do">Analyze</button>
   </header>
 
@@ -75,6 +76,25 @@
     <h3 id="toast-title"></h3>
     <p id="toast-text"></p>
     <div class="row" id="toast-actions"></div>
+  </div>
+  <div class="tour" id="tour" hidden>
+    <div class="tour-spot" id="tour-spot"></div>
+    <div class="tour-card" id="tour-card" role="dialog" aria-modal="true" aria-labelledby="tour-title">
+      <div class="tour-top">
+        <span class="tour-step" id="tour-step"></span>
+        <button class="tour-skip" id="tour-skip">Skip tour</button>
+      </div>
+      <div class="tour-bar"><div class="tour-fill" id="tour-fill"></div></div>
+      <div class="tour-kicker" id="tour-kicker"></div>
+      <h2 id="tour-title"></h2>
+      <p id="tour-text"></p>
+      <p class="tour-how" id="tour-how"></p>
+      <div class="tour-nav">
+        <button id="tour-back">Back</button>
+        <span class="tour-keys"><kbd>←</kbd> <kbd>→</kbd> <kbd>Esc</kbd></span>
+        <button class="primary" id="tour-next">Next</button>
+      </div>
+    </div>
   </div>
   <div id="printout" aria-hidden="true"></div>
   <footer class="status" id="status">Ready</footer>

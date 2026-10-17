@@ -831,6 +831,7 @@ async function runDemo() {
     if (cmd === "search") { $("q").value = arg; await runSearch(); }
     if (cmd === "open") openPaths([arg]);
     if (cmd === "reopen") await reopenDocument();
+    if (cmd === "tour") { startTour(); tourShow(Number(arg) || 0); }
     if (cmd === "wait") await new Promise((r) => setTimeout(r, Number(arg) || 0));
     if (cmd === "text") await showText();
     if (cmd === "reveal") {
@@ -876,3 +877,138 @@ invoke("initial_path").then(async (p) => {
   await openWith(invoke("open_path", { path: p }), p.split(/[\\/]/).pop());
   runDemo();
 });
+
+// ---------------------------------------------------------------- guided tour
+// A spotlight glides over each control while a glass card explains what it
+// does and how it works. Runs once on first start; the ? button replays it.
+
+const TOUR = [
+  { target: null, kicker: "Welcome", title: "Open anything. Risk nothing.",
+    text: "airlock opens every PDF and Office file inside its own throwaway virtual machine, a tiny separate computer with no network.",
+    how: "Your computer never reads the file itself. It only receives pictures of the pages and cleaned-up text. Close the document and the whole VM is destroyed." },
+  { target: "open", kicker: "Open", title: "Open a document",
+    text: "Pick files here, press Ctrl+O, or drag them onto the window.",
+    how: "Each document gets a brand-new VM that boots in about a second. Open several at once and each gets its own window and VM, so documents never share anything." },
+  { target: "seal", kicker: "Status", title: "The seal",
+    text: "Green means the document is sealed in its VM, with no network card at all.",
+    how: "If the VM ever stops, the seal turns grey and airlock offers to reopen the document in a fresh one." },
+  { target: "searchbox", kicker: "Find", title: "Search inside the VM",
+    text: "Type to find words. Enter and Shift+Enter jump between matches.",
+    how: "The search runs inside the VM. Only the positions of the matches come back as numbers, and airlock draws the highlights itself." },
+  { target: "zoombox", kicker: "View", title: "Zoom",
+    text: "Zoom in and out, or Fit to match the window width. The + and − keys work too.",
+    how: "The VM redraws each page sharply at the new size: no blurry scaling." },
+  { target: "textbtn", kicker: "Read", title: "Page text",
+    text: "Shows the text of the current page. You can also select and copy text straight from the page.",
+    how: "The text is strictly cleaned before it leaves the VM: only normal visible characters, nothing hidden or invisible." },
+  { target: "savewrap", kicker: "Keep", title: "Save a safe copy, or print",
+    text: "Safe PDF copy (Ctrl+S) writes a new PDF made only of the page pictures. Print (Ctrl+P) prints them.",
+    how: "Nothing from the original survives in the copy (no scripts, links, fonts or attachments), so it is safe to keep, share or open anywhere." },
+  { target: "pixels", kicker: "Lock down", title: "Pixels only",
+    text: "For files you really distrust: no text leaves the VM at all, only pictures.",
+    how: "Text selection and the Text panel turn off. Search still works, because it only needs positions." },
+  { target: "updates", kicker: "Stay patched", title: "Updates",
+    text: "Keeps the VM's document readers, kernel and malware signatures current. It checks daily and installs automatically.",
+    how: "Every update is checked against official signatures and must pass airlock's full test suite before it is used. If anything fails, the old version stays." },
+  { target: "analyze", kicker: "Investigate", title: "Analyze",
+    text: "Finds out what a file tries to do: contact servers, run programs, drop files, exploit the reader.",
+    how: "It runs the file in a second VM wired to a fake internet, then inspects that VM's disk from a third one. The report explains every finding in plain words, with the technical evidence underneath." },
+  { target: "tourbtn", kicker: "That's it", title: "You're ready",
+    text: "Replay this tour anytime with the ? button. airlock also has an icon in your system tray: it shows how many windows are open and can close them all.",
+    how: "Tip: when a file looks suspicious, press Analyze before you trust it." },
+];
+
+const tour = { i: 0, revealed: [], onKey: null };
+
+function tourPlace() {
+  const step = TOUR[tour.i];
+  const spot = $("tour-spot"), card = $("tour-card");
+  const target = step.target && $(step.target);
+  const r = target && !target.hidden ? target.getBoundingClientRect() : null;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  if (r && r.width) {
+    const pad = 6;
+    Object.assign(spot.style, { left: `${r.left - pad}px`, top: `${r.top - pad}px`, width: `${r.width + pad * 2}px`, height: `${r.height + pad * 2}px` });
+    spot.classList.remove("center");
+  } else {
+    Object.assign(spot.style, { left: `${vw / 2}px`, top: `${vh / 2}px`, width: "0px", height: "0px" });
+    spot.classList.add("center");
+  }
+  // The card sits below the target (or above it if there is no room), kept on screen.
+  const cw = Math.min(380, vw - 32), ch = card.offsetHeight || 260;
+  let left, top;
+  if (r && r.width) {
+    left = Math.min(Math.max(16, r.left + r.width / 2 - cw / 2), vw - cw - 16);
+    top = r.bottom + 18 + ch < vh ? r.bottom + 18 : Math.max(16, r.top - ch - 18);
+  } else {
+    left = (vw - cw) / 2;
+    top = Math.max(16, (vh - ch) / 2);
+  }
+  Object.assign(card.style, { left: `${left}px`, top: `${top}px`, width: `${cw}px` });
+}
+
+function tourShow(i) {
+  tour.i = Math.max(0, Math.min(TOUR.length - 1, i));
+  const step = TOUR[tour.i];
+  const card = $("tour-card");
+  card.classList.remove("enter");
+  void card.offsetWidth; // restart the entrance animation
+  card.classList.add("enter");
+  $("tour-step").textContent = `${String(tour.i + 1).padStart(2, "0")} / ${String(TOUR.length).padStart(2, "0")}`;
+  $("tour-fill").style.width = `${((tour.i + 1) / TOUR.length) * 100}%`;
+  $("tour-kicker").textContent = step.kicker;
+  $("tour-title").textContent = step.title;
+  $("tour-text").textContent = step.text;
+  $("tour-how").textContent = step.how;
+  $("tour-back").disabled = tour.i === 0;
+  $("tour-next").textContent = tour.i === TOUR.length - 1 ? "Start using airlock" : "Next";
+  tourPlace();
+  // Placement uses the card's height, which the new text may have changed.
+  requestAnimationFrame(tourPlace);
+}
+
+function startTour() {
+  closePanel();
+  toggleSaveMenu(false);
+  // Show the whole toolbar, as it looks with a document open; put it back afterwards.
+  tour.revealed = ["doc", "searchbox", "zoombox", "textbtn", "savewrap", "pixels", "analyze"].filter((id) => $(id).hidden);
+  for (const id of tour.revealed) $(id).hidden = false;
+  if (!$("docname").textContent) { $("docname").textContent = "your-document.pdf"; tour.placeholder = true; }
+  document.body.classList.add("touring");
+  $("tour").hidden = false;
+  requestAnimationFrame(() => $("tour").classList.add("on"));
+  tourShow(0);
+  tour.onKey = (e) => {
+    if (e.key === "ArrowRight" || e.key === "Enter") { e.preventDefault(); tour.i === TOUR.length - 1 ? endTour() : tourShow(tour.i + 1); }
+    else if (e.key === "ArrowLeft") { e.preventDefault(); tourShow(tour.i - 1); }
+    else if (e.key === "Escape") { e.preventDefault(); endTour(); }
+    e.stopImmediatePropagation();
+  };
+  document.addEventListener("keydown", tour.onKey, true);
+  window.addEventListener("resize", tourPlace);
+}
+
+function endTour() {
+  try { localStorage.setItem("airlock.tourDone", "1"); } catch {}
+  document.removeEventListener("keydown", tour.onKey, true);
+  window.removeEventListener("resize", tourPlace);
+  $("tour").classList.remove("on");
+  document.body.classList.remove("touring");
+  setTimeout(() => { $("tour").hidden = true; }, 350);
+  for (const id of tour.revealed) $(id).hidden = true;
+  if (tour.placeholder) { $("docname").textContent = ""; tour.placeholder = false; }
+  if (state.docOpen) fitWidth();
+}
+
+$("tourbtn").onclick = startTour;
+$("tour-next").onclick = () => (tour.i === TOUR.length - 1 ? endTour() : tourShow(tour.i + 1));
+$("tour-back").onclick = () => tourShow(tour.i - 1);
+$("tour-skip").onclick = endTour;
+
+// First start: the tour, unless a test script is driving the app.
+(async () => {
+  let done = false;
+  try { done = localStorage.getItem("airlock.tourDone") === "1"; } catch {}
+  const demo = await invoke("demo_script").catch(() => null);
+  if (!done && !demo) setTimeout(startTour, 700);
+})();

@@ -14,6 +14,16 @@ const BOOT_TIMEOUT: Duration = Duration::from_secs(150);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(60);
 /// Start of the error when the document's VM is no longer running.
 pub const VM_STOPPED: &str = "the document's VM stopped";
+/// Start of the error when the tripwire fired (see `is_attack`).
+pub const TRIPWIRE: &str = "the document attacked its VM";
+
+/// What a viewing VM never does on its own: start programs, use the
+/// network, touch other processes, reach risky kernel interfaces. The
+/// monitor blocks each one; the first one also ends the session (the
+/// tripwire), so an exploit gets no second try.
+pub fn is_attack(i: Ind) -> bool {
+    matches!(i, Ind::Exec | Ind::ProcessCreate | Ind::Socket | Ind::Connect | Ind::KernelSurface | Ind::Ptrace)
+}
 
 /// How spreadsheets are laid out (other documents keep their own pages).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -146,7 +156,9 @@ impl LiveSession {
     }
 
     /// An I/O error on the stream: if the VM is gone, say so and why (exit
-    /// status and the last lines of its console), for the log.
+    /// status and the last lines of its console), for the log. A VM that is
+    /// still running but did not answer in time (hung, or busy attacking) is
+    /// destroyed: fail closed, and no late reply can be mistaken for the next.
     fn io_error(&mut self, e: anyhow::Error) -> anyhow::Error {
         std::thread::sleep(Duration::from_millis(50));
         match self.child.try_wait() {
@@ -155,8 +167,39 @@ impl LiveSession {
                 let tail: Vec<&str> = console.lines().rev().take(3).collect();
                 anyhow!("{VM_STOPPED} ({status}; last console lines: {})", tail.into_iter().rev().collect::<Vec<_>>().join(" | "))
             }
-            _ => e,
+            _ => {
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                anyhow!("{VM_STOPPED} (it stopped responding and was destroyed: {e:#})")
+            }
         }
+    }
+
+    /// How long one request may take before the VM is destroyed.
+    pub fn set_request_timeout(&mut self, t: Duration) -> Result<()> {
+        Ok(self.stream.set_read_timeout(Some(t))?)
+    }
+
+    /// Process ids of the VM and its jail (for the containment test).
+    pub fn jail_pids(&self) -> Vec<u32> {
+        let mut pids = vec![self.child.id()];
+        let mut i = 0;
+        while i < pids.len() && pids.len() < 256 {
+            let parent = pids[i];
+            if let Ok(rd) = std::fs::read_dir("/proc") {
+                for e in rd.flatten() {
+                    let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+                    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap_or_default();
+                    // Fields after the parenthesised name: state, ppid, ...
+                    let ppid = stat.rsplit_once(')').and_then(|(_, r)| r.split_whitespace().nth(1)).and_then(|p| p.parse::<u32>().ok());
+                    if ppid == Some(parent) && !pids.contains(&pid) {
+                        pids.push(pid);
+                    }
+                }
+            }
+            i += 1;
+        }
+        pids
     }
 
     fn send(&mut self, cmd: Cmd, a: u32, b: u32, payload: &[u8]) -> Result<()> {
@@ -170,6 +213,10 @@ impl LiveSession {
         match read_msg(&mut self.stream, &mut self.indicators) {
             Ok(m) => Ok(m),
             Err(Bad::Hostile(what)) => Err(self.hostile(what)),
+            Err(Bad::Tripwire(what)) => {
+                let _ = self.child.kill();
+                Err(anyhow!("{TRIPWIRE}: {what} (blocked; the VM was destroyed at once)"))
+            }
             Err(Bad::Other(e)) => Err(self.io_error(e)),
         }
     }
@@ -258,6 +305,8 @@ impl Drop for LiveSession {
 enum Bad {
     /// The guest broke the protocol: kill it.
     Hostile(&'static str),
+    /// The monitor blocked an attack attempt: kill it.
+    Tripwire(String),
     /// I/O failure, or the guest reported an error.
     Other(anyhow::Error),
 }
@@ -276,7 +325,11 @@ fn read_msg(r: &mut impl Read, indicators: &mut Vec<(Ind, String)>) -> std::resu
                 if !valid_text(&payload) || indicators.len() >= 1000 {
                     return Err(Bad::Hostile("bad indicator"));
                 }
-                indicators.push((Ind::from_u32(h.a).unwrap(), String::from_utf8(payload).unwrap()));
+                let (ind, text) = (Ind::from_u32(h.a).unwrap(), String::from_utf8(payload).unwrap());
+                indicators.push((ind, text.clone()));
+                if is_attack(ind) {
+                    return Err(Bad::Tripwire(text));
+                }
                 continue;
             }
             k if k == Kind::Hello as u32 => Msg::Hello(h.a),

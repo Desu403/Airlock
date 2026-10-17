@@ -78,6 +78,14 @@ for f in testdata/text.pdf testdata/office/harmless-clean.docx; do
         echo "FAIL live mode $(basename "$f")"; fail=$((fail+1))
     fi
 done
+# Containment: the viewing VM turns hostile on purpose (attack attempts,
+# junk instead of pages, fork bomb + memory fill + all CPUs as root); the host
+# must end it every time, stay responsive, and keep it within its size.
+if $AIRLOCK containment testdata/text.pdf >"$OUT/containment.log" 2>&1; then
+    echo "ok   containment (tripwire, hostile output, compromised guest)"
+else
+    echo "FAIL containment"; sed 's/^/     /' "$OUT/containment.log" | tail -5; fail=$((fail+1))
+fi
 # Rootless jail: where the machine supports it, Firecracker must not run as us.
 if $AIRLOCK doctor 2>&1 | grep -q "ok    VMs run as a spare uid"; then
     $AIRLOCK livecheck testdata/text.pdf >/dev/null 2>&1 &

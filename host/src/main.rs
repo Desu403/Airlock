@@ -53,6 +53,7 @@ fn run() -> Result<()> {
         }
         "doctor" => doctor(),
         "livecheck" => livecheck(&read_doc(&input.unwrap_or_else(|| usage()))?),
+        "containment" => containment(&read_doc(&input.unwrap_or_else(|| usage()))?),
         "selftest" => selftest(out_dir.unwrap_or_else(|| PathBuf::from("selftest.airlock")), verbose),
         _ => usage(),
     }
@@ -183,6 +184,81 @@ fn livecheck(doc: &[u8]) -> Result<()> {
     }
     s.close();
     eprintln!("live: VM destroyed");
+    Ok(())
+}
+
+/// Proves the viewing VM's containment by making it hostile on purpose
+/// (guest test hooks, see guest-agent/src/live.rs) and checking that the
+/// host ends it every time, stays responsive, and keeps it within its size.
+fn containment(doc: &[u8]) -> Result<()> {
+    use std::time::{Duration, Instant};
+    let open = |test: &str| -> Result<live::LiveSession> {
+        std::env::set_var("AIRLOCK_GUEST_TEST", test);
+        let s = live::LiveSession::open(doc);
+        std::env::remove_var("AIRLOCK_GUEST_TEST");
+        s
+    };
+    let gone = |s: &mut live::LiveSession| {
+        let t = Instant::now();
+        while s.alive() && t.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        !s.alive()
+    };
+
+    // 1. Attack attempts while viewing: the tripwire ends the session.
+    let mut s = open("attack")?;
+    let e = s.render(0, 96).err().map(|e| format!("{e:#}")).unwrap_or_default();
+    anyhow::ensure!(e.starts_with(live::TRIPWIRE), "attack: expected the tripwire, got {e:?}");
+    anyhow::ensure!(gone(&mut s), "attack: the VM was still running after the tripwire");
+    eprintln!("ok   attack while viewing -> tripwire, VM destroyed ({})", e.split(": ").nth(1).unwrap_or("").chars().take(70).collect::<String>());
+
+    // 2. Junk instead of a page: treated as hostile.
+    let mut s = open("garbage")?;
+    let e = s.render(0, 96).err().map(|e| format!("{e:#}")).unwrap_or_default();
+    anyhow::ensure!(e.starts_with("protocol violation"), "garbage: expected a protocol violation, got {e:?}");
+    anyhow::ensure!(gone(&mut s), "garbage: the VM was still running");
+    eprintln!("ok   junk sent to the host -> treated as hostile, VM destroyed");
+
+    // 3. A fully compromised guest: forks, fills memory, spins every CPU.
+    let mut s = open("stress")?;
+    s.set_request_timeout(Duration::from_secs(12))?;
+    let pids = s.jail_pids();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watch = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            // Host responsiveness: how late a 10 ms sleep wakes up; and the
+            // jail's memory (all of its processes) and process count.
+            let (mut worst_ms, mut peak_kib, mut peak_procs) = (0u128, 0u64, 0usize);
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                let t = Instant::now();
+                std::thread::sleep(Duration::from_millis(10));
+                worst_ms = worst_ms.max(t.elapsed().as_millis().saturating_sub(10));
+                let live: Vec<u64> = pids
+                    .iter()
+                    .filter_map(|p| std::fs::read_to_string(format!("/proc/{p}/status")).ok())
+                    .filter_map(|st| st.lines().find_map(|l| l.strip_prefix("VmRSS:")).and_then(|v| v.split_whitespace().next()?.parse().ok()))
+                    .collect();
+                peak_procs = peak_procs.max(live.len());
+                peak_kib = peak_kib.max(live.iter().sum());
+            }
+            (worst_ms, peak_kib, peak_procs)
+        })
+    };
+    let e = s.render(0, 96).err().map(|e| format!("{e:#}")).unwrap_or_default();
+    let ended = gone(&mut s);
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (worst_ms, peak_kib, peak_procs) = watch.join().map_err(|_| anyhow::anyhow!("watcher panicked"))?;
+    anyhow::ensure!(e.starts_with(live::VM_STOPPED), "stress: expected the session to end, got {e:?}");
+    anyhow::ensure!(ended, "stress: the VM was still running after it stopped answering");
+    // The VM has 2048 MiB; Firecracker itself needs a little on top.
+    anyhow::ensure!(peak_kib < (2048 + 256) * 1024, "stress: the VM used {} MiB on the host", peak_kib / 1024);
+    anyhow::ensure!(worst_ms < 250, "stress: the host stalled for {worst_ms} ms");
+    eprintln!(
+        "ok   compromised guest (fork bomb, memory fill, all CPUs) -> host stayed responsive (worst delay {worst_ms} ms), VM at most {} MiB in {peak_procs} host processes, destroyed when it stopped answering",
+        peak_kib / 1024
+    );
     Ok(())
 }
 

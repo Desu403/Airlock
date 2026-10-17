@@ -160,3 +160,15 @@ able to touch the host, and *see* what it tries to do.
 - `guest/build-rootfs.sh` — rootless guest image build
 - `host/` — `airlock` CLI
 - `vendor/` — Firecracker + guest kernel (downloaded, checksummed; gitignored)
+
+## Containment (tripwire)
+
+A viewing VM never needs to start programs, use the network, touch other
+processes or reach risky kernel interfaces. The in-VM monitor blocks each
+attempt and reports it; the host ends the session on the first report
+(`live::is_attack`, the tripwire), so an exploit gets no second try. A VM
+that breaks the protocol is killed as hostile, and one that does not answer
+in time is destroyed (fail closed). `airlock containment <doc>` proves all
+three with a deliberately hostile guest (attack payload, junk output, and a
+root fork bomb + memory fill + all CPUs), checking that the host stays
+responsive and the VM within its size; it runs in tests/run.sh.

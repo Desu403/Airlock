@@ -609,7 +609,18 @@ fn restart_app(app: tauri::AppHandle, state: State<'_, AppState>) {
     app.restart();
 }
 
+/// WebKitGTK's DMA-BUF renderer stops presenting frames after the screen
+/// locks or sleeps on some setups (NVIDIA, Hyprland and other wlroots
+/// compositors): the window keeps its last picture and ignores input.
+/// The shared-memory path works everywhere; pages are images anyway.
+fn stable_rendering() {
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
 fn main() {
+    stable_rendering();
     sandbox_web_content();
     let state = AppState::default();
     let mut args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();

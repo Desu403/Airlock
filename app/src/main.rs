@@ -290,6 +290,10 @@ fn stem(name: &str) -> &str {
 }
 
 fn save_dialog(app: &tauri::AppHandle, title: &str, name: &str, filters: &[(&str, &[&str])]) -> Option<PathBuf> {
+    // Test hook (like AIRLOCK_DEMO): save into this folder without asking.
+    if let Some(dir) = std::env::var_os("AIRLOCK_TEST_SAVE_DIR") {
+        return Some(PathBuf::from(dir).join(std::env::var("AIRLOCK_TEST_SAVE_NAME").unwrap_or_else(|_| name.to_string())));
+    }
     let mut d = app.dialog().file().set_title(title).set_file_name(name);
     for (label, ext) in filters {
         d = d.add_filter(*label, ext);

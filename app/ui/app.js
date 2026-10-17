@@ -789,6 +789,8 @@ async function runDemo() {
     if (cmd === "analyze") await analyze();
     if (cmd === "savemenu") toggleSaveMenu(true);
     if (cmd === "print") await printDocument();
+    if (cmd === "safecopy") await saveSafeCopy();
+    if (cmd === "savereport") await saveReport();
     if (cmd === "update") await runUpdate();
     if (cmd === "restart") { await new Promise((r) => setTimeout(r, Number(arg) || 0)); await invoke("restart_app"); }
     if (cmd === "updates") { await checkUpdates(arg === "force"); showUpdates(); }

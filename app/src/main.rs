@@ -609,13 +609,13 @@ fn restart_app(app: tauri::AppHandle, state: State<'_, AppState>) {
     app.restart();
 }
 
-/// WebKitGTK's DMA-BUF renderer stops presenting frames after the screen
-/// locks or sleeps on some setups (NVIDIA, Hyprland and other wlroots
-/// compositors): the window keeps its last picture and ignores input.
-/// The shared-memory path works everywhere; pages are images anyway.
+/// WebKitGTK paces frames from the display's vblank (DRM). When the screen
+/// is switched off (DPMS, after a lock) that stops, and on some setups it
+/// never restarts: the window keeps its last picture. A timer keeps the
+/// GPU renderer (smooth scrolling) and survives the display going away.
 fn stable_rendering() {
-    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
-        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    if std::env::var_os("WEBKIT_FORCE_VBLANK_TIMER").is_none() {
+        std::env::set_var("WEBKIT_FORCE_VBLANK_TIMER", "1");
     }
 }
 

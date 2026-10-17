@@ -31,8 +31,9 @@ able to touch the host, and *see* what it tries to do.
 | 11 | Unexpected VM death (e.g. kernel panic) reported as an outside finding | done |
 | 12 | VMM runs as a spare uid from the user's /etc/subuid range (a different one per VM; rootless equivalent of Firecracker's jailer); run dir granted to that uid only by ACL; sandbox built from file descriptors; no further user namespaces | done (falls back to the user's uid where unsupported — `airlock doctor` says so) |
 | 13 | Page text and file names narrowed to plain visible characters before any UI; optional pixels-only mode | done |
-| 15 | App web view (where text is drawn) in WebKitGTK's bubblewrap + seccomp sandbox (forced on), own data dir, airlock-only cache dir — no home, no `.ssh`, no capabilities | done |
 | 14 | Every host-side parser fuzzed with hostile streams (`cargo test`; `AIRLOCK_FUZZ_ITERS` for long runs) | done |
+| 15 | App web view (where text is drawn) in WebKitGTK's bubblewrap + seccomp sandbox (forced on), own data dir, airlock-only cache dir — no home, no `.ssh`, no capabilities | done |
+| 16 | Staying patched: `scripts/update.sh` rebuilds the guest with current security fixes (base system too) and moves to the newest 6.1 LTS kernel (kernel.org GPG-signed checksums) / Firecracker / Alpine point release; regression suite gates the switch, automatic restore on failure; doctor warns when the image is >30 days old (`rootfs.info`: build date + package versions) | done |
 
 ## Roadmap
 

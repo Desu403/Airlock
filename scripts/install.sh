@@ -132,6 +132,7 @@ install -m 0644 vendor/bin/vmlinux-airlock "$LIB/vmlinux"
 cp --reflink=auto --sparse=always build/rootfs.ext4 "$LIB/rootfs.ext4.new"
 chmod 0644 "$LIB/rootfs.ext4.new"
 mv -f "$LIB/rootfs.ext4.new" "$LIB/rootfs.ext4"
+[ -f build/rootfs.info ] && install -m 0644 build/rootfs.info "$LIB/rootfs.info"
 echo "installed CLI:  $BIN/airlock"
 
 if [ "$APP" = 1 ]; then

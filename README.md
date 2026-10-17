@@ -86,6 +86,24 @@ image and kernel in `~/.local/lib/airlock`, and adds an **airlock** launcher
 with "Open with airlock" for PDF and Office files. A plain install changes
 none of your default apps. Re-run it after rebuilding to update.
 
+## Keeping it up to date
+
+The realistic risk for any viewer is running old renderers with known bugs.
+Run this every few weeks (`airlock doctor` warns once the VM image is more
+than 30 days old):
+
+```sh
+scripts/update.sh            # newest guest packages, 6.1 LTS kernel, Firecracker
+scripts/update.sh --check    # just show what is out of date
+scripts/update.sh --rollback # back to the version before the last update
+```
+
+New kernels are verified against kernel.org's GPG-signed checksums,
+Firecracker and Alpine against their published checksums. The working
+version is kept aside and the full regression suite must pass before the new
+one is used; otherwise the old one is restored. An installed copy is
+updated too.
+
 ## Usage
 
 ```sh

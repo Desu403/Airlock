@@ -784,7 +784,7 @@ button.link:hover:not(:disabled) { color: var(--text); box-shadow: none; }
 .logo { position: relative; transition: box-shadow 0.3s; }
 .logo::after {
   content: ""; position: absolute; inset: -3px; border-radius: 50%; opacity: 0; transition: opacity 0.3s;
-  background: conic-gradient(from var(--sweep), transparent 0 70%, rgba(var(--cyan-rgb), 0.9) 88%, #fff 92%, transparent 93%);
+  background: conic-gradient(from var(--sweep), transparent 0 55%, rgba(var(--seal-rgb), 0.35) 80%, color-mix(in srgb, var(--seal), #fff 40%) 97%, transparent 98%);
   -webkit-mask: radial-gradient(circle, transparent 0 calc(50% - 3px), #000 calc(50% - 3px));
   mask: radial-gradient(circle, transparent 0 calc(50% - 3px), #000 calc(50% - 3px));
 }
@@ -802,12 +802,14 @@ button.link:hover:not(:disabled) { color: var(--text); box-shadow: none; }
   mask: radial-gradient(circle, transparent 0 calc(50% - 4px), #000 calc(50% - 3px) calc(50% - 1px), transparent 50%);
   animation: logo-sweep 24s linear infinite;
 }
+/* a soft comet in the accent colour: bright head, long fading tail */
 .porthole::after {
-  content: ""; position: absolute; inset: -6px; border-radius: 50%;
-  background: conic-gradient(from var(--sweep), transparent 0 80%, rgba(var(--cyan-rgb), 0.85) 96%, transparent 97%);
-  -webkit-mask: radial-gradient(circle, transparent 0 calc(50% - 2px), #000 calc(50% - 2px));
-  mask: radial-gradient(circle, transparent 0 calc(50% - 2px), #000 calc(50% - 2px));
-  animation: logo-sweep 5s linear infinite;
+  content: ""; position: absolute; inset: -9px; border-radius: 50%;
+  background: conic-gradient(from var(--sweep), transparent 0deg, rgba(var(--seal-rgb), 0) 200deg, rgba(var(--seal-rgb), 0.18) 290deg, rgba(var(--seal-rgb), 0.55) 345deg, color-mix(in srgb, var(--seal), #fff 35%) 358deg, transparent 360deg);
+  -webkit-mask: radial-gradient(circle, transparent 0 calc(50% - 3px), #000 calc(50% - 2.5px) calc(50% - 0.5px), transparent 50%);
+  mask: radial-gradient(circle, transparent 0 calc(50% - 3px), #000 calc(50% - 2.5px) calc(50% - 0.5px), transparent 50%);
+  filter: blur(0.6px) drop-shadow(0 0 4px rgba(var(--seal-rgb), 0.6));
+  animation: logo-sweep 7s linear infinite;
 }
 .porthole .iris { position: absolute; inset: 16%; border-radius: 50%;
   background: radial-gradient(circle at 50% 40%, rgba(var(--seal-rgb), 0.5), rgba(var(--seal-rgb), 0.08) 60%, transparent 72%);

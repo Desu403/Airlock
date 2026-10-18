@@ -805,6 +805,41 @@ async fn setup_fix(app: tauri::AppHandle) -> R<Vec<String>> {
     .await
 }
 
+// ---------------------------------------------------------------- settings
+// The window's preferences (colours, panel width, toggles) also go to a file:
+// every window is its own process, and a new one must not start before an
+// older one has flushed its web storage.
+
+fn settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|d| d.join("settings.json"))
+}
+
+#[tauri::command]
+fn ui_settings(app: tauri::AppHandle) -> serde_json::Value {
+    settings_path(&app)
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+#[tauri::command]
+fn ui_setting_set(app: tauri::AppHandle, key: String, value: String) -> R<()> {
+    if !key.starts_with("airlock.") || key.len() > 64 || value.len() > 256 {
+        return Err("not a setting".into());
+    }
+    let path = settings_path(&app).ok_or("no settings folder")?;
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(err)?;
+    // Read-modify-write under a lock: several windows may save at once.
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path.with_extension("lock")).map_err(err)?;
+    unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX) };
+    let mut all = ui_settings(app.clone());
+    all[key] = value.into();
+    let tmp = path.with_extension("json.part");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(err)?).map_err(err)?;
+    std::fs::rename(&tmp, &path).map_err(err)
+}
+
 /// For "About & logs": versions of everything that touches a document, and
 /// the app's own log (VM stops, tripwires, updates, errors).
 #[tauri::command]
@@ -1206,6 +1241,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             uninstall_info,
             uninstall,
+            ui_settings,
+            ui_setting_set,
             about_info,
             pick_and_open,
             open_path,

@@ -336,7 +336,7 @@ async function loadTextLayer(p, i) {
 async function setPixelsOnly(on, remember = true) {
   await invoke("set_pixels_only", { on });
   state.pixelsOnly = on;
-  if (remember) try { localStorage.setItem("airlock.pixelsOnly", on ? "1" : "0"); } catch {}
+  if (remember) setPref("airlock.pixelsOnly", on ? "1" : "0");
   $("m-pixels").setAttribute("aria-checked", String(on));
   $("textbtn").hidden = on || !state.docOpen;
   if (on) {
@@ -967,7 +967,16 @@ function pref(key, fallback) {
 }
 function setPref(key, value) {
   try { localStorage.setItem(key, value); } catch {}
+  // Also on disk, for windows opened later (each is its own process).
+  if (key.startsWith("airlock.")) invoke("ui_setting_set", { key, value: String(value) }).catch(() => {});
 }
+// Settings saved by any window win over this window's web storage. Startup
+// steps that depend on a setting (Pixels only, sheet layout) wait for this.
+const settingsReady = invoke("ui_settings").then((all) => {
+  for (const [k, v] of Object.entries(all || {})) try { localStorage.setItem(k, String(v)); } catch {}
+  if (typeof applyTheme === "function") applyTheme();
+  if (typeof applyPanelWidth === "function") applyPanelWidth();
+}).catch(() => {});
 
 function describeChanges(st, max) {
   const list = st.changes.slice(0, max);
@@ -1239,11 +1248,10 @@ $("sheetbtn").onclick = async () => {
   await invoke("set_sheet_layout", { single: sheetSingle() });
   await reopenDocument();
 };
-const sheetsReady = invoke("set_sheet_layout", { single: sheetSingle() }).then(showSheetLayout);
+const sheetsReady = settingsReady.then(() => invoke("set_sheet_layout", { single: sheetSingle() })).then(showSheetLayout);
 
-const pixelsReady = invoke("pixels_only").then(async (on) => {
-  let saved = null;
-  try { saved = localStorage.getItem("airlock.pixelsOnly"); } catch {}
+const pixelsReady = settingsReady.then(() => invoke("pixels_only")).then(async (on) => {
+  const saved = pref("airlock.pixelsOnly", null);
   // Only the user's own toggling is remembered, not the environment's default.
   await setPixelsOnly(on || saved === "1", false);
   status("Ready");
@@ -1710,7 +1718,7 @@ function startTour() {
 }
 
 function endTour() {
-  try { localStorage.setItem("airlock.tourDone", "1"); } catch {}
+  setPref("airlock.tourDone", "1");
   document.removeEventListener("keydown", tour.onKey, true);
   window.removeEventListener("resize", tourPlace);
   $("tour").classList.remove("on");
@@ -2009,7 +2017,9 @@ $("tour-skip").onclick = endTour;
 // First start: the tour, unless a test script is driving the app.
 (async () => {
   let done = false;
-  try { done = localStorage.getItem("airlock.tourDone") === "1"; } catch {}
+  // After the shared settings file was read (another window may have finished the tour).
+  await settingsReady;
+  done = pref("airlock.tourDone", "0") === "1";
   const demo = await invoke("demo_script").catch(() => null);
   if (!done && !demo) setTimeout(startTour, 700);
 })();
@@ -2226,10 +2236,11 @@ setInterval(renderTelemetry, 1000);
 
 // ---------------------------------------------------------------- badge summary
 // Hovering the result badge shows the top findings without opening a panel.
-let peekTimer = null;
+let peekTimer = null, peekHide = null;
 function showPeek() {
   const r = check.report;
   if (!r || check.running || check.attacked) return;
+  if (!$("peek").hidden) return; // already open: no rebuild, no re-animation
   const order = { high: 0, medium: 1, low: 2, info: 3 };
   const top = (r.findings || []).filter((f) => f.severity !== "info").sort((a, b) => order[a.severity] - order[b.severity]);
   const seen = new Set();
@@ -2249,9 +2260,18 @@ function showPeek() {
   p.style.top = `${b.bottom + 8}px`;
   p.hidden = false;
 }
-$("check").addEventListener("mouseenter", () => { clearTimeout(peekTimer); peekTimer = setTimeout(showPeek, 250); });
-$("check").addEventListener("mouseleave", () => { clearTimeout(peekTimer); $("peek").hidden = true; });
-$("check").addEventListener("click", () => { $("peek").hidden = true; });
+// Pointer events can leave and re-enter within a frame while moving over the
+// badge's parts: a short grace period keeps the card steady.
+$("check").addEventListener("pointerenter", () => {
+  clearTimeout(peekHide);
+  if ($("peek").hidden) { clearTimeout(peekTimer); peekTimer = setTimeout(showPeek, 220); }
+});
+$("check").addEventListener("pointerleave", () => {
+  clearTimeout(peekTimer);
+  clearTimeout(peekHide);
+  peekHide = setTimeout(() => { $("peek").hidden = true; }, 140);
+});
+$("check").addEventListener("click", () => { clearTimeout(peekTimer); $("peek").hidden = true; });
 
 // ---------------------------------------------------------------- opening
 // Hook into document setup: session clock, thumbnails, sealing transition.

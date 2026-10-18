@@ -147,6 +147,18 @@ BUILT_KIT=$(sed -n 's/^kit //p' "$INFO" 2>/dev/null | head -1)
 VIEWER_NEW=0
 [ -z "$KITV" ] || [ "$KITV" = "$BUILT_KIT" ] || VIEWER_NEW=1
 
+# Leftovers of a first-time setup by an older airlock (several GB): cleared
+# when no update is running (an update holds this lock while it builds).
+if [ "$KIT" = 1 ] && [ "$MODE" = status ] && command -v flock >/dev/null && flock -n build/.update.lock true 2>/dev/null; then
+    tidy
+fi
+
+# The previous version is kept for a week after an update (rollback), then
+# deleted: it is a whole second VM image (about 1.2 GB).
+if [ "$KIT" = 1 ] && [ -d "$PREV" ] && [ -n "$(find "$PREV" -maxdepth 0 -mtime +7 2>/dev/null)" ]; then
+    rm -rf "$PREV"
+fi
+
 # Known-malware fingerprints (MalwareBazaar): refreshed with every daily
 # check, next to the VM image; a failed download keeps the current list.
 if [ "$MODE" = status ] || [ "$MODE" = update ]; then

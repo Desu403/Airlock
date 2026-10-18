@@ -194,6 +194,10 @@ case $MODE in
         # The fake-internet helper ships prebuilt (in the AppImage) or from host/.
         SINKHOLE=${AIRLOCK_SINKHOLE:-host/target/release/sinkhole}
         [ -f "$SINKHOLE" ] && install -m 0755 "$SINKHOLE" "$LIB/sinkhole.new" && mv -f "$LIB/sinkhole.new" "$LIB/sinkhole"
+        # The build's leftovers (kernel objects, the unpacked image, a second
+        # copy of it): several GB that updates rebuild when needed. The Alpine
+        # build root stays as a cache for faster updates.
+        (cd "$KIT" && rm -rf build/guestroot build/guestroot.tar build/rootfs.ext4 build/kernel build/tests vendor/dl/kernel/linux-*.tar.xz)
         printf '\n==> Fetching the list of known malware fingerprints\n'
         sh scripts/known-malware.sh "$LIB" full || echo "   (not fetched now; the next update check tries again)"
         echo "@@ok	vm	The secure viewer is built and installed"

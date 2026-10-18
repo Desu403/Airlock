@@ -63,6 +63,54 @@ pub fn status() -> Option<(u64, u64)> {
     Some((std::fs::metadata(&path).ok()?.len() / 32, updated))
 }
 
+/// "HTTP://Example.COM/a/" -> "http://example.com/a": scheme and host are
+/// case-insensitive, a trailing slash means the same address.
+fn normalize(url: &str) -> Option<String> {
+    let url = url.trim().trim_end_matches(['"', '\'', ')', '>', ',', '.']);
+    let (scheme, rest) = url.split_once("://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        return None;
+    }
+    let (host, path) = rest.split_once('/').map_or((rest, ""), |(h, p)| (h, p));
+    let out = format!("{scheme}://{}/{path}", host.to_ascii_lowercase());
+    Some(out.trim_end_matches('/').to_string())
+}
+
+fn host_part(norm: &str) -> &str {
+    norm.split_once("://").map_or(norm, |(_, r)| r.split('/').next().unwrap_or(r))
+}
+
+/// Bare IP addresses (with or without a port) in URLhaus serve malware only;
+/// named hosts are often hacked but legitimate sites, matched by full address.
+fn is_ip_host(host: &str) -> bool {
+    let h = host.rsplit_once(':').map_or(host, |(h, p)| if p.bytes().all(|b| b.is_ascii_digit()) { h } else { host });
+    h.split('.').count() == 4 && h.split('.').all(|o| o.parse::<u8>().is_ok())
+}
+
+/// Web addresses in `text` (each "http..." up to a space) that URLhaus lists
+/// as spreading malware now.
+pub fn malware_urls(texts: &[&str]) -> Vec<String> {
+    if std::env::var_os("AIRLOCK_NO_KNOWN_LIST").is_some() {
+        return Vec::new();
+    }
+    let Some(dir) = crate::vm::Assets::locate().ok().and_then(|a| a.rootfs.parent().map(|p| p.to_path_buf())) else { return Vec::new() };
+    let Ok(list) = std::fs::read_to_string(dir.join("urlhaus.txt")) else { return Vec::new() };
+    let urls: std::collections::HashSet<String> = list.lines().filter_map(normalize).collect();
+    let ip_hosts: std::collections::HashSet<String> = urls.iter().map(|u| host_part(u).to_string()).filter(|h| is_ip_host(h)).collect();
+    let mut out = Vec::new();
+    for t in texts {
+        for (i, _) in t.match_indices("http") {
+            let token: String = t[i..].chars().take_while(|c| !c.is_whitespace()).collect();
+            let Some(n) = normalize(&token) else { continue };
+            if (urls.contains(&n) || ip_hosts.contains(host_part(&n))) && !out.contains(&n) {
+                out.push(n);
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -78,5 +126,11 @@ mod tests {
         assert!(contains(&path, &sha256(&[199])).unwrap());
         assert!(!contains(&path, &sha256(b"not in the list")).unwrap());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+    #[test]
+    fn urls() {
+        assert_eq!(normalize("HTTP://Example.COM/a/").as_deref(), Some("http://example.com/a"));
+        assert_eq!(normalize("ftp://x").as_deref(), None);
+        assert!(is_ip_host("185.228.72.128") && is_ip_host("59.96.137.253:48155") && !is_ip_host("example.com"));
     }
 }

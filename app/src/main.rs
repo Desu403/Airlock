@@ -934,6 +934,9 @@ async fn about_info() -> R<serde_json::Value> {
                     j["image_built"] = t.trim().parse::<u64>().unwrap_or(0).into();
                 } else if let Some(r) = l.strip_prefix("rules ") {
                     j["rules"] = r.into();
+                    if let Ok(list) = std::fs::read_to_string(a.rootfs.with_file_name("urlhaus.txt")) {
+                        j["urlhaus"] = list.lines().count().into();
+                    }
                     if let Some((n, updated)) = airlock_core::known::status() {
                         j["known"] = serde_json::json!({ "count": n, "updated": updated });
                     }

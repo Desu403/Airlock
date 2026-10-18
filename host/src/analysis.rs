@@ -79,6 +79,13 @@ pub fn run(doc: &[u8], name: Option<&str>, entry: Option<u32>, mode: &'static st
     if matches!(s.guest_error, Some(airlock_proto::Error::UnsupportedType)) {
         report.unreadable();
     }
+    // Every web address the document carries, against URLhaus's list.
+    let texts: Vec<&str> = indicators.iter().map(|(_, t)| t.as_str()).filter(|t| t.contains("http")).collect();
+    let bad = crate::known::malware_urls(&texts);
+    if !bad.is_empty() {
+        report.malware_sites(&bad);
+        note(format!("{} link(s) found in the local list of active malware addresses (URLhaus)", bad.len()));
+    }
     if let Some((sha, n)) = crate::known::lookup(doc) {
         report.known_malware(&sha, n);
         note(format!("Fingerprint found in the local list of {n} known-malware fingerprints (MalwareBazaar)"));

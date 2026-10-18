@@ -31,7 +31,7 @@ if AIRLOCK_LIB=$LIB AIRLOCK_SINKHOLE=$APP/usr/lib/airlock/bin/sinkhole sh "$KIT/
 else
     bad "setup failed: $(tail -3 "$H/setup.log")"
 fi
-for f in rootfs.ext4 vmlinux firecracker sinkhole known-malware.bin; do [ -f "$LIB/$f" ] || bad "missing $f after setup"; done
+for f in rootfs.ext4 vmlinux firecracker sinkhole known-malware.bin urlhaus.txt; do [ -f "$LIB/$f" ] || bad "missing $f after setup"; done
 mb=$(size "$H/.local/lib/airlock")
 echo "     disk after setup: ${mb} MB (viewer $(size "$LIB/rootfs.ext4") MB, kit $(size "$LIB/kit") MB)"
 [ "$mb" -lt 3000 ] && ok "setup leaves under 3 GB" || bad "setup leaves ${mb} MB"

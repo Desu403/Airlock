@@ -464,6 +464,21 @@ impl Report {
 
     /// The VM could not identify the file: nothing in it was checked, so
     /// it must never come out as "No threats found".
+    /// Its links include web addresses that URLhaus lists as spreading malware.
+    pub fn malware_sites(&mut self, urls: &[String]) {
+        for u in urls {
+            self.findings.push(finding(
+                Source::Signature,
+                Severity::High,
+                "-",
+                "Links to a known malware site",
+                "This web address is listed by URLhaus (abuse.ch) as spreading malware right now. Opening it would download something harmful. airlock compared it with a local copy of that list: nothing was sent anywhere.",
+                format!("{u} is on the URLhaus list of active malware addresses"),
+            ));
+        }
+        self.findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+    }
+
     /// The file's fingerprint is in the local list of known malware.
     pub fn known_malware(&mut self, sha256: &str, list_size: u64) {
         self.findings.push(finding(

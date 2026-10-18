@@ -18,8 +18,10 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/kit" "$STAGE/bin"
 git ls-files guest guest-agent proto scripts tests | while read -r f; do install -D -m "$(stat -c %a "$f")" "$f" "$STAGE/kit/$f"; done
 touch "$STAGE/kit/.airlock-kit"
-# Which build this kit came from: a newer AppImage refreshes the user's kit.
-echo "$(git rev-parse --short HEAD)$(git diff --quiet HEAD -- guest guest-agent proto scripts tests || echo "+$(date +%s)")" > "$STAGE/kit/.kit-version"
+# Which VM this kit builds: a fingerprint of everything that goes into the
+# VM (guest, agent, protocol, pinned versions), so a newer AppImage offers a
+# viewer rebuild only when the viewer itself changed.
+git ls-files guest guest-agent proto scripts/bootstrap.sh | sort | xargs sha256sum | sha256sum | cut -c1-12 > "$STAGE/kit/.kit-version"
 install -m 0755 host/target/release/airlock host/target/release/sinkhole "$STAGE/bin/"
 
 (cd app && cargo tauri build --bundles appimage --config tauri.appimage.json)

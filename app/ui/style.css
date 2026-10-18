@@ -854,3 +854,14 @@ button.check.failed:hover:not(:disabled) { color: var(--med); }
 .ftag.bad { color: var(--high); }
 .ftag.warn { color: var(--med); }
 .files button { padding: 3px 10px; font-size: 12px; }
+
+/* ---- selecting text on a page ----
+   Only the invisible text layer is selectable: never the page's picture, its
+   container or the gaps between pages (the browser would paint those as one
+   big block). One even tint, drawn once, whatever the page colour. */
+.pages, .page, .page .layer, .page .num { -webkit-user-select: none; user-select: none; }
+.page .text, .page .text span { -webkit-user-select: text; user-select: text; }
+.page ::selection, .pages ::selection { background: transparent; }
+/* The gaps between selected lines take the container's colour: none. */
+.page .text::selection { background: transparent; }
+.page .text span::selection { background: rgba(var(--seal-rgb), 0.3); color: transparent; }

@@ -140,6 +140,9 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
                 "download-run" => (High, "T1105 Ingress Tool Transfer", "Downloads and runs a program", "The script fetches something from the internet and starts it: how most malware arrives after you open an attachment. Only run it if it is an installer you were expecting from a source you trust."),
                 "hidden-powershell" => (High, "T1059.001 PowerShell", "Runs hidden or encoded PowerShell", "Its commands are encoded or run in a hidden window, so you cannot see what it does. Legitimate scripts have no reason to hide."),
                 "smuggling" => (High, "T1027.006 HTML Smuggling", "Builds a hidden file when opened", "This web page assembles a file inside your browser and offers it as a download, so the file never crosses e-mail filters. A known way to deliver malware."),
+                "credential" => (High, "T1056.003 Web Portal Capture", "Fake sign-in page", "A file that asks for your password and sends it to a server on the internet. Real services never send their sign-in page as an attachment; anything typed here goes to the attacker."),
+                "redirect" => (Medium, "T1566.002 Spearphishing Link", "Opens a website as soon as it is opened", "Opening this file would send your browser straight to a website, usually a fake sign-in or download page. A document sent to you has no reason to do this."),
+                "lure" => (Medium, "T1566.001 Spearphishing Attachment", "A page made to send you to a website", "It is a short page with little more than one link, worded like an invoice, shared document or account notice: the typical phishing attachment. Do not follow the link."),
                 "shell" => (Medium, "T1059.005 Visual Basic", "Can run programs on Windows", "It uses Windows scripting objects that start programs, read and write files or change settings. Normal for some admin scripts, but never in a file sent to you unexpectedly."),
                 _ => (Medium, "T1027 Obfuscated Files", "Scrambled script", "Large parts of the script are encoded or built from character codes, so a reader cannot see what it does: a common way to hide malware from scanners."),
             };
@@ -492,7 +495,7 @@ impl Report {
         // Scripts: hidden/encoded PowerShell and HTML smuggling (bench: never in
         // harmless code). Download-and-run stays "suspicious": installers do it.
         let decisive = has("T1203") || has("T1564.007") || has("T1221") || (has("T1204.002") && has("T1059")) || has("T1027.009")
-            || has("T1059.001") || has("T1027.006")
+            || has("T1059.001") || has("T1027.006") || has("T1056.003")
             // A PDF that starts a program by itself.
             || self.findings.iter().any(|f| f.source == Source::Static && f.severity == Severity::High && f.what.starts_with("automatic action Launch"))
             // A rule written for a known malware family or exploit.

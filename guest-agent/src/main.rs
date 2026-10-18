@@ -16,6 +16,7 @@
 mod autopsy;
 mod emulate;
 mod live;
+mod html;
 mod lure;
 mod media;
 mod office;
@@ -358,6 +359,7 @@ fn main() {
         office::Kind::Text => {
             if scratch {
                 send_indicators(&mut out, &media::script_check(&doc));
+                send_indicators(&mut out, &html::check(&doc));
                 log("scanning with YARA");
                 send_indicators(&mut out, &yara::scan(WORK, &doc_path, None, false));
             }

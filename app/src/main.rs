@@ -651,7 +651,42 @@ fn sandbox_web_content() {
 // official servers, regression suite, auto-restore). It runs from the update
 // kit installed next to this app, or else from the source checkout.
 
+/// The AppImage updates from the kit its setup copied to the user's VM
+/// folder (the mounted image is read-only). A newer AppImage refreshes that
+/// kit first (.kit-version differs); the pins it carries are its own.
+fn appimage_kit() -> Option<PathBuf> {
+    std::env::var_os("APPIMAGE")?;
+    let bundled = std::env::current_exe().ok()?.parent()?.join("../lib/airlock/kit");
+    let user = airlock_lib()?.join("kit");
+    if !user.join(".airlock-kit").exists() {
+        return None; // not set up yet
+    }
+    let version = |k: &std::path::Path| std::fs::read_to_string(k.join(".kit-version")).unwrap_or_default();
+    if bundled.is_dir() && version(&bundled) != version(&user) {
+        for d in ["guest", "guest-agent", "proto", "scripts", "tests"] {
+            let _ = std::fs::remove_dir_all(user.join(d));
+            let ok = std::process::Command::new("cp").arg("-r").arg(bundled.join(d)).arg(user.join(d)).status().is_ok_and(|s| s.success());
+            if !ok {
+                log_event(&format!("could not refresh the update kit ({d})"));
+                return None;
+            }
+        }
+        let _ = std::fs::copy(bundled.join(".kit-version"), user.join(".kit-version"));
+        log_event(&format!("update kit refreshed from this AppImage ({})", version(&bundled).trim()));
+    }
+    Some(user)
+}
+
+/// The AppImage's own CLI, for update.sh's checks.
+fn appimage_cli() -> Option<PathBuf> {
+    std::env::var_os("APPIMAGE")?;
+    Some(std::env::current_exe().ok()?.parent()?.join("../lib/airlock/bin/airlock")).filter(|p| p.is_file())
+}
+
 fn source_tree() -> Option<PathBuf> {
+    if std::env::var_os("APPIMAGE").is_some() {
+        return appimage_kit();
+    }
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from));
     [
         std::env::var_os("AIRLOCK_SOURCE").map(PathBuf::from),
@@ -1002,7 +1037,11 @@ async fn update_status(force: bool) -> R<UpdateStatus> {
                 }
             }
         }
-        let out = std::process::Command::new(tree.join("scripts/update.sh")).arg("--status").output().map_err(err)?;
+        let mut cmd = std::process::Command::new(tree.join("scripts/update.sh"));
+        if let Some(cli) = appimage_cli() {
+            cmd.env("AIRLOCK_CLI", cli);
+        }
+        let out = cmd.arg("--status").output().map_err(err)?;
         if !out.status.success() {
             let msg = String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("check failed").to_string();
             return Ok(UpdateStatus { supported: true, error: Some(msg), ..Default::default() });
@@ -1031,13 +1070,12 @@ async fn run_update(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Upda
     let result = blocking(move || {
         use std::io::BufRead;
         let tree = source_tree().ok_or("no airlock source checkout found to update from")?;
-        let mut child = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("exec scripts/update.sh 2>&1")
-            .current_dir(&tree)
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .map_err(err)?;
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("exec scripts/update.sh 2>&1").current_dir(&tree).stdout(std::process::Stdio::piped());
+        if let Some(cli) = appimage_cli() {
+            cmd.env("AIRLOCK_CLI", cli);
+        }
+        let mut child = cmd.spawn().map_err(err)?;
         let mut tail: Vec<String> = Vec::new();
         for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
             let line = text::sanitize_line(line.as_bytes());

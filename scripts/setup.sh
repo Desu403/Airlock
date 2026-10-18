@@ -182,6 +182,7 @@ case $MODE in
                 cp -r "$d" "$KIT/$d"
             done
             touch "$KIT/.airlock-kit"
+            [ -f .kit-version ] && cp .kit-version "$KIT/.kit-version"
         fi
         (cd "$KIT" && scripts/bootstrap.sh --vm-only)
         printf '\n==> Installing the secure viewer\n'

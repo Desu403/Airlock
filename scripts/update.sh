@@ -54,6 +54,8 @@ else
     ROOTFS=build/rootfs.ext4
     INFO=build/rootfs.info
 fi
+# The AppImage carries its own CLI (not in <prefix>/bin).
+[ -n "${AIRLOCK_CLI:-}" ] && AIRLOCK=$AIRLOCK_CLI
 [ -x "$AIRLOCK" ] || die "airlock binary not found at $AIRLOCK"
 
 # Kit: the new VM goes live only now, after it passed the regression suite.

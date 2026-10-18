@@ -177,7 +177,12 @@ impl Assets {
             // the AppImage's setup creates (on other computers the source
             // tree does not exist).
             (None, None) => {
-                let mut c = vec![installed(exe_dir.join("../lib/airlock")), source_tree(Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))];
+                let mut c = vec![installed(exe_dir.join("../lib/airlock"))];
+                // An AppImage uses only what its own setup installed, also on
+                // the computer that built it.
+                if std::env::var_os("APPIMAGE").is_none() {
+                    c.push(source_tree(Path::new(env!("CARGO_MANIFEST_DIR")).join("..")));
+                }
                 if let Some(home) = std::env::var_os("HOME") {
                     c.push(installed(PathBuf::from(home).join(".local/lib/airlock")));
                 }

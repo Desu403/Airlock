@@ -54,7 +54,8 @@ check testdata/office/follina-template.docx "LIKELY MALICIOUS" "CVE-2022-30190" 
 check testdata/office/dde-test.docx "LIKELY MALICIOUS" "DDE field runs a command"
 check testdata/office/excel4_sample_macro.xls "SUSPICIOUS" "Excel 4.0 (XLM)"
 check testdata/office/embedded-simple-2007.docx "SUSPICIOUS" "oleObject1.bin"
-check testdata/office/sample_with_external_link_to_doc.docx "SUSPICIOUS" "externally linked OLE object"
+# A real technique with a harmless payload: an OLE object loaded from the web.
+check testdata/office/sample_with_external_link_to_doc.docx "LIKELY MALICIOUS" "OLE object loaded from a web address"
 check testdata/office/sample_with_vba.ppt "SUSPICIOUS" "Action_Click"
 # Atomic Red Team: real techniques, harmless payloads.
 check testdata/atomic/T1027-T1027-cc-macro.xlsm "SUSPICIOUS" "macro hides strings"
@@ -78,6 +79,20 @@ for f in testdata/text.pdf testdata/office/harmless-clean.docx; do
         echo "FAIL live mode $(basename "$f")"; fail=$((fail+1))
     fi
 done
+# Smoke test: ordinary documents must stay as clean as they were (an update
+# must not start flagging them). See tests/smoke/README.md.
+smoke_bad=""
+while IFS="$(printf '\t')" read -r f verdict _src; do
+    [ "$f" = file ] && continue
+    $AIRLOCK analyze "tests/smoke/$f" --out "$OUT/smoke-$f" --report-only >/dev/null 2>&1
+    got=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["verdict"])' "$OUT/smoke-$f/report.json" 2>/dev/null)
+    [ "$got" = "$verdict" ] || smoke_bad="$smoke_bad $f($got)"
+done < tests/smoke/expected.tsv
+if [ -z "$smoke_bad" ]; then
+    echo "ok   smoke test ($(($(wc -l < tests/smoke/expected.tsv) - 1)) ordinary documents unchanged)"
+else
+    echo "FAIL smoke test:$smoke_bad"; fail=$((fail+1))
+fi
 # Containment: the viewing VM turns hostile on purpose (attack attempts,
 # junk instead of pages, fork bomb + memory fill + all CPUs as root); the host
 # must end it every time, stay responsive, and keep it within its size.

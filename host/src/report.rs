@@ -127,6 +127,14 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         Ind::PdfJsClick => finding(Static, Low, "T1059.007 JavaScript", "JavaScript that only runs when you click or type", "Typical for interactive forms. Nothing runs by itself.", format!("JavaScript: {text}")),
         Ind::PdfJsForm => finding(Static, Info, "-", "Standard form-field scripts", "Fillable forms use Adobe's built-in functions to format numbers, dates and totals. Harmless.", text.to_string()),
         Ind::PdfUnreadable => finding(Static, Medium, "T1027 Obfuscated Files", if text.starts_with("password") { "Password protected" } else { "The PDF's structure could not be read" }, "Damaged or deliberately malformed files can hide things from scanners, so its contents could not be fully checked.", text.to_string()),
+        Ind::QrLink => {
+            let url = text.split_once(": ").map_or(text, |(_, u)| u);
+            match link_risk(url) {
+                Some((sev, title, why)) => finding(Static, sev, "T1566.002 Spearphishing Link", title, why, format!("QR code on {text}")),
+                None => finding(Static, Low, "T1566.002 Spearphishing Link", "A QR code with a link", "Scanning it with a phone opens this address. Legitimate on invoices and tickets; also used to move phishing onto phones, where links are hard to check.", format!("QR code on {text}")),
+            }
+        }
+        Ind::PhishText => finding(Static, Medium, "T1566 Phishing", if text.starts_with("callback") { "Looks like a callback scam" } else { "Pretends to be a well-known company" }, if text.starts_with("callback") { "It uses a well-known name, claims a charge you did not make and gives a phone number to call. Calling connects you to scammers who ask for payment or remote access." } else { "It uses a well-known company's name and asks you to open or verify something, but its link goes to a site that company does not own: the pattern of phishing pages." }, text.to_string()),
         Ind::PdfLure => finding(Static, Medium, "T1566.002 Spearphishing Link", "The page is one big link", "Phishing PDFs show a picture of a document or a \"View\" button, and clicking almost anywhere opens a website, usually a fake login page. Real documents rarely do this.", text.to_string()),
         Ind::HiddenData if text.contains("program") || text.contains("archive") || text.contains("Office/OLE") || text.contains("web page") => finding(Static, High, "T1027.009 Embedded Payloads", "Hides a program or archive inside the file", "The file is built to be two things at once: a document you can open and a hidden program or archive. Only done to smuggle malware past scanners.", text.to_string()),
         Ind::HiddenData if text.starts_with("the RTF header is deliberately malformed") => finding(Static, Medium, "T1027 Obfuscated Files", "Deliberately malformed file", "Its first bytes are written in a way no editor produces, so that other programs read it differently from Word. Only done to slip past scanners.", text.to_string()),
@@ -214,6 +222,8 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         Ind::OfficeExternal => {
             let (sev, att, title, why) = if text.starts_with("remote template") {
                 (High, "T1221 Template Injection", "Downloads content from the internet when opened", "Office would fetch a template from a web address as soon as the file opens. Attackers use this to bring in macros or exploits from outside.")
+            } else if text.starts_with("external frame") {
+                (High, "T1221 Template Injection", "Loads a web page into the document when opened", "Word would load a page from a web address into the document as soon as it opens: a way to bring an exploit in from outside.")
             } else if text.starts_with("external image") {
                 (Medium, "T1187 Forced Authentication", "Loads an image from the internet", "Opening it tells the sender you read it, and on Windows it can leak your login details to their server.")
             } else {

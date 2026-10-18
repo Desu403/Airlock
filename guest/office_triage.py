@@ -6,6 +6,7 @@ Prints lines "@@AIRLOCK <KIND> <text>" for the agent to forward.
 import html
 import re
 import struct
+import urllib.parse
 import xml.etree.ElementTree as ET
 import sys
 import zipfile
@@ -177,7 +178,7 @@ def field_codes(xml):
     return codes
 
 
-def ooxml(path):
+def ooxml(path, where=""):
     try:
         z = zipfile.ZipFile(path)
     except Exception:
@@ -199,7 +200,7 @@ def ooxml(path):
             except Exception:
                 pass
         if "/embeddings/" in low:
-            emit("EMBEDDED", f"embedded object {n}")
+            emit("EMBEDDED", f"embedded object {n}{where}")
         # Parts Word renders as part of the document (altChunk), by content.
         try:
             if z.getinfo(n).file_size <= 64 << 20:
@@ -224,19 +225,26 @@ def ooxml(path):
                 continue
             what = EXTERNAL_KINDS.get(rtype, f"external {rtype}")
             t = target.lower()
-            if "ms-msdt" in t or (rtype == "oleObject" and t.startswith("mhtml:")) or t.rstrip("/").endswith(".html!"):
-                emit("EXPLOIT", f"Follina-style trigger (CVE-2022-30190): {rtype} -> {target}")
+            # Decoded and trimmed: droppers pad ("x.html       !") and
+            # URL-encode ("x.html%21") the address to dodge simple matches.
+            plain = urllib.parse.unquote(t).strip().rstrip("!").strip()
+            if "ms-msdt" in t or (rtype == "oleObject" and t.startswith("mhtml:")) or plain.endswith((".html", ".htm")) and t.strip().endswith(("!", "%21")):
+                emit("EXPLOIT", f"Follina-style trigger (CVE-2022-30190): {rtype} -> {target.strip()[:200]}{where}")
+            elif rtype == "oleObject" and plain.startswith(("http:", "https:")):
+                # Linked objects of real documents point at files and shares;
+                # one loaded from a web address is the remote-object exploit.
+                emit("EXPLOIT", f"OLE object loaded from a web address (CVE-2017-0199 / CVE-2022-30190 family): {target.strip()[:200]}{where}")
             elif rtype == "hyperlink":
                 emit("LINK", target)
             else:
-                emit("EXTERNAL", f"{what}: {target}")
+                emit("EXTERNAL", f"{what}: {target}{where}")
     # DDE fields in the main document parts.
     for n in names:
         if re.match(r"(word/document|xl/externalLinks/|word/(header|footer)\d*)", n) and n.endswith(".xml"):
             x = z.read(n)[:5000000].decode("utf-8", "replace")
             for instr in field_codes(x):
                 if re.match(r"\s*DDE(AUTO)?\b", instr, re.I):
-                    emit("EXPLOIT", f"DDE field runs a command: {instr.strip()[:160]}")
+                    emit("EXPLOIT", f"DDE field runs a command: {instr.strip()[:160]}{where}")
 
 
 # Embedded OLE objects, identified by class id (not by name, which is free text).
@@ -304,15 +312,30 @@ def mtef_problem(mtef):
     return None
 
 
+NESTING = [0]
+
+
 def ole_objects(data, where):
-    """Equation Editor objects (CVE-2017-11882 / CVE-2018-0802) and linked
-    objects whose source is a web address (CVE-2017-0199), in an OLE file."""
+    """Equation Editor objects (CVE-2017-11882 / CVE-2018-0802), linked
+    objects whose source is a web address (CVE-2017-0199), browser controls,
+    and embedded Office documents (checked like a file), in an OLE file."""
+    if NESTING[0] >= 3:
+        return
     try:
         import olefile
         ole = olefile.OleFileIO(data)
     except Exception:
         return
+    NESTING[0] += 1
     try:
+        # An embedded Word/Excel/PowerPoint document ("Package" stream holds
+        # the .docx/.xlsx itself): Office opens it, so it is checked too.
+        for p in ole.listdir(streams=True)[:5000]:
+            if p[-1].lower() == "package":
+                inner = ole.openstream(p).read(64 << 20)
+                if inner[:2] == b"PK":
+                    import io
+                    ooxml(io.BytesIO(inner), f" (inside an embedded document{where})")
         streams = ole.listdir(streams=True)[:5000]
         # Every formula made before 2018 is an Equation Editor object; only
         # a malformed one is the exploit.
@@ -376,6 +399,7 @@ def ole_objects(data, where):
     except Exception:
         pass
     finally:
+        NESTING[0] -= 1
         ole.close()
 
 
@@ -546,12 +570,18 @@ def rtf(data, where=""):
                 ole_objects(data, f" in RTF{where}")
             else:
                 emit("EXPLOIT", f"RTF{where} embeds {cls} whose data is not a valid OLE object - Equation Editor exploit (CVE-2017-11882 / CVE-2018-0802)")
-        elif cls == "OLE2Link":
+        elif cls.lower() == "ole2link":
             emit("EXPLOIT", f"RTF{where} embeds OLE2Link - remote object exploit (CVE-2017-0199)")
+        elif cls.lower().startswith(("shell.explorer", "htmlfile")):
+            emit("EXPLOIT", f"RTF{where} embeds a web browser control ({cls}) - CVE-2026-21509 style")
         elif getattr(obj, "is_package", False):
             emit("EMBEDDED", f"RTF{where} embeds a file: {obj.filename or '?'}")
         elif cls:
             emit("EMBEDDED", f"RTF{where} embeds OLE object {cls}")
+            # Open it the way Word would: its own objects, macros, links.
+            data = getattr(obj, "oledata", None) or b""
+            if data[:8] == b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1":
+                ole_objects(data, f" in RTF object {cls}{where}")
         else:
             emit("EMBEDDED", f"RTF{where} embeds raw object data")
 

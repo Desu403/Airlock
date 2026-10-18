@@ -300,7 +300,8 @@ def load_results(run):
 
 
 def cmd_run(a):
-    rows = [r for r in all_rows() if not a.label or r["label"] == a.label]
+    rows = all_rows() if not a.manifest else read_manifest(manifest_path(a.manifest))
+    rows = [r for r in rows if not a.label or r["label"] == a.label]
     if a.type:
         rows = [r for r in rows if r["type"] in a.type.split(",")]
     if a.outcome:
@@ -409,6 +410,7 @@ def main():
     p.add_argument("--label", choices=["malicious", "harmless", "decoy"])
     p.add_argument("--limit", type=int)
     p.add_argument("--type", help="comma-separated file types, e.g. ppt,pdf")
+    p.add_argument("--manifest", help="only this manifest, e.g. cve (tests/bench/cve.tsv)")
     p.add_argument("--outcome", help="only files with this outcome in the last run, e.g. missed,false-alarm")
     p.add_argument("--in-run", help="with --outcome: look the outcome up in this run instead of the last one")
     p = sub.add_parser("rescore", help="rebuild a run's results from its saved reports")

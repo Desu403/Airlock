@@ -16,6 +16,7 @@
 mod autopsy;
 mod emulate;
 mod live;
+mod lure;
 mod office;
 mod monitor;
 mod selftest;
@@ -115,14 +116,33 @@ fn send(out: &mut File, kind: Kind, a: u32, b: u32, c: u32, payload: &[u8]) -> s
     out.write_all(payload)
 }
 
+/// Web links reported so far (for the phishing-content check).
+static SENT_LINKS: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 fn send_indicators(out: &mut File, events: &[(Ind, String)]) {
     let mut buf = [0u8; MAX_TEXT as usize];
     for (ind, text) in events {
+        let link = match ind {
+            Ind::PdfUri | Ind::OfficeLink => Some(text.as_str()),
+            Ind::PdfLure => text.split_once(": ").map(|(_, u)| u),
+            _ => None,
+        };
+        if let (Some(l), Ok(mut v)) = (link, SENT_LINKS.lock()) {
+            if v.len() < 200 {
+                v.push(l.to_string());
+            }
+        }
         let n = sanitize_into(text.as_bytes(), &mut buf);
         if send(out, Kind::Indicator, *ind as u32, 0, 0, &buf[..n]).is_err() {
             power_off();
         }
     }
+}
+
+/// Pages in a PDF (0 if unknown), via `mutool pages` under the monitor.
+fn page_count(pdf: &str) -> u32 {
+    let r = monitor::run(&["/usr/bin/mutool", "pages", pdf], WORK, &monitor::Opts::new(Net::Deny, Duration::from_secs(60)));
+    r.stdout.map_or(0, |o| o.windows(14).filter(|w| w == b"<page pagenum=").count() as u32)
 }
 
 fn fail(out: &mut File, e: Error) -> ! {
@@ -315,6 +335,14 @@ fn main() {
         }
     };
     drop(doc);
+    // Phishing content: what the first pages show (QR codes, wording),
+    // checked against the links the document carries.
+    if scratch {
+        log("checking the pages for phishing content");
+        let links: Vec<String> = SENT_LINKS.lock().map(|l| l.clone()).unwrap_or_default();
+        let pages = page_count(&pdf_path);
+        send_indicators(&mut out, &lure::check(&pdf_path, WORK, &links, pages));
+    }
     if mode == Mode::Live {
         live::serve(out, &pdf_path);
     }

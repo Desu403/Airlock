@@ -201,6 +201,7 @@ function setupDocument(info) {
   state.hitIndex = -1;
   state.queue = [];
   state.findings = null;
+  state.aiHints = null;
   state.docOpen = true;
   $("banner").hidden = true;
   $("qcount").textContent = "";
@@ -536,9 +537,45 @@ async function showText() {
       try { await navigator.clipboard.writeText(text); copy.textContent = "Copied"; }
       catch { const r = document.createRange(); r.selectNodeContents(pre); getSelection().removeAllRanges(); getSelection().addRange(r); copy.textContent = "Selected — press Ctrl+C"; }
     };
-    body.replaceChildren(row, pre);
+    // Optional: hints that the text came from an AI chat tool (off by default).
+    const ai = el("label", "check");
+    const box = el("input");
+    box.type = "checkbox";
+    box.checked = pref("airlock.aiHints", "0") === "1";
+    ai.append(box, el("span", "", "Check for AI-written text"));
+    ai.title = "Looks for characters and leftovers that AI chat tools put into pasted text, and stock phrasing. Hints, not proof.";
+    const aiOut = el("div", "ai-hints");
+    box.onchange = () => { setPref("airlock.aiHints", box.checked ? "1" : "0"); showAiHints(aiOut, box.checked); };
+    body.replaceChildren(row, ai, aiOut, pre);
+    showAiHints(aiOut, box.checked);
   } catch (e) {
     body.replaceChildren(el("p", "note", `Could not extract text: ${e}`));
+  }
+}
+
+// One check per opened document, cached; shown in the Text panel.
+async function showAiHints(out, on) {
+  if (!on) { out.replaceChildren(); return; }
+  out.replaceChildren(el("p", "note", "Checking the document's text inside the VM…"));
+  try {
+    if (!state.aiHints) state.aiHints = await invoke("ai_hints");
+    const h = state.aiHints;
+    const label = { strong: "Strong signs of AI-written text", some: "Some signs of AI-written text", none: "No clear signs of AI-written text" }[h.level];
+    const card = el("div", `ai-card ${h.level}`);
+    card.append(el("strong", "", label), el("p", "", h.summary));
+    if (h.signals.length) {
+      const ul = el("ul", "");
+      for (const s of h.signals) {
+        const li = el("li", "");
+        li.append(el("span", `ai-tag ${s.strength}`, s.strength), el("b", "", ` ${s.title}: `), document.createTextNode(s.detail));
+        ul.append(li);
+      }
+      card.append(ul);
+    }
+    card.append(el("p", "note", `Checked ${h.words} words on the first pages.`));
+    out.replaceChildren(card);
+  } catch (e) {
+    out.replaceChildren(el("p", "note", `Could not check: ${e}`));
   }
 }
 
@@ -935,6 +972,8 @@ $("updates").onclick = showUpdates;
 
 async function autoCheckUpdates() {
   if (pref("airlock.autoUpdateCheck", "1") !== "1") return;
+  // Test runs (a demo script drives the app) never start updates.
+  if (await invoke("demo_script").catch(() => null)) return;
   try {
     const st = await checkUpdates(false);
     if (!st.available) return;
@@ -965,6 +1004,7 @@ async function runDemo() {
     if (cmd === "tour") { startTour(); tourShow(Number(arg) || 0); }
     if (cmd === "wait") await new Promise((r) => setTimeout(r, Number(arg) || 0));
     if (cmd === "text") await showText();
+    if (cmd === "aitext") { setPref("airlock.aiHints", "1"); await showText(); await new Promise((r) => setTimeout(r, Number(arg) || 3000)); }
     if (cmd === "reveal") {
       // Paint the invisible text layer red to check its alignment.
       await new Promise((r) => setTimeout(r, 1500));
@@ -1020,9 +1060,62 @@ const pixelsReady = invoke("pixels_only").then(async (on) => {
   status("Ready");
 });
 
+// ---------------------------------------------------------------- first-run setup
+// Shown instead of the start page when this computer still needs something
+// (scripts/setup.sh check). On a ready computer it never appears.
+const setup = { items: [] };
+async function checkSetup() {
+  let items = [];
+  try { items = await invoke("setup_check"); } catch (e) { status(`Could not check this computer: ${e}`, true); }
+  setup.items = items;
+  const pending = items.filter((i) => i.status !== "ok");
+  $("setup").hidden = !pending.length;
+  if (!state.docOpen) $("empty").hidden = !!pending.length;
+  if (!pending.length) return true;
+  const marks = { ok: "✓", fix: "!", build: "↓", fail: "✕" };
+  $("setup-list").replaceChildren(...items.map((i) => {
+    const li = el("li", i.status);
+    li.append(el("span", "mark", marks[i.status] || "?"), el("span", "", i.text));
+    return li;
+  }));
+  const fixable = items.some((i) => i.status === "fix");
+  $("setup-fix").hidden = !fixable;
+  $("setup-build").hidden = fixable || !items.some((i) => i.status === "build") || items.some((i) => i.status === "fail");
+  return false;
+}
+$("setup-recheck").onclick = checkSetup;
+$("setup-fix").onclick = async () => {
+  const b = $("setup-fix");
+  b.disabled = true;
+  status("Waiting for your password…");
+  try { await invoke("setup_fix"); status("System settings done"); }
+  catch (e) { status(String(e), true); }
+  b.disabled = false;
+  checkSetup();
+};
+$("setup-build").onclick = async () => {
+  const b = $("setup-build"), log = $("setup-log");
+  b.disabled = true;
+  log.hidden = false;
+  log.textContent = "";
+  status("Building the secure viewer (10-20 minutes; you can leave this open)…");
+  const off = await window.__TAURI__.event.listen("setup-progress", (ev) => {
+    log.textContent = (log.textContent + ev.payload + "\n").split("\n").slice(-200).join("\n");
+    log.scrollTop = log.scrollHeight;
+  });
+  try { await invoke("setup_build"); status("airlock is ready"); }
+  catch (e) { status(String(e), true); }
+  off();
+  b.disabled = false;
+  checkSetup();
+};
+const setupReady = checkSetup();
+
 invoke("initial_path").then(async (p) => {
   await pixelsReady;
   await sheetsReady;
+  // Not set up yet: the setup screen stays; the file waits for the next start.
+  if (!(await setupReady) && p) { status("Set up airlock first, then open the file again", true); return; }
   if (!p) return runDemo();
   await openWith(invoke("open_path", { path: p }), p.split(/[\\/]/).pop());
   runDemo();

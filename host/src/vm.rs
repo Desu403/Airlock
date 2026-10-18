@@ -170,7 +170,17 @@ impl Assets {
         };
         let candidates = match std::env::var_os("AIRLOCK_HOME") {
             Some(home) => vec![source_tree(PathBuf::from(home))],
-            None => vec![installed(exe_dir.join("../lib/airlock")), source_tree(Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))],
+            // Next to the binary (scripts/install.sh), then the source tree
+            // it was built from (development), then the per-user install
+            // the AppImage's setup creates (on other computers the source
+            // tree does not exist).
+            None => {
+                let mut c = vec![installed(exe_dir.join("../lib/airlock")), source_tree(Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))];
+                if let Some(home) = std::env::var_os("HOME") {
+                    c.push(installed(PathBuf::from(home).join(".local/lib/airlock")));
+                }
+                c
+            }
         };
         let complete = |a: &Assets| [&a.firecracker, &a.kernel, &a.rootfs, &a.sinkhole].iter().all(|p| p.exists());
         let n = candidates.len();

@@ -263,6 +263,28 @@ impl LiveSession {
         }
     }
 
+    /// Character counts for the AI-text hints (numbers only, see Cmd::TextStats).
+    pub fn text_stats(&mut self, page: u32) -> Result<std::collections::BTreeMap<String, u64>> {
+        if page as usize >= self.pages.len() {
+            bail!("no page {page}");
+        }
+        self.send(Cmd::TextStats, page, 0, &[])?;
+        let raw = match self.next()? {
+            Msg::Text(p, t) if p == page => t,
+            _ => return Err(self.hostile("expected text statistics")),
+        };
+        let mut out = std::collections::BTreeMap::new();
+        for pair in raw.split_whitespace().take(32) {
+            let Some((k, v)) = pair.split_once('=') else { return Err(self.hostile("malformed text statistics")) };
+            let Ok(v) = v.parse::<u64>() else { return Err(self.hostile("malformed text statistics")) };
+            if k.len() > 16 || !k.bytes().all(|b| b.is_ascii_lowercase()) {
+                return Err(self.hostile("malformed text statistics"));
+            }
+            out.insert(k.to_string(), v);
+        }
+        Ok(out)
+    }
+
     /// Lines of text with their boxes. Text is sanitised like `text`; a box
     /// that is degenerate or off the page is dropped with its line.
     pub fn lines(&mut self, page: u32) -> Result<Vec<Line>> {

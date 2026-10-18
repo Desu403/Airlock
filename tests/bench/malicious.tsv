@@ -305,7 +305,7 @@ fc046d94184315b711c3c92b50cf56ae0c5a413a6e0287e08c71e33513bb9dec	malicious	bazaa
 0e3317df95f6c236bdb7f7761b1b3c839100c89797f9ae52eedc9daed96f7bbb	malicious	bazaar	pdf	invoice-1645080830.pdf	account-bookings-vercel-app,booking,pdf,spam-ita
 0ee2eb5659a3fe9ff41b0b80d8dc0f5f85b2127111f60860d024f74d9719ca77	malicious	bazaar	pdf	Av.scr	pdf
 11606ab5c006a387daacaa4004bbdbae385f6e9e1815d8e33e8046f2555b7e2a	malicious	bazaar	pdf	QUL2025_13214.pdf	pdf
-19d460ac7c87aa76f579db0634a5b83b71f71200d587b2b1f63e5d79f671001c	malicious	bazaar	pdf	Receipt-2655-2413-4467 (2).pdf	pdf
+19d460ac7c87aa76f579db0634a5b83b71f71200d587b2b1f63e5d79f671001c	decoy	bazaar	pdf	Receipt-2655-2413-4467 (2).pdf	genuine-looking ChatGPT receipt, no scam wording or links (verified 2026-10-18)
 1a904dd0a686ccedd7262d3a8e0bbc17f412708d1a8d829ffba29fdfc58f9d36	malicious	bazaar	pdf	boxguard-17195471227194954635-AutoBVF-D015-10158025-WEST-2025_1.pdf	
 205064af53c802ca95a0f902096c0e1f2684081b73c3f6e4005a1af9f778c6aa	malicious	bazaar	pdf	a26c10d9353e03961c3e5e1787ad5d2c.pdf	pdf,UKR
 20c938b4c690d1ec441a7ef56686bbdca2e4e0d7a6c6f0eff22e516d65109bb8	malicious	bazaar	pdf	20c938b4c690d1ec441a7ef56686bbdca2e4e0d7a6c6f0eff22e516d65109bb8	myftpupload-com,pdf
@@ -313,7 +313,7 @@ fc046d94184315b711c3c92b50cf56ae0c5a413a6e0287e08c71e33513bb9dec	malicious	bazaa
 250179b1e83c518c5ebbb55e6bfaf038eb69f1fb5c7358d57be4203d89d001a9	malicious	bazaar	pdf	invoice-1658768288.pdf	booking,bookinge-netlify-app,pdf,spam-ita
 26151e6df5ac089a79eecf4032e375e51d50b319ed671c1dadec522a945c9264	malicious	bazaar	pdf	26151e6df5ac089a79eecf4032e375e51d50b319ed671c1dadec522a945c9264.pdf	auth-booking-vercel-app,pdf
 2b104743dece000958832b3a66f49d2ccaeba3a56325ef32cf615c51cf2250a1	malicious	bazaar	pdf	osf.zip	APT35,osf-zip,pdf,zip
-2b708addd75ec3ca541895cd2c417fc216e84b42ca96f785a6d2deeb3e59af5f	malicious	bazaar	pdf	IR-20251002-120251009175156.pdf1	
+2b708addd75ec3ca541895cd2c417fc216e84b42ca96f785a6d2deeb3e59af5f	decoy	bazaar	pdf	IR-20251002-120251009175156.pdf1	blank page, no active content (verified from its rendered pages, 2026-10-18)
 2cb9671d54e85c9b732c29cfead3ffdf8aedac8eda8ab58813e97a148e05edd6	malicious	bazaar	pdf	2cb9671d54e85c9b732c29cfead3ffdf8aedac8eda8ab58813e97a148e05edd6.pdf	claude-update-version-com,pdf
 30c22eaa93689bf88ac176a088122a9bbfa590d98a1070535bbce172e889f669	malicious	bazaar	pdf	REMS_document.pdf	pass,pdf
 351e85e1d8c673cf0818705a986102ff76ef82ba0b11f8db2574b77ac1232552	malicious	bazaar	pdf	invoice-1658768288.pdf	booking,bookingc-netlify-app,pdf,spam-ita
@@ -322,25 +322,25 @@ fc046d94184315b711c3c92b50cf56ae0c5a413a6e0287e08c71e33513bb9dec	malicious	bazaa
 38ffa19cc2ce48316a74b2896076c1c711921e0d08372896ae8ea4af57811f1e	malicious	bazaar	pdf	issatam.pdf	pdf
 3afef6872b721b25349bd9083f46b61461c022eab3f46354ac92dff4a2a6b881	malicious	bazaar	pdf	jorge.mendez@sophia.com.mx.pdf	geofenced,malware,pdf
 3e0ad9ddf44a6382bb14050bdfb1721b6597d058c5ea7499f016a305dca0357e	malicious	bazaar	pdf	Request.pdf	datastorage-ds-click,pdf
-3f19cf0b1301a1be78a802b497617910e46c04b07898b86bdcb71f2f41a56617	malicious	bazaar	pdf	Loading Order FT2511103.pdf	Order-Driver GPS,pdf
+3f19cf0b1301a1be78a802b497617910e46c04b07898b86bdcb71f2f41a56617	decoy	bazaar	pdf	Loading Order FT2511103.pdf	cargo order form, no active content (verified from its rendered pages, 2026-10-18)
 41dbf613dcee7a04f45b051dcf493571469b00ab9db0c9305350505fb535e7e5	malicious	bazaar	pdf	file.pdf	pdf
-42fb220ff1e55fff0db074a14707cf423415472d722fc257421da6c5afbd76c9	malicious	bazaar	pdf	document1000290210.pdf	
-44a1c70ede23223c11219c6987b0be440a78922590c6fed87904109a82b971fa	malicious	bazaar	pdf	test_pdf.pdf	exe,pdf,test
-45ae2171df2bfeaba738e5bccf69f0c87297cb63e4c5b602255f201088335412	malicious	bazaar	pdf	download.pdf	pdf
+42fb220ff1e55fff0db074a14707cf423415472d722fc257421da6c5afbd76c9	decoy	bazaar	pdf	document1000290210.pdf	CV, text only (verified from its rendered pages, 2026-10-18)
+44a1c70ede23223c11219c6987b0be440a78922590c6fed87904109a82b971fa	decoy	bazaar	pdf	test_pdf.pdf	garbled text page, no active content (verified from its rendered pages, 2026-10-18)
+45ae2171df2bfeaba738e5bccf69f0c87297cb63e4c5b602255f201088335412	decoy	bazaar	pdf	download.pdf	certificate cover image only (verified from its rendered pages, 2026-10-18)
 47476f8794856949179cc2fa4c63ef7e27d3de9b0deb2808927d7ca7a8f6b8aa	malicious	bazaar	pdf	202590476503NF (1).pdf	mainPDF,pdf,SAIPEM,SPAM-ITA
 47b589605189793bba57129495dfa7367f79f9d6b366372386bb83ec991936a3	malicious	bazaar	pdf	invoice-1645080830.pdf	52-222-136-3,auth-booking-vercel-app,booking,pdf
 4cc06421248086d6b39b9af81bf78875a1ddad4b61d8acb1cb80f041baf598e4	malicious	bazaar	pdf	invoice-1637482117.pdf	185-196-9-212,account-bo0king-co,booking,pdf
-4cda3fbeaa4fc798f5911df4828151d026abf781cf0aed7fadac4fefa664b87d	malicious	bazaar	pdf	Credit appliaction.pdf	pdf
-4ecef53e8427827609cbf579de6bdddc9998bbd962502f613716aa0f49d09374	malicious	bazaar	pdf	INV 12928-Razer.pdf	pdf
+4cda3fbeaa4fc798f5911df4828151d026abf781cf0aed7fadac4fefa664b87d	decoy	bazaar	pdf	Credit appliaction.pdf	credit application form, no active content (verified from its rendered pages, 2026-10-18)
+4ecef53e8427827609cbf579de6bdddc9998bbd962502f613716aa0f49d09374	decoy	bazaar	pdf	INV 12928-Razer.pdf	invoice; QR to the Malaysian tax authority e-invoice site (verified from its rendered pages, 2026-10-18)
 4f9ac8583ee9a70206f9c4a4085665323087b68b44641883b6dbe76bd0d47b12	malicious	bazaar	pdf	38584c3730417841596b3164586f473649517031347a614936646b6f4f72483643735576764b5351	pdf
 5095c6478dbb7f167c637511536ddc9bdc60828cc7c323041c68a2918eb351e8	malicious	bazaar	pdf	consider(15).pdf	Gamaredon apt,gamaredon,pdf,pteranodon,Pterodo,vba
 5348a4476f38e590f7caf95d7335faa15103f6e6149e6ec7337edba4da89a65c	malicious	bazaar	pdf	CJSTINVA27558132__Quotation_Required-_(pwd=4145).pdf	pdf,pwd=4145,unknown-C2,xworm
 54077a5b15638e354fa02318623775b7a1cc0e8c21e59bcbab333035369e377f	malicious	bazaar	pdf	522cda0c18b410daa033dc66c48eb75a.pdf	188-214-34-20,CVE-2026-34621,pdf,pdf-zeroday
-5536ffc17b6821f6246a8bf1bab50bebd90cd657467e63679da127b00c2dc3cf	malicious	bazaar	pdf	Analitycs_12_June_RU.pdf	pdf,SpyMax android apk RAT
+5536ffc17b6821f6246a8bf1bab50bebd90cd657467e63679da127b00c2dc3cf	decoy	bazaar	pdf	Analitycs_12_June_RU.pdf	Russian analytics newsletter, no active content (verified from its rendered pages, 2026-10-18)
 5a2c5ecfaa6a582055f07fc292f602c39c59d5ae6bacf711acacc60f7ed3d8a6	malicious	bazaar	pdf	Bonifico_.pdf	135-136-141-43,alfredcore-com,pdf,spam-ita
 5aa7d6560aa450a8636dd5c8e8e066ccff2a4cdd9022c3c57cc829746387af0e	malicious	bazaar	pdf	Privatbank_04_06_2025_697556169.pdf	NetSupport 5-182-87-3,94-158-245-39,netsupport,pdf,pec-legal-it,UKR
-5b293f05ddfbcf4e70482350220f611e453873ab6017843a9e16f5245e172f43	malicious	bazaar	pdf	W2.pdf	candwfarmsinc-com,file-sharecloud-com,pdf
-5d3a6340691840d1a87bfab543faec77b4a9d457991dd938834de820a99685f7	malicious	bazaar	pdf	5d3a6340691840d1a87bfab543faec77b4a9d457991dd938834de820a99685f7.pdf	pdf,SkyCloak
+5b293f05ddfbcf4e70482350220f611e453873ab6017843a9e16f5245e172f43	decoy	bazaar	pdf	W2.pdf	tax form summary, no active content (verified from its rendered pages, 2026-10-18)
+5d3a6340691840d1a87bfab543faec77b4a9d457991dd938834de820a99685f7	decoy	bazaar	pdf	5d3a6340691840d1a87bfab543faec77b4a9d457991dd938834de820a99685f7.pdf	scanned Russian letter, image only (verified from its rendered pages, 2026-10-18)
 5e04528161c66e8c0ef5661b6e0402c8476642dee59db8ca4c2ad2865f2b653e	decoy	bazaar	pdf	file	decoy PDF dropped by Remcos: text+images only (verified 2026-10-17)
 5f5aa2aaf7c38331ac90dd06e2bbf0a9603edfac51a98084d671f569cb218b99	malicious	bazaar	pdf	aaa.pdf	pdf
 61796532bc900a9f4ee9e27680693cfc8f8783d0e2f97db50d0b240a94803253	malicious	bazaar	pdf	rapport.pdf	pdf
@@ -350,29 +350,29 @@ fc046d94184315b711c3c92b50cf56ae0c5a413a6e0287e08c71e33513bb9dec	malicious	bazaa
 65dca34b04416f9a113f09718cbe51e11fd58e7287b7863e37f393ed4d25dde7	malicious	bazaar	pdf	1929da3ef904efb8c940679045452321.pdf	169-40-2-68,CVE-2026-34621,pdf,pdf-zeroday
 6648302d497ee2364d3b10d0bebd1c30cedf649117a682754aebd35761a5d2ff	malicious	bazaar	pdf	6648302d497ee2364d3b10d0bebd1c30cedf649117a682754aebd35761a5d2ff.pdf	APT42,pdf
 693ea9f0837c9e0c0413da6198b6316a6ca6dfd9f4d3db71664d2270a65bcf38	malicious	bazaar	pdf	offsec-certified-professional.pdf	pdf
-6f267fbd4ac2ec09001acf5f05bf771f2aec57a3b9fa446754dc88a9c13fb5d5	malicious	bazaar	pdf	6f267fbd4ac2ec09001acf5f05bf771f2aec57a3b9fa446754dc88a9c13fb5d5.bin	
+6f267fbd4ac2ec09001acf5f05bf771f2aec57a3b9fa446754dc88a9c13fb5d5	decoy	bazaar	pdf	6f267fbd4ac2ec09001acf5f05bf771f2aec57a3b9fa446754dc88a9c13fb5d5.bin	invoice, no active content (verified from its rendered pages, 2026-10-18)
 6fb770924c7dea4b2392f523ba8969abdf17624f10911772eb54e338e71aaea6	malicious	bazaar	pdf	0001-59_71318.pdf	pdf
 73736cacc7f640250c04c9c91621e19cf0742c73ab145858a3defd3fca4f4ab1	malicious	bazaar	pdf	Info_Multa.pdf	pdf
 7f7a4c18cdac9ae3f082e57c32d022d5450c1d0c6eac59e068db2c26477c1848	malicious	bazaar	pdf	7f7a4c18cdac9ae3f082e57c32d022d5450c1d0c6eac59e068db2c26477c1848	myftpupload-com,pdf
-81ec61a49b5fcc4e696974798b5e0d3582a297e9c6beaf95d56839b514e064f5	malicious	bazaar	pdf	dokumen.pub_data-science-from-scratch-first-principles-with-python-2nbsped-14920	pdf
+81ec61a49b5fcc4e696974798b5e0d3582a297e9c6beaf95d56839b514e064f5	decoy	bazaar	pdf	dokumen.pub_data-science-from-scratch-first-principles-with-python-2nbsped-14920	O'Reilly book excerpt (verified from its rendered pages, 2026-10-18)
 82bb90e27bfa33e74e9f0f4871e2ef16799a71f07d038d4a7ec7e82ff132cc40	decoy	bazaar	pdf	PURCHASE-RFQ-SC5681.pdf	lure PDF, text/images/fonts only (verified 2026-10-17)
 88c86e57c23bb7f7b8f4ba71837b49fa92cb1c1d1f1f7758ee8a145c554ea795	malicious	bazaar	pdf	Booking13763.pdf	144-172-122-69,booking,fnvimoyvwkbxbmczlqus-supabase-co,pdf
 8aae82dfe337761e498f8509c66b54f7ffb59896606869739f22f6b8a07ab64c	malicious	bazaar	pdf	8aae82dfe337761e498f8509c66b54f7ffb59896606869739f22f6b8a07ab64c.pdf	104-249-10-197,ClickFix,kak-is,latam,oficiospolicia-com,pdf,sg.plantaalagoas-al-gov-br,xx-kak-is
 8d42d425d003480d1acc9082e51cb7a2007208ebef715493836b6afec9ce91bc	malicious	bazaar	pdf	Comprovante-Mercado-Pago-26-05-2025-93433219156 (1).pdf	158-69-41-120,javascriptplugin-lovestoblog-com,pdf
 91183972e908c013504d12d00c45f8576d733353c1c5274ebbd1c7c2e741f164	malicious	bazaar	pdf	NF_14072025.pdf	pdf
-928ce32da30de4ba7d6eb77f3f3a09fc53f37f2751dfdc2a038a2c6a6a727035	malicious	bazaar	pdf	LECTURE 7-1.pdf	pdf
-93bbdfa059fad55c9706ba28a0cc7d98939aec5aa9c18105e458e0d831448930	malicious	bazaar	pdf	1734407608765.pdf	pdf
-94d3834175adc7704516dbbf3a0baaf89ab4d07f656a55111bcfb0fb73768f9d	malicious	bazaar	pdf	security-overview (1).pdf	
+928ce32da30de4ba7d6eb77f3f3a09fc53f37f2751dfdc2a038a2c6a6a727035	decoy	bazaar	pdf	LECTURE 7-1.pdf	university lecture slides (verified from its rendered pages, 2026-10-18)
+93bbdfa059fad55c9706ba28a0cc7d98939aec5aa9c18105e458e0d831448930	decoy	bazaar	pdf	1734407608765.pdf	single picture, no active content (verified from its rendered pages, 2026-10-18)
+94d3834175adc7704516dbbf3a0baaf89ab4d07f656a55111bcfb0fb73768f9d	decoy	bazaar	pdf	security-overview (1).pdf	security report printout (verified from its rendered pages, 2026-10-18)
 9645d1974020b793786685f8f96603060c5699a75615a4da471ac10fa9db882b	malicious	bazaar	pdf	9645d1974020b793786685f8f96603060c5699a75615a4da471ac10fa9db882b.pdf	147-124-222-89,pdf
 9ab20ec2ce6e78ca129ebfd4e0d1e844de1b03c7fbac9ea9a681d0dd6383029d	malicious	bazaar	pdf	Accelya NDC SPRK.pdf	ConnectWise 51-89-204-89,ConnectWise,pdf,ScreenConnect
 9b14d367c99b7d9187a58406ad3eb55e2dee12b4b2bc341f9058c622b7b87fa3	malicious	bazaar	pdf	journal.pdf	Gamaredon apt,gamaredon,pdf,pteranodon
 9de83df25771c7e960da425a66db55f4d668b7af5ad89faf52d0f317dc3b0126	malicious	bazaar	pdf	BE POSITIVE RAZER_RTO_IV_2603-0001.pdf	pdf
 9f4e98d10a0951edaa4f4061b06cf3ff0ca87af4cd417fdb5a59e5dcad5ee0d0	malicious	bazaar	pdf	9f4e98d10a0951edaa4f4061b06cf3ff0ca87af4cd417fdb5a59e5dcad5ee0d0	myftpupload-com,pdf
-9fc5dd07289e10a3437f63a8579bf7f96e0c950e8ce8cdcbd87e37740c341d96	malicious	bazaar	pdf	電子支付機構資訊系統標準及安全控管作業基準辦法1040427.PDF	pdf
+9fc5dd07289e10a3437f63a8579bf7f96e0c950e8ce8cdcbd87e37740c341d96	decoy	bazaar	pdf	電子支付機構資訊系統標準及安全控管作業基準辦法1040427.PDF	Chinese regulation text (verified from its rendered pages, 2026-10-18)
 a23bd8eab005a0c7759ffa344b55a3e1fd83a871817d51621c97eee0b511b3da	malicious	bazaar	pdf	a23bd8eab005a0c7759ffa344b55a3e1fd83a871817d51621c97eee0b511b3da.pdf	pdf,refundonex-com
 a54d2448c10f63a4949e0f5ae4430cf60e2f13b543e2cf6bdd052a99f8fec461	malicious	bazaar	pdf	mlq8jlxw6o.vbs	croci-group-com,pdf,vbs
 a883f8cd353f5e839662f06b058911a6adab40d9e066b12c2e16e41f470e2b12	malicious	bazaar	pdf	Zaipit_nbu.gov.ua_12_06_2025_0828420019.pdf	pdf,UKR
-a99903938bf242ea6465865117561ba950bd12a82f41b8eeae108f4f3d74b5d1	malicious	bazaar	pdf	a99903938bf242ea6465865117561ba950bd12a82f41b8eeae108f4f3d74b5d1.pdf	pdf,RomCom
+a99903938bf242ea6465865117561ba950bd12a82f41b8eeae108f4f3d74b5d1	decoy	bazaar	pdf	a99903938bf242ea6465865117561ba950bd12a82f41b8eeae108f4f3d74b5d1.pdf	lab report, no active content (verified from its rendered pages, 2026-10-18)
 aaccc15f1d3d50989b85bdfc037b4bb440b69880ad4856565225c4bebb8c3319	malicious	bazaar	pdf	Statment#.pdf	pdf
 ad32afe426639f17e949d2736685f5d21bd8f6c57e658d345a68d535b98b021b	malicious	bazaar	pdf	Форми_обліку_і_подання_інформації_755776693.pdf	pdf,UKR
 b046d04b61f3ebfd9410c8b4f365118e29470fb6c54529c2425f553eb6364d8e	malicious	bazaar	pdf	Facebook Account Recovery Support Center 2026.pdf	pdf,phishing
@@ -383,21 +383,21 @@ b87caf1be3de637e3e0a11b18d34ffeda7ef46f44e43d77f39c99c60772f9b42	malicious	bazaa
 b943774f76d17c86097b22aea84201788037eaeeef222c8a647fe98e795cf8af	malicious	bazaar	pdf	RESOCONTO INSOLUTI al 31102025 - ATTENZIONE IBAN.pdf	147-124-222-89,blackhawk,formbook,pdf,SPAM-ITA
 ba2544359bccdb568da3816e39faff9e7697a6828192eb4f22eb266ee6f05c0a	malicious	bazaar	pdf	ba2544359bccdb568da3816e39faff9e7697a6828192eb4f22eb266ee6f05c0a	myftpupload-com,pdf
 bd5bad8ae151d32347eb6b06ee28f8a1ba6e1f80cd966ecb0f8fd23a7ee10b46	malicious	bazaar	pdf	Migration NIC Services to Gov mgovcloud urgent (1).pdf	APT36,pdf
-bf724f5f19df9b2fdb0f45a79b6d9a88e8acf02843465ce891c6a4ad6c8d47a6	malicious	bazaar	pdf	pp.pdf	pdf,telem3try-oooppppqqq9999-com
-c3106f5489c1b841efdc193587b79e9f434f2410e851971f3539b9a043ed1ef3	malicious	bazaar	pdf	Sliver C2 Leveraged by Many Threat Actors.pdf	
-d0552d4acdd6f0df66e3217e8fd685b69011f8ec4ffb4b57a884f97436002706	malicious	bazaar	pdf	SEI_08008.000125_2025_38.pdf	pdf
-d366b6723d9dff261a1c6e86de424fa3b4b1266638435139ebcd0e7dc24325c1	malicious	bazaar	pdf	42b93aa3414ba3b61c82f13a4f612916.pdf	pdf
+bf724f5f19df9b2fdb0f45a79b6d9a88e8acf02843465ce891c6a4ad6c8d47a6	decoy	bazaar	pdf	pp.pdf	Dubai Trakheesi user guide (verified from its rendered pages, 2026-10-18)
+c3106f5489c1b841efdc193587b79e9f434f2410e851971f3539b9a043ed1ef3	decoy	bazaar	pdf	Sliver C2 Leveraged by Many Threat Actors.pdf	printout of a security blog post (verified from its rendered pages, 2026-10-18)
+d0552d4acdd6f0df66e3217e8fd685b69011f8ec4ffb4b57a884f97436002706	decoy	bazaar	pdf	SEI_08008.000125_2025_38.pdf	Brazilian ministry letter; QR to the official sei.mj.gov.br (verified from its rendered pages, 2026-10-18)
+d366b6723d9dff261a1c6e86de424fa3b4b1266638435139ebcd0e7dc24325c1	decoy	bazaar	pdf	42b93aa3414ba3b61c82f13a4f612916.pdf	form, no active content (verified from its rendered pages, 2026-10-18)
 d403943529699c8bfbcaa4bbafabd2b190419032cafac01a89783bae5e1da86e	malicious	bazaar	pdf	Volume iii - ALL Tender Documents - SMART HEIGHTS Constructions Project.pdf	pdf
 d67e62bb3ebf9f27dfb8fbd20f88748bb898f5a70265b386a64cb92fafefe0d5	malicious	bazaar	pdf	virud.pdf	pdf
 d75d839aee53a5afeaf7fdd8db7f8e2b828042c9ca058cd280f8a509e0776b46	malicious	bazaar	pdf	invoice-1645080830.pdf	accounts-bookings-vercel-app,booking,pdf
 e0811ee751c5f982bc5b59f5babfd996a818280f4f5522256829745ddc245be8	malicious	bazaar	pdf	Scam_Alert_Brazilian_Fraudster_“Goiano”_Deceives_Victims_with_Fake.pdf	pdf
 e2b75baeb7ed21fb8f27984f941286770d1c3c0b60fce8d7fa5b167bd24ba6dc	malicious	bazaar	pdf	Shui Wu Chou Cha She Shui Qi Ye Ming Dan .pdf	ValleyRAT 9010-360sdgg-com,pdf,SilverFox,ValleyRAT
-e75908c595d6615e7cd0408e898a18a697698f177f811e7281085f65c18ac09d	malicious	bazaar	pdf	boxguard_1914399949387_Lorem_ipsum (1).pdf	
+e75908c595d6615e7cd0408e898a18a697698f177f811e7281085f65c18ac09d	decoy	bazaar	pdf	boxguard_1914399949387_Lorem_ipsum (1).pdf	Lorem ipsum test PDF (verified from its rendered pages, 2026-10-18)
 ed5bb65de7d60c27998db485433f8ad9756f69abee7e949c60a9e8b6bd2d9e05	malicious	bazaar	pdf	facture.pdf	pdf
 ef6dff9b48f9cc08ab6325b728e40f0444a9d1650d228a770105d601cc66c253	malicious	bazaar	pdf	invoice-1619232149.pdf	booking,bookinq-netlify-app,pdf
 ef85bfb534a2d679261902aab71e24dde3c5c9b7950e300dd0df298dfddddc02	malicious	bazaar	pdf	invoice-1645080830.pdf	bociking-netlify-app,booking,pdf,spam-ita
 f077cc7061c6c9f0c280ec6507a74b00887f1ebe1047d58ddd0160f7de4fc70c	malicious	bazaar	pdf	Payroll_statement.pdf.pdf	
-fb87d8a7807626279bae04d56ba01ce1401917f6b0e7a74a335208a940221ddd	malicious	bazaar	pdf	VETTECH, LLC (a MDW & Vali Joint Venture)_Tecolote Research, Inc._25-26 GL Auto 	pdf
+fb87d8a7807626279bae04d56ba01ce1401917f6b0e7a74a335208a940221ddd	decoy	bazaar	pdf	VETTECH, LLC (a MDW & Vali Joint Venture)_Tecolote Research, Inc._25-26 GL Auto 	insurance certificate, no active content (verified from its rendered pages, 2026-10-18)
 fc31dfb6b521c5cce4a13c61fe86547d12bfeb75cc8466283dfccb74250734b0	malicious	bazaar	pdf	Document.online_платіжна_інструкція_АТ_СКАЙ_БАНК_від_07.11.2025_1786607896.pdf	pdf,strongwolfthorn-fun,UKR
 0184c67586de41cf8c9cd3227da74123fbfab4b9b8bb76a8059d550c156e37ef	decoy	bazaar	ppt	A_FAREWELL_LETTER.PPS	2007 chain-letter .pps, no macros/actions (verified 2026-10-18)
 01b26e22693027767a71cac2a64d6947879d1012eebc8cb3082bedd92ca323bc	malicious	bazaar	ppt	SecuriteInfo.com.VBA.Logan.3190.17619.20483	ppt

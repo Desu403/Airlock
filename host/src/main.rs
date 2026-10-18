@@ -56,6 +56,22 @@ fn run() -> Result<()> {
         "doctor" => doctor(),
         "livecheck" => livecheck(&read_doc(&input.unwrap_or_else(|| usage()))?),
         "containment" => containment(&read_doc(&input.unwrap_or_else(|| usage()))?),
+        // Developer aid: the (sanitised) text of the first pages, read in a VM.
+        "text" => {
+            let mut s = live::LiveSession::open(&read_doc(&input.unwrap_or_else(|| usage()))?)?;
+            let (mut stats, mut all) = (std::collections::BTreeMap::<String, u64>::new(), String::new());
+            for p in 0..s.pages.len().min(3) as u32 {
+                let t = s.text(p)?;
+                println!("--- page {} ---\n{t}", p + 1);
+                all.push_str(&t);
+                for (k, v) in s.text_stats(p)? {
+                    *stats.entry(k).or_default() += v;
+                }
+            }
+            println!("--- AI-text hints ---\n{:?}\n{}", stats, serde_json::to_string_pretty(&airlock_core::aitext::analyze(&stats, &all).to_json())?);
+            s.close();
+            Ok(())
+        }
         "selftest" => selftest(out_dir.unwrap_or_else(|| PathBuf::from("selftest.airlock")), verbose),
         _ => usage(),
     }

@@ -45,7 +45,9 @@ pub fn detect(doc: &[u8]) -> Option<Kind> {
             // like this): nothing to show, but everything to check.
             Kind::Office("doc")
         } else {
-            return None;
+            // Any other OLE file can still carry objects (browser controls,
+            // formulas, links): checked, even if there is nothing to show.
+            Kind::Office("doc")
         });
     }
     if doc.starts_with(b"PK\x03\x04") {

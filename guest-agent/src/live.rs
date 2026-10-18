@@ -221,6 +221,33 @@ fn hostile_test(out: &mut File) {
     }
 }
 
+/// Counts of characters AI chat tools tend to leave in pasted text, most of
+/// which the host's text sanitiser removes (so they are counted here): zero-
+/// width characters, special spaces, typographic dashes and quotes, private-
+/// use citation markers, and leftover citation tokens. Numbers only.
+fn text_stats(t: &str) -> String {
+    let count = |f: &dyn Fn(char) -> bool| t.chars().filter(|c| f(*c)).count();
+    let lower = t.to_lowercase();
+    let tokens = ["oaicite", "contentreference", "turn0search", "turn0news", "turn1search", "turn0view", "citeturn", "filecite"].iter().map(|k| lower.matches(k).count()).sum::<usize>();
+    format!(
+        "chars={} words={} zw={} nnbsp={} nbsp={} thin={} emdash={} endash={} curly={} ellipsis={} bidi={} pua={} brackets={} cite={}",
+        t.chars().count(),
+        t.split_whitespace().count(),
+        count(&|c| matches!(c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}' | '\u{180E}')),
+        count(&|c| c == '\u{202F}'),
+        count(&|c| c == '\u{00A0}'),
+        count(&|c| matches!(c, '\u{2009}' | '\u{200A}' | '\u{2007}' | '\u{2008}')),
+        count(&|c| c == '\u{2014}'),
+        count(&|c| c == '\u{2013}'),
+        count(&|c| matches!(c, '\u{2018}' | '\u{2019}' | '\u{201C}' | '\u{201D}')),
+        count(&|c| c == '\u{2026}'),
+        count(&|c| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')),
+        count(&|c| matches!(c, '\u{E000}'..='\u{F8FF}')),
+        count(&|c| matches!(c, '\u{3010}' | '\u{3011}')),
+        tokens,
+    )
+}
+
 pub fn serve(mut out: File, pdf: &str) -> ! {
     let pages = load_pages(pdf, &mut out);
     let _ = send(&mut out, Kind::Hello, pages.len() as u32, 0, 0, &[]);
@@ -277,6 +304,11 @@ pub fn serve(mut out: File, pdf: &str) -> ! {
                 let Some(p) = pages.get(h.a as usize) else { continue };
                 let text = capped(p.chars.iter().map(|(c, _)| *c).collect());
                 let _ = send(&mut out, Kind::PageText, h.a, 0, 0, text.as_bytes());
+            }
+            Cmd::TextStats => {
+                let Some(p) = pages.get(h.a as usize) else { continue };
+                let text: String = p.chars.iter().map(|(c, _)| *c).collect();
+                let _ = send(&mut out, Kind::PageText, h.a, 0, 0, text_stats(&text).as_bytes());
             }
             Cmd::GetLayout => {
                 let Some(p) = pages.get(h.a as usize) else { continue };

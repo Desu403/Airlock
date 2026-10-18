@@ -1197,6 +1197,14 @@ async function runDemo() {
     if (cmd === "palette") { openPalette(); $("pal-q").value = arg || ""; renderPalette(); }
     if (cmd === "thumbs") setThumbs(true);
     if (cmd === "peek") showPeek();
+    if (cmd === "peektrace") {
+      // Test aid: the card's opacity on each drawn frame while it opens.
+      const seen = [];
+      showPeek();
+      seen.push(Number(getComputedStyle($("peek")).opacity).toFixed(2));
+      for (let k = 0; k < 10; k++) { await new Promise((r) => requestAnimationFrame(r)); seen.push(Number(getComputedStyle($("peek")).opacity).toFixed(2)); }
+      status(`peek opacity per frame: ${seen.join(" ")}`);
+    }
     if (cmd === "czoom") { const b = $("viewer").getBoundingClientRect(); $("viewer").dispatchEvent(new WheelEvent("wheel", { deltaY: Number(arg), ctrlKey: true, clientX: b.left + b.width / 2, clientY: b.top + 200, bubbles: true, cancelable: true })); }
     if (cmd === "theme") { setPref("airlock.theme", arg); applyTheme(); }
     if (cmd === "background") { setPref("airlock.background", arg); applyTheme(); }
@@ -2236,11 +2244,15 @@ setInterval(renderTelemetry, 1000);
 
 // ---------------------------------------------------------------- badge summary
 // Hovering the result badge shows the top findings without opening a panel.
+// The card always exists and is only made transparent: showing it never
+// creates a new layer, so it cannot be painted once before its fade-in.
 let peekTimer = null, peekHide = null;
+const peekIsOpen = () => $("peek").classList.contains("open");
+function closePeek() { $("peek").classList.remove("open"); }
 function showPeek() {
   const r = check.report;
   if (!r || check.running || check.attacked) return;
-  if (!$("peek").hidden) return; // already open: no rebuild, no re-animation
+  if (peekIsOpen()) return; // already open: no rebuild
   const order = { high: 0, medium: 1, low: 2, info: 3 };
   const top = (r.findings || []).filter((f) => f.severity !== "info").sort((a, b) => order[a.severity] - order[b.severity]);
   const seen = new Set();
@@ -2258,20 +2270,30 @@ function showPeek() {
   const b = $("check").getBoundingClientRect();
   p.style.left = `${Math.max(8, Math.min(window.innerWidth - 340, b.left))}px`;
   p.style.top = `${b.bottom + 8}px`;
-  p.hidden = false;
+  p.classList.add("open");
 }
-// Pointer events can leave and re-enter within a frame while moving over the
-// badge's parts: a short grace period keeps the card steady.
-$("check").addEventListener("pointerenter", () => {
-  clearTimeout(peekHide);
-  if ($("peek").hidden) { clearTimeout(peekTimer); peekTimer = setTimeout(showPeek, 220); }
-});
-$("check").addEventListener("pointerleave", () => {
-  clearTimeout(peekTimer);
-  clearTimeout(peekHide);
-  peekHide = setTimeout(() => { $("peek").hidden = true; }, 140);
-});
-$("check").addEventListener("click", () => { clearTimeout(peekTimer); $("peek").hidden = true; });
+// Open and close by where the pointer is, not by enter/leave events (some
+// systems send those repeatedly while the pointer moves over the badge):
+// over the badge for a moment opens the card; it stays while the pointer is
+// on the badge or the card, and closes shortly after it is elsewhere.
+function overRect(r, x, y, pad) { return x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad; }
+document.addEventListener("pointermove", (e) => {
+  const badge = $("check");
+  if (badge.hidden) return;
+  const onBadge = overRect(badge.getBoundingClientRect(), e.clientX, e.clientY, 2);
+  const onCard = peekIsOpen() && overRect($("peek").getBoundingClientRect(), e.clientX, e.clientY, 6);
+  if (onBadge || onCard) {
+    clearTimeout(peekHide);
+    peekHide = null;
+    if (!peekIsOpen() && !peekTimer) peekTimer = setTimeout(() => { peekTimer = null; showPeek(); }, 220);
+  } else {
+    clearTimeout(peekTimer);
+    peekTimer = null;
+    if (peekIsOpen() && !peekHide) peekHide = setTimeout(() => { peekHide = null; closePeek(); }, 160);
+  }
+}, { passive: true });
+document.addEventListener("pointerleave", () => { clearTimeout(peekTimer); peekTimer = null; closePeek(); });
+$("check").addEventListener("click", () => { clearTimeout(peekTimer); peekTimer = null; closePeek(); });
 
 // ---------------------------------------------------------------- opening
 // Hook into document setup: session clock, thumbnails, sealing transition.

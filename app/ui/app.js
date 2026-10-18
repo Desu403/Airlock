@@ -202,6 +202,7 @@ function setupDocument(info) {
   state.queue = [];
   state.findings = null;
   state.aiHints = null;
+  state.textCache = [];
   state.docOpen = true;
   $("banner").hidden = true;
   $("qcount").textContent = "";
@@ -511,47 +512,172 @@ function stepHit(dir) {
 // ---------------------------------------------------------------- panels
 
 function openPanel(title) {
+  textSync.open = false;
   $("panel-title").textContent = title;
   $("panel").hidden = false;
   if (state.fitMode) fitWidth();
   return $("panel-body");
 }
 
+// The side panel's left edge can be dragged; the width is remembered and a
+// double-click goes back to the default (CSS: min(440px, 45vw)).
+function applyPanelWidth() {
+  const w = Number(pref("airlock.panelWidth", "0"));
+  const max = Math.max(320, window.innerWidth * 0.75);
+  // Narrow windows: the panel covers the pages (CSS), no custom width.
+  $("panel").style.width = w && window.innerWidth > 860 ? `${Math.min(max, Math.max(280, w))}px` : "";
+}
+{
+  const grip = $("panel-resize");
+  let drag = null;
+  grip.addEventListener("pointerdown", (e) => {
+    drag = { x: e.clientX, w: $("panel").getBoundingClientRect().width };
+    grip.setPointerCapture(e.pointerId);
+    document.body.classList.add("resizing");
+    e.preventDefault();
+  });
+  grip.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const max = Math.max(320, window.innerWidth * 0.75);
+    $("panel").style.width = `${Math.min(max, Math.max(280, drag.w + drag.x - e.clientX))}px`;
+  });
+  const end = () => {
+    if (!drag) return;
+    drag = null;
+    document.body.classList.remove("resizing");
+    setPref("airlock.panelWidth", String(Math.round($("panel").getBoundingClientRect().width)));
+    if (state.fitMode && state.docOpen) fitWidth();
+  };
+  grip.addEventListener("pointerup", end);
+  grip.addEventListener("pointercancel", end);
+  grip.addEventListener("dblclick", () => {
+    setPref("airlock.panelWidth", "0");
+    applyPanelWidth();
+    if (state.fitMode && state.docOpen) fitWidth();
+  });
+  window.addEventListener("resize", applyPanelWidth);
+  applyPanelWidth();
+}
+
 function closePanel() {
+  textSync.open = false;
   $("panel").hidden = true;
   $("panel-body").replaceChildren();
   if (state.fitMode && state.docOpen) fitWidth();
 }
 
-async function showText() {
-  const page = currentPage();
-  const body = openPanel(`Text · page ${page + 1}`);
-  body.replaceChildren(el("p", "note", "Extracting inside the VM…"));
-  try {
-    const text = await invoke("page_text", { page });
-    const copy = el("button", "", "Copy");
-    const row = el("div", "row");
-    row.append(copy, el("span", "note", "Extracted inside the VM; control and bidi-override characters removed."));
-    const pre = el("pre", "", text || "(no text on this page — it may be a scanned image)");
-    copy.onclick = async () => {
-      try { await navigator.clipboard.writeText(text); copy.textContent = "Copied"; }
-      catch { const r = document.createRange(); r.selectNodeContents(pre); getSelection().removeAllRanges(); getSelection().addRange(r); copy.textContent = "Selected — press Ctrl+C"; }
-    };
-    // Optional: hints that the text came from an AI chat tool (off by default).
-    const ai = el("label", "check");
-    const box = el("input");
-    box.type = "checkbox";
-    box.checked = pref("airlock.aiHints", "0") === "1";
-    ai.append(box, el("span", "", "Check for AI-written text"));
-    ai.title = "Looks for characters and leftovers that AI chat tools put into pasted text, and stock phrasing. Hints, not proof.";
-    const aiOut = el("div", "ai-hints");
-    box.onchange = () => { setPref("airlock.aiHints", box.checked ? "1" : "0"); showAiHints(aiOut, box.checked); };
-    body.replaceChildren(row, ai, aiOut, pre);
-    showAiHints(aiOut, box.checked);
-  } catch (e) {
-    body.replaceChildren(el("p", "note", `Could not extract text: ${e}`));
-  }
+// The whole document's text, page by page, scrolling together with the
+// pages: scrolling either side moves the other to the same place (by the
+// same fraction through the page). Pages are extracted in the VM as they
+// come into view, and cached per document.
+const textSync = { open: false, driver: null, until: 0, observer: null };
+function pageText(i) {
+  state.textCache ||= [];
+  state.textCache[i] ||= invoke("page_text", { page: i }).catch((e) => { state.textCache[i] = null; throw e; });
+  return state.textCache[i];
 }
+async function showText() {
+  const body = openPanel("Text");
+  textSync.open = true;
+  const copy = el("button", "", "Copy all");
+  const row = el("div", "row");
+  row.append(copy, el("span", "note", "Extracted inside the VM; control and bidi-override characters removed."));
+  // Optional: hints that the text came from an AI chat tool (off by default).
+  const ai = el("label", "check");
+  const box = el("input");
+  box.type = "checkbox";
+  box.checked = pref("airlock.aiHints", "0") === "1";
+  ai.append(box, el("span", "", "Check for AI-written text"));
+  ai.title = "Looks for characters and leftovers that AI chat tools put into pasted text, and stock phrasing. Hints, not proof.";
+  const aiOut = el("div", "ai-hints");
+  box.onchange = () => { setPref("airlock.aiHints", box.checked ? "1" : "0"); showAiHints(aiOut, box.checked); };
+  const doc = el("div", "text-doc");
+  const sections = state.pages.map((_, i) => {
+    const sec = el("section", "tpage");
+    sec.dataset.index = String(i);
+    const pre = el("pre", "pending", "…");
+    sec.append(el("h3", "", `Page ${i + 1}`), pre);
+    doc.append(sec);
+    return sec;
+  });
+  body.replaceChildren(row, ai, aiOut, doc);
+  showAiHints(aiOut, box.checked);
+
+  const fill = async (i) => {
+    const sec = sections[i];
+    if (!sec || sec.dataset.loaded) return;
+    sec.dataset.loaded = "1";
+    const pre = sec.querySelector("pre");
+    try {
+      const text = await pageText(i);
+      pre.textContent = text || "(no text on this page — it may be a scanned image)";
+      pre.className = text ? "" : "empty";
+    } catch (e) {
+      pre.textContent = `Could not extract text: ${e}`;
+      pre.className = "empty";
+      delete sec.dataset.loaded;
+    }
+    // Heights changed: keep the panel aligned with the pages.
+    if (textSync.driver !== "panel") syncPanelToViewer();
+  };
+  if (textSync.observer) textSync.observer.disconnect();
+  textSync.observer = new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) fill(Number(e.target.dataset.index));
+  }, { root: body, rootMargin: "400px 0px" });
+  sections.forEach((sec) => textSync.observer.observe(sec));
+  const here = currentPage();
+  await fill(here);
+  syncPanelToViewer(true);
+
+  copy.onclick = async () => {
+    copy.disabled = true;
+    const parts = [];
+    for (let i = 0; i < state.pages.length; i++) {
+      copy.textContent = `Reading page ${i + 1} of ${state.pages.length}…`;
+      try { parts.push(`--- Page ${i + 1} ---\n${await pageText(i)}`); } catch { parts.push(`--- Page ${i + 1} ---\n(could not extract)`); }
+    }
+    const all = parts.join("\n\n");
+    try { await navigator.clipboard.writeText(all); copy.textContent = "Copied"; }
+    catch { const r = document.createRange(); r.selectNodeContents(doc); getSelection().removeAllRanges(); getSelection().addRange(r); copy.textContent = "Selected — press Ctrl+C"; }
+    copy.disabled = false;
+  };
+}
+
+// Position of a section/page inside its scroll container.
+const offsetIn = (node, box) => node.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+function syncPanelToViewer(force = false) {
+  if (!textSync.open || (!force && textSync.driver === "panel" && Date.now() < textSync.until)) return;
+  const viewer = $("viewer"), body = $("panel-body");
+  const i = currentPage(), page = state.pages[i];
+  const sec = body.querySelector(`.tpage[data-index="${i}"]`);
+  if (!page || !sec) return;
+  // Both sides line up at a reading line a third of the way down.
+  const f = Math.min(1, Math.max(0, (viewer.scrollTop + viewer.clientHeight / 3 - page.el.offsetTop) / page.el.offsetHeight));
+  textSync.driver = "viewer";
+  textSync.until = Date.now() + 250;
+  body.scrollTop = offsetIn(sec, body) + f * sec.offsetHeight - body.clientHeight / 3;
+  for (const s of body.querySelectorAll(".tpage.current")) s.classList.remove("current");
+  sec.classList.add("current");
+}
+function syncViewerToPanel() {
+  if (!textSync.open || (textSync.driver === "viewer" && Date.now() < textSync.until)) return;
+  const viewer = $("viewer"), body = $("panel-body");
+  const line = body.scrollTop + body.clientHeight / 3;
+  let sec = null;
+  for (const s of body.querySelectorAll(".tpage")) {
+    if (offsetIn(s, body) <= line) sec = s; else break;
+  }
+  if (!sec) return;
+  const page = state.pages[Number(sec.dataset.index)];
+  const f = Math.min(1, Math.max(0, (line - offsetIn(sec, body)) / sec.offsetHeight));
+  textSync.driver = "panel";
+  textSync.until = Date.now() + 250;
+  viewer.scrollTop = page.el.offsetTop + f * page.el.offsetHeight - viewer.clientHeight / 3;
+  for (const s of body.querySelectorAll(".tpage.current")) s.classList.remove("current");
+  sec.classList.add("current");
+}
+$("viewer").addEventListener("scroll", () => syncPanelToViewer(), { passive: true });
+$("panel-body").addEventListener("scroll", () => syncViewerToPanel(), { passive: true });
 
 // One check per opened document, cached; shown in the Text panel.
 async function showAiHints(out, on) {
@@ -638,6 +764,20 @@ function renderReport(body, report, title) {
     nodes.push(d);
   }
   if (!report.findings.length) nodes.push(el("p", "note", "No findings."));
+  // Step by step, with timings: proof that each VM ran and was destroyed.
+  if (report.log && report.log.length) {
+    const d = el("details", "runlog");
+    d.append(el("summary", "", `Analysis log · ${report.log.length} steps · nothing ran on your computer`));
+    const screen = el("div", "console-log");
+    for (const [t, line] of report.log) {
+      const row = el("div", "ln");
+      row.append(el("span", "t", `${Number(t).toFixed(1).padStart(5)}s`), document.createTextNode(` ${line}`));
+      if (/crash|killed|broke|stopped answering/i.test(line)) row.classList.add("warn");
+      screen.append(row);
+    }
+    d.append(screen);
+    nodes.push(d);
+  }
   body.replaceChildren(...nodes);
 }
 
@@ -1003,6 +1143,11 @@ async function runDemo() {
     if (cmd === "sheets") { setPref("airlock.sheetSingle", arg === "single" ? "1" : "0"); showSheetLayout(); await invoke("set_sheet_layout", { single: arg === "single" }); await reopenDocument(); }
     if (cmd === "tour") { startTour(); tourShow(Number(arg) || 0); }
     if (cmd === "wait") await new Promise((r) => setTimeout(r, Number(arg) || 0));
+    if (cmd === "scroll") $("viewer").scrollTop = Number(arg) || 0;
+    if (cmd === "tscroll") $("panel-body").scrollTop = Number(arg) || 0;
+    if (cmd === "settings") await showSettings();
+    if (cmd === "theme") { setPref("airlock.theme", arg); applyTheme(); }
+    if (cmd === "panelw") { setPref("airlock.panelWidth", arg); applyPanelWidth(); if (state.fitMode) fitWidth(); }
     if (cmd === "text") await showText();
     if (cmd === "aitext") { setPref("airlock.aiHints", "1"); await showText(); await new Promise((r) => setTimeout(r, Number(arg) || 3000)); }
     if (cmd === "reveal") {
@@ -1526,6 +1671,147 @@ $("appbtn").onclick = (e) => { e.stopPropagation(); toggleAppMenu(); };
 $("m-new").onclick = () => { toggleAppMenu(false); invoke("new_window"); };
 $("m-tour").onclick = () => { toggleAppMenu(false); startTour(); };
 $("m-quit").onclick = quitEverything;
+
+// Uninstall (AppImage only): what goes, two choices, one confirmation.
+async function showUninstall() {
+  const body = openPanel("Uninstall airlock");
+  let info;
+  try { info = await invoke("uninstall_info"); } catch (e) { body.replaceChildren(el("p", "note", String(e))); return; }
+  const gb = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
+  const list = el("ul", "uninstall-list");
+  for (const t of [`The secure viewer and its build files (${gb(info.lib_bytes)}, ${info.lib})`, "The menu entry, icon and \"Open with airlock\"", "airlock's settings and caches"]) list.append(el("li", "", t));
+  const opt = (label, hint, checked) => {
+    const l = el("label", "check");
+    const b = el("input");
+    b.type = "checkbox";
+    b.checked = checked;
+    l.append(b, el("span", "", label));
+    if (hint) l.title = hint;
+    return [l, b];
+  };
+  const [sysL, sysB] = opt("Also undo the system settings from setup (asks for your password)", "Removes airlock's device-permission rule and, on Ubuntu, its user-namespace setting. The reserved user-id range stays: other sandboxes may use it.", info.system);
+  const [imgL, imgB] = opt(`Also delete the AppImage file (${info.appimage})`, "", true);
+  sysL.hidden = !info.system;
+  const go = el("button", "danger", "Uninstall");
+  go.id = "uninstall-go";
+  const cancel = el("button", "", "Cancel");
+  cancel.onclick = closePanel;
+  const row = el("div", "row");
+  row.append(go, cancel);
+  body.replaceChildren(el("p", "", "This removes:"), list, sysL, imgL, el("p", "note", "Documents and files you saved are not touched."), row);
+  go.onclick = async () => {
+    go.disabled = cancel.disabled = true;
+    go.textContent = sysB.checked ? "Waiting for your password…" : "Removing…";
+    try {
+      const done = await invoke("uninstall", { system: sysB.checked, removeAppimage: imgB.checked });
+      const ok = el("ul", "uninstall-list done");
+      for (const d of done) ok.append(el("li", "", d));
+      body.replaceChildren(el("p", "", "airlock was uninstalled:"), ok, el("p", "note", "Closing every airlock window…"));
+      setTimeout(() => invoke("quit_everything"), 4000);
+    } catch (e) {
+      body.append(el("p", "note error", String(e)));
+      go.disabled = cancel.disabled = false;
+      go.textContent = "Uninstall";
+    }
+  };
+}
+
+// ---------------------------------------------------------------- settings & about
+// Accent colours: each sets the theme's light source; status colours (red,
+// amber, green verdicts) never change.
+const THEMES = [
+  ["teal", "Teal", "#2dd4bf", "#22d3ee", "#0f766e"],
+  ["ice", "Ice", "#38bdf8", "#a5f3fc", "#0369a1"],
+  ["violet", "Violet", "#a78bfa", "#f0abfc", "#6d28d9"],
+  ["synth", "Synthwave", "#f472b6", "#c084fc", "#be185d"],
+  ["amber", "Amber", "#fbbf24", "#fb923c", "#b45309"],
+  ["matrix", "Matrix", "#4ade80", "#a3e635", "#15803d"],
+];
+const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(", ");
+function applyTheme() {
+  const id = pref("airlock.theme", "teal");
+  let t = THEMES.find((x) => x[0] === id);
+  if (!t && /^#[0-9a-f]{6}$/i.test(id)) t = ["custom", "Custom", id, id, id];
+  t ||= THEMES[0];
+  const st = document.documentElement.style;
+  st.setProperty("--seal", t[2]);
+  st.setProperty("--seal-rgb", rgb(t[2]));
+  st.setProperty("--cyan", t[3]);
+  st.setProperty("--cyan-rgb", rgb(t[3]));
+  st.setProperty("--seal-deep", t[0] === "custom" ? `color-mix(in srgb, ${t[2]} 55%, #000)` : t[4]);
+}
+applyTheme();
+
+async function showSettings() {
+  const body = openPanel("Settings & about");
+  const sec = (title) => el("h3", "set-head", title);
+  // Colour
+  const swatches = el("div", "swatches");
+  const current = pref("airlock.theme", "teal");
+  const pick = (id) => { setPref("airlock.theme", id); applyTheme(); for (const b of swatches.children) b.setAttribute("aria-pressed", String(b.dataset.id === id)); };
+  for (const [id, name, a, b] of THEMES) {
+    const sw = el("button", "swatch");
+    sw.dataset.id = id;
+    sw.title = name;
+    sw.style.setProperty("--a", a);
+    sw.style.setProperty("--b", b);
+    sw.append(el("span", "chip"), el("span", "", name));
+    sw.setAttribute("aria-pressed", String(current === id));
+    sw.onclick = () => pick(id);
+    swatches.append(sw);
+  }
+  const custom = el("label", "swatch custom");
+  const input = el("input");
+  input.type = "color";
+  input.value = /^#/.test(current) ? current : "#2dd4bf";
+  custom.dataset.id = "custom";
+  custom.setAttribute("aria-pressed", String(/^#/.test(current)));
+  custom.append(input, el("span", "", "Custom"));
+  input.oninput = () => { setPref("airlock.theme", input.value); applyTheme(); for (const b of swatches.children) b.setAttribute("aria-pressed", String(b === custom)); };
+  swatches.append(custom);
+
+  // About
+  const about = el("dl", "about");
+  const logBox = el("div", "console-log tall", "Loading…");
+  body.replaceChildren(sec("Colour"), swatches, sec("About airlock"), about, sec("App log"),
+    el("p", "note", "Everything airlock did on this computer: VMs that stopped, attacks the tripwire blocked, updates, errors. Documents' contents are never logged."), logBox);
+  let info = {};
+  try { info = await invoke("about_info"); } catch (e) { about.append(el("dd", "", String(e))); }
+  const row = (k, v) => { if (v) about.append(el("dt", "", k), el("dd", "", String(v))); };
+  row("Version", info.app);
+  row("Running from", info.install);
+  row("Secure viewer", info.vm_dir);
+  if (info.image_built) row("Viewer built", new Date(info.image_built * 1000).toLocaleString());
+  row("VM kernel", info.kernel && info.kernel.replace(/^Linux version (\S+).*/, "Linux $1 (hardened)"));
+  row("VM engine", info.firecracker);
+  if (info.rules) { const [n, c] = info.rules.split(" "); row("Malware rules", `${Number(c).toLocaleString()} signatures (${n})`); }
+  if (info.packages?.length) row("Readers in the VM", info.packages.join(", "));
+  const lines = info.log || [];
+  logBox.replaceChildren(...(lines.length ? lines : ["(empty)"]).map((l) => {
+    const m = /^(\d{9,})\s+(pid \d+\s+)?(.*)$/.exec(l);
+    const row = el("div", "ln");
+    if (m) row.append(el("span", "t", new Date(Number(m[1]) * 1000).toLocaleString()), document.createTextNode(` ${m[3]}`));
+    else row.textContent = l;
+    if (/attack|tripwire|crash|could not|error|failed/i.test(l)) row.classList.add("warn");
+    return row;
+  }));
+  logBox.scrollTop = logBox.scrollHeight;
+  const copy = el("button", "", "Copy log");
+  copy.onclick = async () => { try { await navigator.clipboard.writeText(lines.join("\n")); copy.textContent = "Copied"; } catch { copy.textContent = "Could not copy"; } };
+  const rowEl = el("div", "row");
+  rowEl.append(copy);
+  body.append(rowEl);
+  // Uninstall (AppImage only)
+  try {
+    const u = await invoke("uninstall_info");
+    if (u.available) {
+      const b = el("button", "danger", "Uninstall airlock…");
+      b.onclick = showUninstall;
+      body.append(sec("Uninstall"), el("p", "note", "Removes the secure viewer, the menu entry and airlock's settings from this computer."), b);
+    }
+  } catch {}
+}
+$("m-settings").onclick = () => { toggleAppMenu(false); showSettings(); };
 $("m-close").onclick = closeWindow;
 function showAutoCheck() { $("m-auto").setAttribute("aria-checked", String(autoCheckOn())); }
 $("m-auto").onclick = () => {

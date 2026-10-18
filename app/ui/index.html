@@ -29,6 +29,7 @@
         <button role="menuitem" id="m-new">New window</button>
         <button role="menuitem" id="m-auto" aria-checked="true" title="Check every file you open for malware, in the background">Check files automatically <span class="tick">✓</span></button>
         <button role="menuitem" id="m-tour">Guided tour</button>
+        <button role="menuitem" id="m-settings">Settings &amp; about…</button>
         <button role="menuitem" id="m-close">Close this window <kbd>Ctrl+W</kbd></button>
         <button role="menuitem" id="m-quit">Exit airlock (all windows) <kbd>Ctrl+Q</kbd></button>
       </div>
@@ -126,6 +127,7 @@
       <div class="busy" id="busy" hidden><div class="spinner"></div><span id="busy-text"></span></div>
     </section>
     <aside class="panel" id="panel" hidden>
+      <div class="panel-resize" id="panel-resize" role="separator" aria-orientation="vertical" aria-label="Resize panel" title="Drag to resize · double-click to reset"></div>
       <div class="panel-head">
         <h2 id="panel-title"></h2>
         <button id="panel-close" class="icon" aria-label="Close panel" title="Close (Esc)">×</button>

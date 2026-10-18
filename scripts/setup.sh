@@ -9,6 +9,9 @@
 #                            (pkexec, or sudo in a terminal)
 #   scripts/setup.sh build   build the VM (kernel, image) in user space and
 #                            install it to ~/.local/lib/airlock; no root
+#   scripts/setup.sh unfix   undo the system settings "fix" made (one password
+#                            prompt); the reserved user-id range stays, as
+#                            other sandboxes (podman, flatpak) may share it
 #
 # Nothing here weakens the system beyond what airlock's design needs:
 # /dev/kvm and /dev/net/tun usable by any user (systemd's default on many
@@ -192,8 +195,32 @@ case $MODE in
         [ -f "$SINKHOLE" ] && install -m 0755 "$SINKHOLE" "$LIB/sinkhole.new" && mv -f "$LIB/sinkhole.new" "$LIB/sinkhole"
         echo "@@ok	vm	The secure viewer is built and installed"
         ;;
+    unfix)
+        script=$(mktemp)
+        cat > "$script" <<'EOS'
+rm -f /etc/udev/rules.d/65-airlock.rules /etc/sysctl.d/60-airlock-userns.conf /etc/modules-load.d/airlock.conf
+command -v udevadm >/dev/null && udevadm control --reload 2>/dev/null || true
+command -v sysctl >/dev/null && sysctl -q --system >/dev/null 2>&1 || true
+EOS
+        chmod 0644 "$script"
+        found=0
+        for f in /etc/udev/rules.d/65-airlock.rules /etc/sysctl.d/60-airlock-userns.conf /etc/modules-load.d/airlock.conf; do [ -e "$f" ] && found=1; done
+        [ "$found" = 1 ] || { echo "no system settings to undo"; rm -f "$script"; exit 0; }
+        echo "airlock needs administrator rights once, to run:"
+        sed 's/^/    /' "$script"
+        if have pkexec && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+            pkexec /bin/sh "$script"
+        elif have sudo; then
+            sudo /bin/sh "$script"
+        else
+            echo "run it as root: sh $script" >&2
+            exit 1
+        fi
+        rm -f "$script"
+        echo "done"
+        ;;
     *)
-        echo "usage: $0 check|plan|fix|build" >&2
+        echo "usage: $0 check|plan|fix|build|unfix" >&2
         exit 2
         ;;
 esac

@@ -256,7 +256,8 @@ fn text_stats(t: &str) -> String {
 
 /// `code`: the pages come from media.rs's code renderer, whose line-number
 /// gutter and wrap points are left out of the text (search, Text panel, copy).
-pub fn serve(mut out: File, pdf: &str, code: bool) -> ! {
+/// `listing`: an archive's files, for Cmd::Entries (see archive::listing).
+pub fn serve(mut out: File, pdf: &str, code: bool, listing: Option<String>) -> ! {
     let pages = load_pages(pdf, &mut out, code);
     let _ = send(&mut out, Kind::Hello, pages.len() as u32, 0, 0, &[]);
     for (i, p) in pages.iter().enumerate() {
@@ -312,6 +313,10 @@ pub fn serve(mut out: File, pdf: &str, code: bool) -> ! {
                 let Some(p) = pages.get(h.a as usize) else { continue };
                 let text = capped(p.chars.iter().map(|(c, _)| *c).collect());
                 let _ = send(&mut out, Kind::PageText, h.a, 0, 0, text.as_bytes());
+            }
+            Cmd::Entries => {
+                let text = capped(listing.clone().unwrap_or_default());
+                let _ = send(&mut out, Kind::PageText, 0, 0, 0, text.as_bytes());
             }
             Cmd::TextStats => {
                 let Some(p) = pages.get(h.a as usize) else { continue };

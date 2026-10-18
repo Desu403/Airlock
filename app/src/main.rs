@@ -35,6 +35,8 @@ struct AppState {
 #[derive(Serialize)]
 struct OpenInfo {
     name: String,
+    /// An archive: its files are listed in the side panel (archive_entries).
+    archive: bool,
     /// Offers the spreadsheet layout choice.
     spreadsheet: bool,
     /// [width, height] in points.
@@ -110,7 +112,14 @@ fn open_error(e: impl std::fmt::Display) -> String {
     }
 }
 
+/// This window shows one file of an archive ("--entry N --entry-name NAME
+/// archive"): the archive's bytes go to the VM, which unpacks that file.
+static ENTRY: std::sync::OnceLock<(u32, String)> = std::sync::OnceLock::new();
+/// The opened document's path, so a file inside it can open in a new window.
+static OPENED_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+
 fn open_impl(doc: Arc<Mutex<Option<Doc>>>, chosen: Arc<Mutex<Option<(String, Arc<Vec<u8>>)>>>, path: PathBuf) -> R<OpenInfo> {
+    *OPENED_PATH.lock().unwrap() = Some(path.clone());
     let meta = std::fs::metadata(&path).map_err(err)?;
     if !meta.is_file() || meta.len() > MAX_DOC_BYTES {
         return Err("not a file, or larger than 256 MiB".into());
@@ -129,9 +138,18 @@ fn open_bytes(doc: Arc<Mutex<Option<Doc>>>, name: String, bytes: &[u8]) -> R<Ope
         old.session.close();
     }
     let layout = if SHEETS_SINGLE.load(Ordering::SeqCst) { Layout::OnePagePerSheet } else { Layout::Pages };
-    let session = LiveSession::open_with(bytes, layout, Some(&name)).map_err(open_error)?;
+    // Inside an archive the file's own name gives its type hint and title.
+    let entry = ENTRY.get();
+    let hint = entry.map(|(_, n)| n.as_str()).unwrap_or(&name);
+    let session = LiveSession::open_with(bytes, layout, Some(hint), entry.map(|(i, _)| *i)).map_err(open_error)?;
+    let archive = entry.is_none() && airlock_core::live::is_archive(bytes);
+    let name = match entry {
+        Some((_, inner)) => format!("{name} › {}", inner.rsplit(['/', '\\']).next().unwrap_or(inner)),
+        None => name,
+    };
     let info = OpenInfo {
         name,
+        archive,
         spreadsheet: is_spreadsheet(bytes),
         pages: session.pages.iter().map(|p| [p.width, p.height]).collect(),
         ready_ms: session.boot_time.as_millis() as u64,
@@ -193,6 +211,7 @@ async fn pick_and_open(app: tauri::AppHandle, state: State<'_, AppState>) -> R<O
             .file()
             .set_title("Open documents in airlock")
             .add_filter("Documents", &["pdf", "doc", "docx", "docm", "xls", "xlsx", "xlsm", "ppt", "pptx", "pptm", "odt", "ods", "odp", "rtf", "dotm", "dotx", "xlam", "xltm", "xltx", "potm", "ppsm", "ppsx"])
+            .add_filter("Archives", &["zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "iso", "cab"])
             .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg", "avif", "heic", "ico"])
             .add_filter("Text and code", &["txt", "md", "csv", "log", "json", "xml", "yaml", "yml", "html", "htm", "css", "js", "ts", "py", "c", "h", "cpp", "hpp", "cc", "java", "rs", "go", "sh", "ps1", "vbs", "bat", "cmd", "php", "rb", "sql", "ini", "toml"])
             .add_filter("All files", &["*"])
@@ -238,6 +257,46 @@ fn close_window(app: tauri::AppHandle) {
 #[tauri::command]
 fn new_window() -> bool {
     open_window(None)
+}
+
+#[derive(Serialize)]
+struct EntryInfo {
+    index: u32,
+    size: u64,
+    flags: Vec<String>,
+    name: String,
+}
+
+/// The open archive's files, as its VM lists them.
+#[tauri::command]
+async fn archive_entries(state: State<'_, AppState>) -> R<Vec<EntryInfo>> {
+    let (doc, chosen) = (state.doc.clone(), state.chosen.clone());
+    blocking(move || {
+        let is_archive = chosen.lock().unwrap().as_ref().is_some_and(|(_, b)| airlock_core::live::is_archive(b)) && ENTRY.get().is_none();
+        if !is_archive {
+            return Ok(Vec::new());
+        }
+        let mut g = doc.lock().unwrap();
+        let d = g.as_mut().ok_or("no document open")?;
+        Ok(d.session.entries().map_err(err)?.into_iter().map(|(index, size, flags, name)| EntryInfo { index, size, flags, name }).collect())
+    })
+    .await
+}
+
+/// A file of the open archive, in a new window with a VM of its own.
+#[tauri::command]
+fn open_entry(index: u32, name: String) -> R<()> {
+    let path = OPENED_PATH.lock().unwrap().clone().ok_or("the archive's file is not known")?;
+    let exe = self_exe().ok_or("airlock's program was not found")?;
+    let name = text::sanitize_line(name.as_bytes());
+    let mut c = std::process::Command::new(exe)
+        .args(["--entry".as_ref(), index.to_string().as_ref(), "--entry-name".as_ref(), std::ffi::OsStr::new(&name), path.as_os_str()])
+        .stdin(std::process::Stdio::null())
+        .env_remove("AIRLOCK_DEMO")
+        .spawn()
+        .map_err(err)?;
+    std::thread::spawn(move || c.wait());
+    Ok(())
 }
 
 /// Dropped files.
@@ -382,7 +441,9 @@ async fn analyze(state: State<'_, AppState>) -> R<serde_json::Value> {
     let (report, chosen) = (state.report.clone(), state.chosen.clone());
     blocking(move || {
         let started = std::time::Instant::now();
-        let a = analysis::run(&bytes, Some(&name), "analyze", false, &|_| {}).map_err(err)?;
+        let entry = ENTRY.get();
+        let hint = entry.map(|(_, n)| n.clone()).unwrap_or_else(|| name.clone());
+        let a = analysis::run(&bytes, Some(&hint), entry.map(|(i, _)| *i), "analyze", false, &|_| {}).map_err(err)?;
         let mut j = a.report.to_json();
         j["document"] = name.into();
         j["seconds"] = (started.elapsed().as_secs_f32() as f64).into();
@@ -529,6 +590,18 @@ const MIME_TYPES: &[&str] = &[
     "application/vnd.ms-excel.addin.macroEnabled.12",
     "application/vnd.ms-excel.template.macroEnabled.12",
     "application/vnd.ms-powerpoint.slideshow.macroEnabled.12",
+    // Archives (listed inside the VM; each file opens in a VM of its own).
+    "application/zip",
+    "application/x-7z-compressed",
+    "application/vnd.rar",
+    "application/x-rar",
+    "application/x-rar-compressed",
+    "application/x-tar",
+    "application/gzip",
+    "application/x-bzip2",
+    "application/x-xz",
+    "application/x-iso9660-image",
+    "application/vnd.ms-cab-compressed",
     // Pictures and text / source code (shown syntax-coloured).
     "image/png",
     "image/jpeg",
@@ -1218,6 +1291,25 @@ fn main() {
         return;
     }
     args.retain(|a| a != "--new-window");
+    // "--entry N --entry-name NAME archive": one file of an archive.
+    if let Some(i) = args.iter().position(|a| a == "--entry") {
+        let n = args.get(i + 1).and_then(|v| v.to_str()).and_then(|v| v.parse::<u32>().ok());
+        let name_at = args.iter().position(|a| a == "--entry-name");
+        let name = name_at.and_then(|j| args.get(j + 1)).map(|v| text::sanitize_line(v.as_os_str().as_encoded_bytes()));
+        if let (Some(n), Some(name)) = (n, name) {
+            let _ = ENTRY.set((n, name));
+        }
+        let mut drop_idx: Vec<usize> = vec![i, i + 1];
+        if let Some(j) = name_at {
+            drop_idx.extend([j, j + 1]);
+        }
+        drop_idx.sort_unstable();
+        for k in drop_idx.into_iter().rev() {
+            if k < args.len() {
+                args.remove(k);
+            }
+        }
+    }
     // "airlock-app a.pdf b.docx": the first here, the others in their own windows.
     if args.len() > 1 {
         open_elsewhere(&args.split_off(1));
@@ -1245,6 +1337,8 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             uninstall_info,
             uninstall,
+            archive_entries,
+            open_entry,
             ui_settings,
             ui_setting_set,
             about_info,

@@ -57,6 +57,17 @@ application/vnd.ms-word.template.macroEnabled.12
 application/vnd.ms-excel.addin.macroEnabled.12
 application/vnd.ms-excel.template.macroEnabled.12
 application/vnd.ms-powerpoint.slideshow.macroEnabled.12
+application/zip
+application/x-7z-compressed
+application/vnd.rar
+application/x-rar
+application/x-rar-compressed
+application/x-tar
+application/gzip
+application/x-bzip2
+application/x-xz
+application/x-iso9660-image
+application/vnd.ms-cab-compressed
 image/png
 image/jpeg
 image/gif

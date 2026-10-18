@@ -13,6 +13,7 @@
 //!   autopsy  inspect a dead analysis VM's scratch disk (read-only)
 //!   live     like view, but stays up and answers render/search/text requests
 
+mod archive;
 mod autopsy;
 mod emulate;
 mod live;
@@ -142,6 +143,53 @@ fn send_indicators(out: &mut File, events: &[(Ind, String)]) {
 }
 
 /// Pages in a PDF (0 if unknown), via `mutool pages` under the monitor.
+/// The archive file to open (kernel option airlock.entry=N, N < 100000).
+fn entry_option() -> Option<usize> {
+    let cmdline = fs::read_to_string("/proc/cmdline").ok()?;
+    cmdline.split_whitespace().find_map(|t| t.strip_prefix("airlock.entry=")).and_then(|v| v.parse().ok()).filter(|n| *n < 100_000)
+}
+
+/// Analysis of an archive: every file inside (up to a budget) unpacked in
+/// this VM, checked like a document of its own kind, then deleted again (the
+/// autopsy would otherwise see it). Findings name the file they are about.
+fn scan_inside(archive_path: &str, entries: &[archive::Entry], net: Net) -> Vec<(Ind, String)> {
+    const MAX_FILES: usize = 64;
+    const MAX_BYTES: u64 = 256 << 20;
+    let mut out = Vec::new();
+    let mut budget = MAX_BYTES;
+    for (i, e) in archive::files(entries).into_iter().filter(|e| !e.encrypted).take(MAX_FILES).enumerate() {
+        if e.size > budget {
+            break;
+        }
+        let (events, bytes) = archive::extract(archive_path, &e.path, WORK, net);
+        out.extend(events);
+        let Some(bytes) = bytes else { continue };
+        budget = budget.saturating_sub(bytes.len() as u64);
+        let path = format!("{WORK}/inner-{i}");
+        if fs::write(&path, &bytes).is_err() {
+            continue;
+        }
+        let found: Vec<(Ind, String)> = match office::detect(&bytes) {
+            Some(office::Kind::Office(_)) => [office::triage(&path, WORK), yara::scan(WORK, &path, None, true)].concat(),
+            Some(office::Kind::Pdf) => [triage::analyze(&bytes, WORK, &path).indicators, yara::scan(WORK, &path, None, false)].concat(),
+            Some(office::Kind::Text) => [media::script_check(&bytes), html::check(&bytes), yara::scan(WORK, &path, None, false)].concat(),
+            Some(office::Kind::Image(ext)) => [media::hidden_data(&bytes, ext), yara::scan(WORK, &path, None, false)].concat(),
+            _ => yara::scan(WORK, &path, None, false),
+        };
+        let _ = fs::remove_file(&path);
+        let name = e.path.clone();
+        out.extend(found.into_iter().map(|(ind, text)| {
+            // Script findings start with their kind ("lure: ..."): keep it first.
+            let text = match (ind, text.split_once(": ")) {
+                (Ind::Script, Some((k, rest))) => format!("{k}: in {name}: {rest}"),
+                _ => format!("in {name}: {text}"),
+            };
+            (ind, text)
+        }));
+    }
+    out
+}
+
 /// The file's extension from the host (kernel option airlock.ext=, only
 /// [a-z0-9]{1,8}): which language to colour. Never used to decide the type.
 fn ext_hint() -> Option<String> {
@@ -294,19 +342,40 @@ fn main() {
     }
     let net = if scratch { Net::AllowInet } else { Net::Deny };
 
-    let doc = load_document().unwrap_or_else(|| fail(&mut out, Error::BadDocDisk));
-    let kind = office::detect(&doc).unwrap_or_else(|| fail(&mut out, Error::UnsupportedType));
+    let mut doc = load_document().unwrap_or_else(|| fail(&mut out, Error::BadDocDisk));
+    let mut kind = office::detect(&doc).unwrap_or_else(|| fail(&mut out, Error::UnsupportedType));
     log(&format!("document type {kind:?}"));
     let _ = fs::create_dir_all(WORK);
     unsafe {
         let p = CString::new(WORK).unwrap();
         libc::chown(p.as_ptr(), monitor::RENDER_UID, monitor::RENDER_GID);
     }
+    // A file inside an archive (airlock.entry=N): unpacked here, in this VM,
+    // then shown as the file it is. The host only ever had the archive.
+    let mut entry_name: Option<String> = None;
+    if let (office::Kind::Archive(ext), Some(n)) = (kind, entry_option()) {
+        let archive = format!("{WORK}/archive.{ext}");
+        if fs::write(&archive, &doc).is_err() {
+            fail(&mut out, Error::Internal);
+        }
+        let (events, entries) = archive::list(&archive, WORK, net);
+        send_indicators(&mut out, &events);
+        let files = archive::files(&entries);
+        let Some(e) = files.get(n) else { fail(&mut out, Error::RenderFailed) };
+        let (events, bytes) = archive::extract(&archive, &e.path, WORK, net);
+        send_indicators(&mut out, &events);
+        let _ = fs::remove_file(&archive);
+        doc = bytes.unwrap_or_else(|| fail(&mut out, Error::RenderFailed));
+        kind = office::detect(&doc).unwrap_or_else(|| fail(&mut out, Error::UnsupportedType));
+        log(&format!("opened {} from the archive: {kind:?}", e.path));
+        entry_name = Some(e.path.clone());
+    }
     let doc_path = match kind {
         office::Kind::Pdf => format!("{WORK}/doc.pdf"),
         office::Kind::Office(ext) => format!("{WORK}/office.{ext}"),
         office::Kind::Image(ext) => format!("{WORK}/image.{ext}"),
         office::Kind::Text => format!("{WORK}/source.txt"),
+        office::Kind::Archive(ext) => format!("{WORK}/archive.{ext}"),
     };
     if fs::write(&doc_path, &doc).is_err() {
         fail(&mut out, Error::Internal);
@@ -317,6 +386,7 @@ fn main() {
         let r = monitor::run(&["/sbin/airlock-agent", "--payload"], WORK, &monitor::Opts::new(net, Duration::from_secs(40)));
         send_indicators(&mut out, &r.events);
     }
+    let mut listing: Option<String> = None;
     let pdf_path = match kind {
         office::Kind::Pdf => {
             if scratch {
@@ -363,9 +433,23 @@ fn main() {
                 log("scanning with YARA");
                 send_indicators(&mut out, &yara::scan(WORK, &doc_path, None, false));
             }
-            let ext = ext_hint();
+            // Inside an archive the file's own name gives the language.
+            let ext = entry_name.as_deref().and_then(|n| n.rsplit_once('.')).map(|(_, e)| e.to_ascii_lowercase()).filter(|e| e.len() <= 8 && e.bytes().all(|b| b.is_ascii_alphanumeric())).or_else(ext_hint);
             let (events, pdf, lang) = media::convert_text(&doc_path, ext.as_deref(), WORK, net);
             log(&format!("text shown as {lang}"));
+            send_indicators(&mut out, &events);
+            pdf.unwrap_or_else(|| fail(&mut out, Error::RenderFailed))
+        }
+        office::Kind::Archive(ext) => {
+            let (events, entries) = archive::list(&doc_path, WORK, net);
+            send_indicators(&mut out, &events);
+            if scratch {
+                send_indicators(&mut out, &archive::findings(&entries, ext));
+                log("checking the files inside the archive");
+                send_indicators(&mut out, &scan_inside(&doc_path, &entries, net));
+            }
+            listing = Some(archive::listing(&entries));
+            let (events, pdf) = archive::page(&entries, ext, WORK, net);
             send_indicators(&mut out, &events);
             pdf.unwrap_or_else(|| fail(&mut out, Error::RenderFailed))
         }
@@ -380,7 +464,7 @@ fn main() {
         send_indicators(&mut out, &lure::check(&pdf_path, WORK, &links, pages));
     }
     if mode == Mode::Live {
-        live::serve(out, &pdf_path, kind == office::Kind::Text);
+        live::serve(out, &pdf_path, kind == office::Kind::Text, listing);
     }
 
     // Page count: `mutool pages` prints one <page pagenum=...> element per page.

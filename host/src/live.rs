@@ -57,6 +57,19 @@ pub fn is_spreadsheet(doc: &[u8]) -> bool {
     false
 }
 
+/// Whether `doc` is an archive (content sniffing, as the guest does): only
+/// then is the VM asked for its file list.
+pub fn is_archive(doc: &[u8]) -> bool {
+    let has = |n: &[u8]| doc.windows(n.len()).any(|w| w == n);
+    let at = |off: usize, m: &[u8]| doc.len() >= off + m.len() && &doc[off..off + m.len()] == m;
+    if at(0, b"PK\x03\x04") || at(0, b"PK\x05\x06") {
+        let head = &doc[..doc.len().min(256)];
+        return !(has(b"word/") || has(b"xl/") || has(b"ppt/") || head.windows(31).any(|w| w == b"mimetypeapplication/vnd.oasis."));
+    }
+    at(0, b"7z\xBC\xAF\x27\x1C") || at(0, b"Rar!\x1A\x07") || at(257, b"ustar") || at(0, &[0x1F, 0x8B]) || at(0, &[0xFD, b'7', b'z', b'X', b'Z', 0])
+        || at(0, b"MSCF") || at(0x8001, b"CD001") || at(0x8801, b"CD001") || at(0x9001, b"CD001") || (at(0, b"BZh") && doc.len() > 4 && (b'1'..=b'9').contains(&doc[3]))
+}
+
 pub struct PageSize {
     /// Points.
     pub width: f32,
@@ -100,17 +113,18 @@ pub struct LiveSession {
 impl LiveSession {
     /// Boots a live VM for `doc` (PDF or Office). The VM has no network device.
     pub fn open(doc: &[u8]) -> Result<Self> {
-        Self::open_with(doc, Layout::Pages, None)
+        Self::open_with(doc, Layout::Pages, None, None)
     }
 
     /// `name`: the file's name, for its extension (which language to colour).
-    pub fn open_with(doc: &[u8], layout: Layout, name: Option<&str>) -> Result<Self> {
+    /// `entry`: open that file of an archive (unpacked inside the VM).
+    pub fn open_with(doc: &[u8], layout: Layout, name: Option<&str>, entry: Option<u32>) -> Result<Self> {
         let started = Instant::now();
         let assets = vm::Assets::locate()?;
         let run = vm::RunDir::create("live")?;
         let doc_disk = vm::write_doc_disk(&run.path, doc)?;
         let listener = run.listen()?;
-        let spec = vm::Spec { mode: "live", drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }], sinkhole_events: None, options: layout.options(), ext: name.and_then(vm::ext_hint) };
+        let spec = vm::Spec { mode: "live", drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }], sinkhole_events: None, options: layout.options(), ext: name.and_then(vm::ext_hint), entry };
         let mut child = vm::spawn(&assets, &run, &spec, &run.path.join("console.log"))?;
 
         let deadline = Instant::now() + BOOT_TIMEOUT;
@@ -262,6 +276,28 @@ impl LiveSession {
             Msg::Text(p, t) if p == page => Ok(t),
             _ => Err(self.hostile("expected page text")),
         }
+    }
+
+    /// An archive's files: (index, size, flags, name), names sanitised like
+    /// page text. Empty for other documents.
+    pub fn entries(&mut self) -> Result<Vec<(u32, u64, Vec<String>, String)>> {
+        self.send(Cmd::Entries, 0, 0, &[])?;
+        let raw = match self.next()? {
+            Msg::Text(0, t) => t,
+            _ => return Err(self.hostile("expected the archive's file list")),
+        };
+        let mut out = Vec::new();
+        for line in raw.lines().filter(|l| !l.is_empty()) {
+            let mut f = line.splitn(4, ' ');
+            let (Some(i), Some(size), Some(flags), Some(name)) = (f.next(), f.next(), f.next(), f.next()) else { return Err(self.hostile("malformed file list")) };
+            let (Ok(i), Ok(size)) = (i.trim().parse::<u32>(), size.trim().parse::<u64>()) else { return Err(self.hostile("malformed file list")) };
+            let flags: Vec<String> = flags.split(',').map(str::trim).filter(|w| !w.is_empty() && *w != "-").map(String::from).collect();
+            if flags.iter().any(|w| w.len() > 16 || !w.bytes().all(|b| b.is_ascii_lowercase())) {
+                return Err(self.hostile("malformed file list"));
+            }
+            out.push((i, size, flags, name.to_string()));
+        }
+        Ok(out)
     }
 
     /// Character counts for the AI-text hints (numbers only, see Cmd::TextStats).

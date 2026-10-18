@@ -321,6 +321,9 @@ pub struct Spec {
     /// The file's extension ("cpp", "jpg"): which language to colour, as the
     /// document disk carries no name. Only [a-z0-9]{1,8} reaches the VM.
     pub ext: Option<String>,
+    /// A file inside an archive to open (its index among the files): that VM
+    /// unpacks it from the archive by itself.
+    pub entry: Option<u32>,
 }
 
 /// "Report.CPP" -> Some("cpp"); anything else (no dot, odd characters) -> None.
@@ -348,6 +351,9 @@ pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<C
     for o in spec.options {
         boot_args.push(' ');
         boot_args.push_str(o);
+    }
+    if let Some(n) = spec.entry.filter(|n| *n < 100_000) {
+        boot_args.push_str(&format!(" airlock.entry={n}"));
     }
     if let Some(e) = spec.ext.as_deref().filter(|e| ext_hint(&format!(".{e}")).as_deref() == Some(*e)) {
         boot_args.push_str(" airlock.ext=");

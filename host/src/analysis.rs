@@ -14,7 +14,8 @@ pub struct Analysis {
 
 /// `progress` receives short human-readable status lines.
 /// `name`: the file's name, for its extension (see vm::Spec::ext).
-pub fn run(doc: &[u8], name: Option<&str>, mode: &'static str, verbose: bool, progress: &dyn Fn(&str)) -> Result<Analysis> {
+/// `entry`: analyze that file of an archive (unpacked inside the VM).
+pub fn run(doc: &[u8], name: Option<&str>, entry: Option<u32>, mode: &'static str, verbose: bool, progress: &dyn Fn(&str)) -> Result<Analysis> {
     let t0 = std::time::Instant::now();
     let mut log: Vec<(f32, String)> = Vec::new();
     let mut note = |s: String| log.push((t0.elapsed().as_secs_f32(), s));
@@ -35,6 +36,7 @@ pub fn run(doc: &[u8], name: Option<&str>, mode: &'static str, verbose: bool, pr
         sinkhole_events: Some(events.clone()),
         options: &[],
         ext: name.and_then(vm::ext_hint),
+        entry,
     };
     let s = session::run(&assets, &run, &spec, verbose, verbose)?;
     progress(&format!("      VM destroyed after {:.1}s", s.elapsed.as_secs_f32()));
@@ -60,7 +62,7 @@ pub fn run(doc: &[u8], name: Option<&str>, mode: &'static str, verbose: bool, pr
     // Hand the disk over: each VM's spare uid can only reach its own run dir.
     let evidence = run2.path.join("evidence.img");
     std::fs::rename(&scratch, &evidence)?;
-    let spec2 = vm::Spec { mode: "autopsy", drives: vec![vm::Drive { id: "evidence", path: evidence, read_only: true }], sinkhole_events: None, options: &[], ext: None };
+    let spec2 = vm::Spec { mode: "autopsy", drives: vec![vm::Drive { id: "evidence", path: evidence, read_only: true }], sinkhole_events: None, options: &[], ext: None, entry: None };
     note("Autopsy VM 2 started: a fresh VM examines VM 1's leftover disk (your computer never reads it)".into());
     let a = session::run(&assets, &run2, &spec2, verbose, false)?;
     note(format!("VM 2 finished and was destroyed after {:.1} s: {} observation(s) recorded", a.elapsed.as_secs_f32(), a.indicators.len()));

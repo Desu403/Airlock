@@ -114,6 +114,7 @@ fn view(doc: &[u8], out_dir: &Path, verbose: bool) -> Result<()> {
         sinkhole_events: None,
         options: &[],
         ext: DOC_NAME.get().and_then(|n| vm::ext_hint(n)),
+        entry: None,
     };
     let s = session::run(&assets, &run, &spec, verbose, true)?;
     if let Some(e) = s.guest_error {
@@ -132,7 +133,7 @@ fn view(doc: &[u8], out_dir: &Path, verbose: bool) -> Result<()> {
 }
 
 fn analyze(doc: &[u8], out_dir: &Path, verbose: bool, mode: &'static str, pages: bool) -> Result<report::Report> {
-    let a = analysis::run(doc, DOC_NAME.get().map(String::as_str), mode, verbose, &|line| eprintln!("airlock: {line}"))?;
+    let a = analysis::run(doc, DOC_NAME.get().map(String::as_str), None, mode, verbose, &|line| eprintln!("airlock: {line}"))?;
     let (rep, s) = (a.report, a.session);
     rep.print();
     std::fs::create_dir_all(out_dir)?;

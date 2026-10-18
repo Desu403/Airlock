@@ -30,7 +30,7 @@ fakeroot_sh $B/guestroot '
     apk upgrade --no-progress '"$QUIET"'
     '"$NOTE"' "@@sub packages"
     apk add --no-progress '"$QUIET"' mupdf-tools quickjs \
-        python3 py3-oletools py3-pygments yara zbar imagemagick \
+        python3 py3-oletools py3-pygments yara zbar imagemagick 7zip \
         libreoffice-writer libreoffice-calc libreoffice-impress \
         font-liberation font-dejavu
     install -D -m 0644 -o 0 -g 0 /src/guest/office_triage.py /usr/lib/airlock/office_triage.py

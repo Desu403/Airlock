@@ -338,7 +338,7 @@ async function setPixelsOnly(on, remember = true) {
   state.pixelsOnly = on;
   if (remember) setPref("airlock.pixelsOnly", on ? "1" : "0");
   $("m-pixels").setAttribute("aria-checked", String(on));
-  $("textbtn").hidden = on || !state.docOpen;
+  $("textbtn").hidden = (on && !state.archive) || !state.docOpen;
   if (on) {
     getSelection()?.removeAllRanges();
     for (const p of state.pages) { p.text.replaceChildren(); p.textState = null; }
@@ -908,7 +908,7 @@ $("open").onclick = openDialog;
 $("zin").onclick = () => stepZoom(1);
 $("zout").onclick = () => stepZoom(-1);
 $("zfit").onclick = fitWidth;
-$("textbtn").onclick = showText;
+$("textbtn").onclick = () => (state.archive ? showFiles() : showText());
 $("savebtn").onclick = (e) => { e.stopPropagation(); toggleSaveMenu(); };
 $("safecopy").onclick = saveSafeCopy;
 $("print").onclick = printDocument;
@@ -1196,6 +1196,7 @@ async function runDemo() {
     if (cmd === "settings") await showSettings();
     if (cmd === "palette") { openPalette(); $("pal-q").value = arg || ""; renderPalette(); }
     if (cmd === "thumbs") setThumbs(true);
+    if (cmd === "openentry") { const fs = await invoke("archive_entries"); const f = fs[Number(arg) || 0]; if (f) await invoke("open_entry", { index: f.index, name: f.name }); }
     if (cmd === "peek") showPeek();
     if (cmd === "peektrace") {
       // Test aid: the card's opacity on each drawn frame while it opens.
@@ -2049,6 +2050,7 @@ function paletteCommands() {
     ["Fit to width", "", doc, fitWidth],
     ["Show page thumbnails", "Ctrl+B", doc && $("thumbs").hidden, () => setThumbs(true)],
     ["Hide page thumbnails", "Ctrl+B", doc && !$("thumbs").hidden, () => setThumbs(false)],
+    ["Files inside the archive", "", doc && state.archive, showFiles],
     ["Show the document's text", "", doc && !state.pixelsOnly, showText],
     ["Save a safe PDF copy…", "Ctrl+S", doc, saveSafeCopy],
     ["Print…", "Ctrl+P", doc, printDocument],
@@ -2305,7 +2307,12 @@ setupDocument = function (info) {
   thumbs.list = [];
   thumbs.current = -1;
   $("thumbbtn").hidden = false;
-  if (pref("airlock.thumbs", "0") === "1") setThumbs(true);
+  state.archive = !!info.archive;
+  // For an archive the toolbar's Text button lists its files instead.
+  $("textbtn").textContent = info.archive ? "Files" : "Text";
+  $("textbtn").title = info.archive ? "The files inside this archive" : "Show the document's text";
+  if (info.archive) { $("textbtn").hidden = false; showFiles(); }
+  if (pref("airlock.thumbs", "0") === "1" && !info.archive) setThumbs(true);
   else $("thumbs").hidden = true;
   const v = $("viewer");
   v.classList.remove("sealing");
@@ -2323,3 +2330,38 @@ setInterval(() => {
   const working = !!check.running || updates.running || !$("forge").hidden && forge.finished === null;
   $("appbtn").classList.toggle("working", working);
 }, 400);
+
+// ---------------------------------------------------------------- archives
+// The archive's files, as its VM lists them. Each opens in a new window
+// whose VM unpacks just that file from the archive: nothing is unpacked here.
+const fmtSize = (n) => (n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GB` : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
+const FLAG_TEXT = { disguised: ["bad", "disguised program"], program: ["warn", "program"], locked: ["warn", "locked"] };
+async function showFiles() {
+  const body = openPanel("Files inside");
+  body.replaceChildren(el("p", "note", "Reading the archive inside its VM…"));
+  let files = [];
+  try { files = await invoke("archive_entries"); } catch (e) { body.replaceChildren(el("p", "note", `Could not list the files: ${e}`)); return; }
+  const intro = el("p", "note", `${files.length} file(s). Each opens in a new window with a VM of its own, which unpacks just that file: nothing is unpacked on your computer.`);
+  const list = el("ul", "files");
+  for (const f of files) {
+    const li = el("li", "");
+    const name = el("span", "fname", f.name);
+    name.title = f.name;
+    const meta = el("span", "fmeta", fmtSize(f.size));
+    const tags = el("span", "ftags");
+    const shown = f.flags.includes("disguised") ? ["disguised"] : f.flags;
+    for (const fl of shown) { const [cls, text] = FLAG_TEXT[fl] || ["", fl]; tags.append(el("span", `ftag ${cls}`, text)); }
+    const open = el("button", "", "Open");
+    open.disabled = f.flags.includes("locked");
+    open.title = open.disabled ? "Locked with a password: it cannot be opened or checked" : "Open in a new window with its own VM";
+    open.onclick = async () => {
+      open.disabled = true; open.textContent = "Opening…";
+      try { await invoke("open_entry", { index: f.index, name: f.name }); status(`Opening ${f.name} in a new window`); }
+      catch (e) { status(`Could not open ${f.name}: ${e}`, true); }
+      setTimeout(() => { open.disabled = false; open.textContent = "Open"; }, 2500);
+    };
+    li.append(name, tags, meta, open);
+    list.append(li);
+  }
+  body.replaceChildren(intro, list);
+}

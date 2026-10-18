@@ -843,3 +843,14 @@ button.check.failed:hover:not(:disabled) { color: var(--med); }
 .peek { background: linear-gradient(160deg, var(--surface-2), var(--deep)); }
 .tour-card.enter { animation: none !important; }
 @keyframes seal-in { from { opacity: 0; transform: translateY(8px); } }
+
+/* ---- archive file list ---- */
+.files { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.files li { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: color-mix(in srgb, var(--surface) 80%, transparent); }
+.files .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 12px; }
+.files .fmeta { font: 11px var(--mono); color: var(--muted); white-space: nowrap; }
+.files .ftags { display: flex; gap: 4px; }
+.ftag { font: 700 10px var(--mono); letter-spacing: 0.04em; text-transform: uppercase; padding: 1px 6px; border-radius: 4px; border: 1px solid currentColor; }
+.ftag.bad { color: var(--high); }
+.ftag.warn { color: var(--med); }
+.files button { padding: 3px 10px; font-size: 12px; }

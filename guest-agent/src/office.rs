@@ -17,6 +17,8 @@ pub enum Kind {
     Image(&'static str),
     /// Plain text or source code (media.rs): shown syntax-coloured.
     Text,
+    /// An archive (archive.rs); its format.
+    Archive(&'static str),
 }
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
@@ -71,6 +73,9 @@ pub fn detect(doc: &[u8]) -> Option<Kind> {
         if contains(&doc[..doc.len().min(256)], b"mimetypeapplication/vnd.oasis.opendocument") {
             return Some(Kind::Office("odt"));
         }
+    }
+    if let Some(ext) = crate::archive::kind(doc) {
+        return Some(Kind::Archive(ext));
     }
     if let Some(ext) = crate::media::image_kind(doc) {
         return Some(Kind::Image(ext));

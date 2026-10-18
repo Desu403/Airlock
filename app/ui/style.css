@@ -827,3 +827,19 @@ button.check.suspicious:hover:not(:disabled) { color: var(--med); box-shadow: 0 
 button.check.clean:hover:not(:disabled) { color: var(--ok); box-shadow: 0 0 10px rgba(110, 231, 183, 0.15); }
 button.check.idle:hover:not(:disabled), button.check.checking:hover:not(:disabled) { color: var(--seal); }
 button.check.failed:hover:not(:disabled) { color: var(--med); }
+
+/* ---- overlays without new GPU layers ----
+   WebKitGTK on some drivers (NVIDIA + Wayland hybrid laptops, seen here)
+   shows a glitch frame whenever a composited layer appears: fades,
+   slide-ins, backdrop blur, will-change. Anything that comes on top
+   (summary card, command palette, menus, toasts, tour card) therefore
+   appears at once, on a solid background. */
+.menu, .toast, .palette-wrap, .tour-card { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
+.menu, .toast { background: linear-gradient(160deg, color-mix(in srgb, var(--surface-2) 99%, #000), color-mix(in srgb, var(--surface) 99%, #000)); }
+.tour-card { background: linear-gradient(160deg, var(--surface-2), var(--deep)); }
+.palette-wrap { background: color-mix(in srgb, var(--deep) 62%, transparent); }
+.palette { animation: none !important; background: linear-gradient(180deg, var(--surface-2), var(--surface)); }
+.peek, .peek.open { transition: none !important; transform: none !important; will-change: auto !important; animation: none !important; }
+.peek { background: linear-gradient(160deg, var(--surface-2), var(--deep)); }
+.tour-card.enter { animation: none !important; }
+@keyframes seal-in { from { opacity: 0; transform: translateY(8px); } }

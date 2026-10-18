@@ -1110,6 +1110,13 @@ async fn run_update(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Upda
     }
     let result = blocking(move || {
         let tree = source_tree().ok_or("no airlock source checkout found to update from")?;
+        // One update at a time across every airlock window (each is its own
+        // process): an exclusive lock on the kit, held until this one ends.
+        let _ = std::fs::create_dir_all(tree.join("build"));
+        let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(tree.join("build/.update.lock")).map_err(err)?;
+        if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err("another airlock window is already updating; its progress shows there".to_string());
+        }
         let mut cmd = std::process::Command::new("sh");
         // AIRLOCK_PROGRESS: the build's own output (downloads, packages,
         // kernel files, test results) for the live progress view.

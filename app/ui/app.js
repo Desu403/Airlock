@@ -103,7 +103,7 @@ function resetDocument() {
   Object.assign(state, { pages: [], hits: [], hitIndex: -1, queue: [], findings: null, docOpen: false });
   $("pages").replaceChildren();
   clearCheck();
-  for (const id of ["doc", "searchbox", "zoombox", "textbtn", "sheetbtn", "savewrap", "pixels", "analyze", "banner"]) $(id).hidden = true;
+  for (const id of ["doc", "searchbox", "zoombox", "textbtn", "sheetbtn", "savewrap", "banner", "thumbbtn", "thumbs", "telemetry"]) $(id).hidden = true;
   $("empty").hidden = false;
   closePanel();
 }
@@ -212,10 +212,9 @@ function setupDocument(info) {
   $("sheetbtn").hidden = !info.spreadsheet;
   $("seal").classList.remove("stopped");
   $("seal").querySelector(".label").textContent = "Sealed · microVM · no network";
-  for (const id of ["doc", "searchbox", "zoombox", "savewrap", "pixels", "analyze"]) $(id).hidden = false;
+  for (const id of ["doc", "searchbox", "zoombox", "savewrap"]) $(id).hidden = false;
   $("textbtn").hidden = state.pixelsOnly;
   $("empty").hidden = true;
-  $("analyze").disabled = false;
 
   const container = $("pages");
   container.replaceChildren();
@@ -338,7 +337,7 @@ async function setPixelsOnly(on, remember = true) {
   await invoke("set_pixels_only", { on });
   state.pixelsOnly = on;
   if (remember) try { localStorage.setItem("airlock.pixelsOnly", on ? "1" : "0"); } catch {}
-  $("pixels").setAttribute("aria-pressed", String(on));
+  $("m-pixels").setAttribute("aria-checked", String(on));
   $("textbtn").hidden = on || !state.docOpen;
   if (on) {
     getSelection()?.removeAllRanges();
@@ -802,8 +801,8 @@ function renderReport(body, report, title) {
   body.replaceChildren(...nodes);
 }
 
-// The malware check (the same one whether automatic or from Analyze): one
-// run per opened file, shared by the badge, the Analyze button and the panel.
+// The malware check (automatic, or from the badge next to the seal): one run
+// per opened file, shared by the badge and the report panel.
 const check = { gen: 0, running: null, report: null, error: null, attacked: false };
 
 function autoCheckOn() { return pref("airlock.autoCheck", "1") === "1"; }
@@ -822,7 +821,7 @@ function showCheck() {
       ? [verdictClass(check.report.verdict), { malicious: /LIKELY/.test(check.report.verdict) ? "Likely malicious" : "Malicious", suspicious: "Suspicious", clean: "No threats found" }[verdictClass(check.report.verdict)], `${check.report.headline || check.report.verdict}. Click for the full report.`]
       : check.error
         ? ["failed", "Check failed", `The malware check could not finish: ${check.error}. Click to try again.`]
-        : [null];
+        : ["idle", "Check for malware", "Detonate this file in a separate microVM wired to a fake internet and report what it tries to do."];
   b.hidden = !cls || !state.docOpen;
   if (!cls) return;
   b.className = `check ${cls}`;
@@ -913,8 +912,7 @@ $("savebtn").onclick = (e) => { e.stopPropagation(); toggleSaveMenu(); };
 $("safecopy").onclick = saveSafeCopy;
 $("print").onclick = printDocument;
 document.addEventListener("click", (e) => { if (!$("savewrap").contains(e.target)) toggleSaveMenu(false); });
-$("pixels").onclick = () => setPixelsOnly(!state.pixelsOnly);
-$("analyze").onclick = analyze;
+$("m-pixels").onclick = () => { toggleAppMenu(false); setPixelsOnly(!state.pixelsOnly); };
 $("panel-close").onclick = closePanel;
 $("qnext").onclick = () => stepHit(1);
 $("qprev").onclick = () => stepHit(-1);
@@ -978,7 +976,9 @@ function describeChanges(st, max) {
 
 function noteStatus(st) {
   updates.status = st;
+  // A dot on the airlock logo and on the menu item; no toolbar button.
   $("updates-dot").hidden = !(st && st.available);
+  $("m-updates-dot").hidden = !(st && st.available);
 }
 
 async function checkUpdates(force) {
@@ -1135,7 +1135,7 @@ async function runUpdate(body, quiet = false) {
 // (an automatic update can be watched by opening Updates).
 window.__TAURI__.event.listen("update-progress", (e) => { if (updates.forge) forge.line(String(e.payload)); });
 
-$("updates").onclick = showUpdates;
+$("m-updates").onclick = () => { toggleAppMenu(false); showUpdates(); };
 
 async function autoCheckUpdates() {
   if (pref("airlock.autoUpdateCheck", "1") !== "1") return;
@@ -1145,6 +1145,10 @@ async function autoCheckUpdates() {
     const st = await checkUpdates(false);
     if (!st.available) return;
     if (pref("airlock.autoInstall", "1") === "1") {
+      // Ask again right before installing: another window, or an update in
+      // the meantime, may already have brought everything up to date.
+      const fresh = await checkUpdates(true);
+      if (!fresh.available) return;
       notify("Installing security updates", `${changeSummary(st)}. airlock is updating in the background; you can keep reading.`, [["Details", showUpdates], ["Hide", hideToast]]);
       runUpdate(null, true);
     } else if (Date.now() > Number(pref("airlock.updateSnooze", "0"))) showToast(st);
@@ -1173,6 +1177,9 @@ async function runDemo() {
     if (cmd === "scroll") $("viewer").scrollTop = Number(arg) || 0;
     if (cmd === "tscroll") $("panel-body").scrollTop = Number(arg) || 0;
     if (cmd === "settings") await showSettings();
+    if (cmd === "palette") { openPalette(); $("pal-q").value = arg || ""; renderPalette(); }
+    if (cmd === "thumbs") setThumbs(true);
+    if (cmd === "peek") showPeek();
     if (cmd === "czoom") { const b = $("viewer").getBoundingClientRect(); $("viewer").dispatchEvent(new WheelEvent("wheel", { deltaY: Number(arg), ctrlKey: true, clientX: b.left + b.width / 2, clientY: b.top + 200, bubbles: true, cancelable: true })); }
     if (cmd === "theme") { setPref("airlock.theme", arg); applyTheme(); }
     if (cmd === "background") { setPref("airlock.background", arg); applyTheme(); }
@@ -1593,7 +1600,7 @@ const TOUR = [
     text: "airlock opens every PDF and Office file inside its own throwaway virtual machine, a tiny separate computer with no network.",
     how: "Your computer never reads the file itself. It only receives pictures of the pages and cleaned-up text. Close the document and the whole VM is destroyed." },
   { target: "appbtn", kicker: "Menu", title: "The airlock menu",
-    text: "Click the airlock logo for: New window, Check files automatically (on by default), Settings & about, the guided tour, Close this window and Exit airlock.",
+    text: "Click the airlock logo for: New window, Check files automatically (on by default), Pixels only (no text leaves the VM, for files you really distrust), Updates (a dot on the logo means one is ready), Settings & about, the guided tour, and closing.",
     how: "Settings & about is where you pick the colours and background, see every version, read the app log (VMs that stopped, attacks the tripwire blocked, updates, errors) and, for the AppImage, uninstall airlock." },
   { target: "open", kicker: "Open", title: "Open a document",
     text: "Pick files here, press Ctrl+O, or drag them onto the window.",
@@ -1613,18 +1620,12 @@ const TOUR = [
   { target: "savewrap", kicker: "Keep", title: "Save a safe copy, or print",
     text: "Safe PDF copy (Ctrl+S) writes a new PDF made only of the page pictures. Print (Ctrl+P) prints them.",
     how: "Nothing from the original survives in the copy (no scripts, links, fonts or attachments), so it is safe to keep, share or open anywhere." },
-  { target: "pixels", kicker: "Lock down", title: "Pixels only",
-    text: "For files you really distrust: no text leaves the VM at all, only pictures.",
-    how: "Text selection and the Text panel turn off. Search still works, because it only needs positions." },
-  { target: "updates", kicker: "Stay patched", title: "Updates",
-    text: "Keeps the VM's document readers, kernel and malware signatures current. It checks daily and installs automatically.",
-    how: "Every update is checked against official signatures and must pass airlock's full test suite before it is used. If anything fails, the old version stays." },
-  { target: "analyze", kicker: "Investigate", title: "Analyze",
-    text: "Finds out what a file tries to do: contact servers, run programs, drop files, exploit the reader. Every file you open is checked automatically; the badge next to Sealed shows the result (turn it off in the airlock logo menu).",
-    how: "It runs the file in a second VM wired to a fake internet, then inspects that VM's disk from a third one. The report explains every finding in plain words, with the technical evidence underneath." },
-  { target: "tourbtn", kicker: "That's it", title: "You're ready",
-    text: "Replay this tour anytime with the ? button. Side panels can be widened by dragging their left edge. Right-click anywhere (or click the airlock logo) for a new window, Close this window (Ctrl+W) or Exit airlock, which closes every document (Ctrl+Q). The same is in the tray icon and in the launcher's right-click menu.",
-    how: "Tip: when a file looks suspicious, press Analyze before you trust it." },
+  { target: "check", kicker: "Investigate", title: "The malware check",
+    text: "Every file you open is checked automatically; this badge shows the result. Click it for the full report, or to start a check when automatic checks are off.",
+    how: "The file runs in a second VM wired to a fake internet, then that VM's disk is inspected from a third one. The report explains every finding in plain words, with the technical evidence underneath and a log of each step." },
+  { target: "appbtn", kicker: "That's it", title: "You're ready",
+    text: "Replay this tour anytime from the airlock menu. Side panels can be widened by dragging their left edge. Right-click anywhere for a new window, Close this window (Ctrl+W) or Exit airlock, which closes every document (Ctrl+Q).",
+    how: "Tip: when the badge says Suspicious or Likely malicious, read the report before you trust the file." },
 ];
 
 const tour = { i: 0, revealed: [], onKey: null };
@@ -1680,8 +1681,9 @@ function startTour() {
   closePanel();
   toggleSaveMenu(false);
   // Show the whole toolbar, as it looks with a document open; put it back afterwards.
-  tour.revealed = ["doc", "searchbox", "zoombox", "textbtn", "savewrap", "pixels", "analyze"].filter((id) => $(id).hidden);
+  tour.revealed = ["doc", "searchbox", "zoombox", "textbtn", "savewrap", "check"].filter((id) => $(id).hidden);
   for (const id of tour.revealed) $(id).hidden = false;
+  if (tour.revealed.includes("check")) { tour.checkWas = $("check").className; $("check").className = "check clean"; $("check").querySelector(".label").textContent = "No threats found"; }
   if (!$("docname").textContent) { $("docname").textContent = "your-document.pdf"; tour.placeholder = true; }
   document.body.classList.add("touring");
   $("tour").hidden = false;
@@ -1705,11 +1707,11 @@ function endTour() {
   document.body.classList.remove("touring");
   setTimeout(() => { $("tour").hidden = true; }, 350);
   for (const id of tour.revealed) $(id).hidden = true;
+  if (tour.checkWas !== undefined) { tour.checkWas = undefined; showCheck(); }
   if (tour.placeholder) { $("docname").textContent = ""; tour.placeholder = false; }
   if (state.docOpen) fitWidth();
 }
 
-$("tourbtn").onclick = startTour;
 
 // ---------------------------------------------------------------- app menu
 // Works on every desktop (with or without a tray): new window, tour, exit.
@@ -1791,20 +1793,48 @@ const BACKGROUNDS = [
   ["nebula", "Nebula", "#0d0716"],
   ["ember", "Ember", "#120a07"],
 ];
+// Custom colours are tamed so any pick works: a background keeps its hue but
+// becomes a deep tone (text stays readable); an accent stays bright enough to
+// glow, with a neighbouring hue as its second colour.
+function hexToHsl(hex) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2, d = max - min;
+  if (!d) return [0, 0, l];
+  const s = d / (1 - Math.abs(2 * l - 1));
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [(h * 60 + 360) % 360, s, l];
+}
+function hslToHex(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = l - c / 2;
+  const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  return "#" + [r, g, b].map((v) => Math.round((v + m) * 255).toString(16).padStart(2, "0")).join("");
+}
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+function tameBackground(hex) {
+  const [h, s] = hexToHsl(hex);
+  if (s < 0.08) return "#0d0e10";
+  return hslToHex(h, clamp(s, 0, 0.45), 0.055);
+}
+function tameAccent(hex) {
+  const [h, s, l] = hexToHsl(hex);
+  // White, grey, black: a cool silver, not a guessed hue.
+  if (s < 0.08) return ["#d4dde2", "#eef3f6", "#5b6870"];
+  return [hslToHex(h, clamp(s, 0.55, 1), clamp(l, 0.55, 0.72)), hslToHex((h + 18) % 360, clamp(s, 0.55, 1), clamp(l + 0.06, 0.6, 0.78)), hslToHex(h, clamp(s, 0.5, 1), 0.3)];
+}
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(", ");
 function applyTheme() {
   const id = pref("airlock.theme", "teal");
   let t = THEMES.find((x) => x[0] === id);
-  if (!t && /^#[0-9a-f]{6}$/i.test(id)) t = ["custom", "Custom", id, id, id];
+  if (!t && /^#[0-9a-f]{6}$/i.test(id)) t = ["custom", "Custom", ...tameAccent(id)];
   t ||= THEMES[0];
   const st = document.documentElement.style;
   st.setProperty("--seal", t[2]);
   st.setProperty("--seal-rgb", rgb(t[2]));
   st.setProperty("--cyan", t[3]);
   st.setProperty("--cyan-rgb", rgb(t[3]));
-  st.setProperty("--seal-deep", t[0] === "custom" ? `color-mix(in srgb, ${t[2]} 55%, #000)` : t[4]);
+  st.setProperty("--seal-deep", t[4]);
   const bid = pref("airlock.background", "abyss");
-  const bg = BACKGROUNDS.find((x) => x[0] === bid)?.[2] || (/^#[0-9a-f]{6}$/i.test(bid) ? bid : BACKGROUNDS[0][2]);
+  const bg = BACKGROUNDS.find((x) => x[0] === bid)?.[2] || (/^#[0-9a-f]{6}$/i.test(bid) ? tameBackground(bid) : BACKGROUNDS[0][2]);
   st.setProperty("--base", bg);
 }
 applyTheme();
@@ -1835,6 +1865,7 @@ async function showSettings() {
   custom.setAttribute("aria-pressed", String(/^#/.test(current)));
   custom.append(input, el("span", "", "Custom"));
   input.oninput = () => { setPref("airlock.theme", input.value); applyTheme(); for (const b of swatches.children) b.setAttribute("aria-pressed", String(b === custom)); };
+  custom.title = "Any colour: airlock keeps it bright enough to glow";
   swatches.append(custom);
 
   // Background
@@ -1855,7 +1886,7 @@ async function showSettings() {
   bgInput.type = "color";
   bgInput.value = /^#/.test(curBg) ? curBg : "#070b0e";
   bgCustom.setAttribute("aria-pressed", String(/^#/.test(curBg)));
-  bgCustom.title = "Dark colours keep text easy to read";
+  bgCustom.title = "Any colour: airlock uses a deep shade of it, so text stays easy to read";
   bgCustom.append(bgInput, el("span", "", "Custom"));
   bgInput.oninput = () => pickBg(bgInput.value, bgCustom);
   bgs.append(bgCustom);
@@ -1864,7 +1895,7 @@ async function showSettings() {
   const about = el("dl", "about");
   const logBox = el("div", "console-log tall", "Loading…");
   body.replaceChildren(sec("Accent colour"), swatches, sec("Background"), bgs,
-    el("p", "note", "Lines, panels and text shades follow both choices. Dark backgrounds keep text easy to read."), sec("About airlock"), about, sec("App log"),
+    el("p", "note", "Lines, panels and text shades follow both choices. A custom background becomes a deep shade of the colour you pick, so text always stays readable."), sec("About airlock"), about, sec("App log"),
     el("p", "note", "Everything airlock did on this computer: VMs that stopped, attacks the tripwire blocked, updates, errors. Documents' contents are never logged."), logBox);
   let info = {};
   try { info = await invoke("about_info"); } catch (e) { about.append(el("dd", "", String(e))); }
@@ -1965,3 +1996,261 @@ $("tour-skip").onclick = endTour;
   const demo = await invoke("demo_script").catch(() => null);
   if (!done && !demo) setTimeout(startTour, 700);
 })();
+
+// ================================================================ pro tools
+// Command palette, page thumbnails, live session status, the result badge's
+// quick summary, and the "sealing" transition when a document opens.
+
+// ---------------------------------------------------------------- command palette
+// Every action by name (Ctrl+K). Typing a number goes to that page.
+function paletteCommands() {
+  const doc = state.docOpen;
+  const c = [
+    ["Open a document…", "Ctrl+O", true, openDialog],
+    ["Search in the document", "Ctrl+F", doc, () => { $("q").focus(); $("q").select(); }],
+    ["Zoom in", "+", doc, () => stepZoom(1)],
+    ["Zoom out", "−", doc, () => stepZoom(-1)],
+    ["Fit to width", "", doc, fitWidth],
+    ["Show page thumbnails", "Ctrl+B", doc && $("thumbs").hidden, () => setThumbs(true)],
+    ["Hide page thumbnails", "Ctrl+B", doc && !$("thumbs").hidden, () => setThumbs(false)],
+    ["Show the document's text", "", doc && !state.pixelsOnly, showText],
+    ["Save a safe PDF copy…", "Ctrl+S", doc, saveSafeCopy],
+    ["Print…", "Ctrl+P", doc, printDocument],
+    ["Malware report", "", doc, () => showAnalysis()],
+    ["Check for malware again", "", doc, () => showAnalysis(undefined, true)],
+    ["Save the malware report…", "", doc && !!check.report, saveReport],
+    [state.pixelsOnly ? "Turn off Pixels only" : "Turn on Pixels only (no text leaves the VM)", "", true, () => setPixelsOnly(!state.pixelsOnly)],
+    [autoCheckOn() ? "Stop checking files automatically" : "Check files automatically", "", true, () => $("m-auto").click()],
+    ["Spreadsheets: one page per sheet / pages", "", doc && !$("sheetbtn").hidden, () => $("sheetbtn").click()],
+    ["Updates…", "", true, showUpdates],
+    ["Settings & about…", "", true, showSettings],
+    ["Guided tour", "", true, startTour],
+    ["New window", "", true, () => invoke("new_window")],
+    ["Close this window", "Ctrl+W", true, closeWindow],
+    ["Exit airlock (all windows)", "Ctrl+Q", true, quitEverything],
+  ];
+  for (const [id, name] of THEMES) c.push([`Accent colour: ${name}`, "", true, () => { setPref("airlock.theme", id); applyTheme(); }]);
+  for (const [id, name] of BACKGROUNDS) c.push([`Background: ${name}`, "", true, () => { setPref("airlock.background", id); applyTheme(); }]);
+  return c.filter((x) => x[2]);
+}
+
+// Letters in order, rewarding word starts and runs: "sv cp" finds "Save a safe PDF copy".
+function fuzzy(q, text) {
+  const t = text.toLowerCase();
+  let score = 0, ti = 0, run = 0;
+  for (const ch of q.toLowerCase().replace(/\s+/g, "")) {
+    const i = t.indexOf(ch, ti);
+    if (i < 0) return -1;
+    run = i === ti ? run + 1 : 0;
+    score += 1 + run * 2 + (i === 0 || /[\s:(/]/.test(t[i - 1]) ? 4 : 0) - (i - ti) * 0.05;
+    ti = i + 1;
+  }
+  return score;
+}
+
+const palette = { items: [], sel: 0 };
+function renderPalette() {
+  const q = $("pal-q").value.trim();
+  let items = [];
+  const n = Number(q.replace(/^(:|page\s*|p\s*)/i, ""));
+  if (state.docOpen && q && Number.isInteger(n) && n >= 1 && n <= state.pages.length) {
+    items.push([`Go to page ${n} of ${state.pages.length}`, "", true, () => gotoPage(n - 1)]);
+  }
+  const cmds = paletteCommands();
+  items.push(...(q ? cmds.map((c) => [c, fuzzy(q, c[0])]).filter(([, s]) => s >= 0).sort((a, b) => b[1] - a[1]).map(([c]) => c) : cmds));
+  palette.items = items.slice(0, 12);
+  palette.sel = Math.min(palette.sel, Math.max(0, palette.items.length - 1));
+  $("pal-list").replaceChildren(...palette.items.map(([label, keys], i) => {
+    const li = el("li", i === palette.sel ? "sel" : "");
+    li.setAttribute("role", "option");
+    li.append(el("span", "", label));
+    if (keys) li.append(el("kbd", "", keys));
+    li.onmouseenter = () => { palette.sel = i; for (const [k, x] of [...$("pal-list").children].entries()) x.classList.toggle("sel", k === i); };
+    li.onclick = () => runPalette(i);
+    return li;
+  }));
+  if (!palette.items.length) $("pal-list").append(el("li", "empty", "No matching command"));
+}
+function openPalette() {
+  toggleAppMenu(false);
+  $("palette").hidden = false;
+  $("pal-q").value = "";
+  palette.sel = 0;
+  renderPalette();
+  $("pal-q").focus();
+}
+function closePalette() { $("palette").hidden = true; }
+function runPalette(i) {
+  const item = palette.items[i];
+  closePalette();
+  if (item) item[3]();
+}
+$("pal-q").addEventListener("input", () => { palette.sel = 0; renderPalette(); });
+$("pal-q").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown") { e.preventDefault(); palette.sel = Math.min(palette.items.length - 1, palette.sel + 1); renderPalette(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); palette.sel = Math.max(0, palette.sel - 1); renderPalette(); }
+  else if (e.key === "Enter") { e.preventDefault(); runPalette(palette.sel); }
+  else if (e.key === "Escape") { e.preventDefault(); closePalette(); }
+  e.stopPropagation();
+});
+$("palette").addEventListener("mousedown", (e) => { if (e.target === $("palette")) closePalette(); });
+$("palbtn").onclick = openPalette;
+document.addEventListener("keydown", (e) => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && (e.key.toLowerCase() === "k" || (e.shiftKey && e.key.toLowerCase() === "p"))) { e.preventDefault(); $("palette").hidden ? openPalette() : closePalette(); }
+  if (mod && e.key.toLowerCase() === "b" && state.docOpen) { e.preventDefault(); setThumbs($("thumbs").hidden); }
+});
+
+function gotoPage(i) {
+  const p = state.pages[i];
+  if (p) $("viewer").scrollTop = p.el.offsetTop - 12;
+}
+
+// ---------------------------------------------------------------- page thumbnails
+// Small renders from the same VM, made only when the main pages are idle.
+const thumbs = { list: [], observer: null, queue: [], busy: false, current: -1 };
+function setThumbs(on) {
+  $("thumbs").hidden = !on;
+  $("thumbbtn").setAttribute("aria-pressed", String(on));
+  setPref("airlock.thumbs", on ? "1" : "0");
+  if (on) buildThumbs();
+  if (state.fitMode && state.docOpen) fitWidth();
+}
+function buildThumbs() {
+  if (thumbs.list.length === state.pages.length && thumbs.list.length) return;
+  if (thumbs.observer) thumbs.observer.disconnect();
+  for (const t of thumbs.list) if (t.url) URL.revokeObjectURL(t.url);
+  thumbs.queue = [];
+  thumbs.observer = new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) queueThumb(Number(e.target.dataset.index));
+  }, { root: $("thumbs"), rootMargin: "300px 0px" });
+  thumbs.list = state.pages.map((p, i) => {
+    const b = el("button", "thumb");
+    b.dataset.index = String(i);
+    b.title = `Page ${i + 1}`;
+    const box = el("div", "frame");
+    box.style.aspectRatio = `${p.w} / ${p.h}`;
+    const img = el("img");
+    img.alt = "";
+    box.append(img);
+    b.append(box, el("span", "n", String(i + 1)));
+    b.onclick = () => gotoPage(i);
+    thumbs.observer.observe(b);
+    return { el: b, img, url: null, done: false };
+  });
+  $("thumbs").replaceChildren(...thumbs.list.map((t) => t.el));
+  markThumb(true);
+}
+function queueThumb(i) {
+  if (!thumbs.list[i] || thumbs.list[i].done || thumbs.queue.includes(i)) return;
+  thumbs.queue.push(i);
+  pumpThumbs();
+}
+async function pumpThumbs() {
+  if (thumbs.busy) return;
+  thumbs.busy = true;
+  try {
+    while (thumbs.queue.length && state.docOpen) {
+      // The main pages first.
+      while (state.rendering) await new Promise((r) => setTimeout(r, 120));
+      const i = thumbs.queue.shift();
+      const t = thumbs.list[i];
+      if (!t || t.done) continue;
+      try {
+        const buf = await invoke("render_page", { page: i, dpi: 24 });
+        t.url = URL.createObjectURL(new Blob([buf], { type: "image/png" }));
+        t.img.src = t.url;
+        t.done = true;
+        t.el.classList.add("ready");
+      } catch { break; }
+    }
+  } finally {
+    thumbs.busy = false;
+  }
+}
+function markThumb(scrollIntoView = false) {
+  if ($("thumbs").hidden || !thumbs.list.length) return;
+  const cur = currentPage();
+  if (cur === thumbs.current && !scrollIntoView) return;
+  thumbs.list[thumbs.current]?.el.classList.remove("current");
+  thumbs.current = cur;
+  const t = thumbs.list[cur];
+  if (!t) return;
+  t.el.classList.add("current");
+  const box = $("thumbs"), top = t.el.offsetTop, bottom = top + t.el.offsetHeight;
+  if (top < box.scrollTop || bottom > box.scrollTop + box.clientHeight) box.scrollTop = top - box.clientHeight / 3;
+}
+$("viewer").addEventListener("scroll", () => markThumb(), { passive: true });
+$("thumbbtn").onclick = () => setThumbs($("thumbs").hidden);
+
+// ---------------------------------------------------------------- session status
+// Facts about the sealed session, live: how long its VM has run, what it
+// can reach (nothing), what may leave it.
+const session = { t0: 0, stopped: false };
+function fmtUp(ms) {
+  const s = Math.floor(ms / 1000);
+  return s < 3600 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+function renderTelemetry() {
+  const t = $("telemetry");
+  t.hidden = !state.docOpen;
+  if (!state.docOpen) return;
+  const stopped = $("seal").classList.contains("stopped");
+  const parts = stopped
+    ? [["VM", "destroyed"], ["pages", String(state.pages.length)]]
+    : [["VM", `up ${fmtUp(Date.now() - session.t0)}`], ["pages", String(state.pages.length)], ["network", "none"], ["leaves the VM", state.pixelsOnly ? "pixels only" : "pixels + cleaned text"]];
+  t.replaceChildren(...parts.map(([k, v], i) => {
+    const s = el("span", i === 0 ? (stopped ? "t-item off" : "t-item live") : "t-item");
+    s.append(el("b", "", k), document.createTextNode(` ${v}`));
+    return s;
+  }));
+}
+setInterval(renderTelemetry, 1000);
+
+// ---------------------------------------------------------------- badge summary
+// Hovering the result badge shows the top findings without opening a panel.
+let peekTimer = null;
+function showPeek() {
+  const r = check.report;
+  if (!r || check.running || check.attacked) return;
+  const order = { high: 0, medium: 1, low: 2, info: 3 };
+  const top = (r.findings || []).filter((f) => f.severity !== "info").sort((a, b) => order[a.severity] - order[b.severity]);
+  const seen = new Set();
+  const uniq = top.filter((f) => !seen.has(f.title) && seen.add(f.title)).slice(0, 4);
+  const p = $("peek");
+  const head = el("div", `peek-head ${verdictClass(r.verdict)}`);
+  head.append(el("strong", "", r.headline || r.verdict), el("span", "", `${r.seconds?.toFixed?.(1) ?? "?"} s · 2 VMs`));
+  const list = el("ul", "");
+  for (const f of uniq) {
+    const li = el("li", "");
+    li.append(el("span", `sev ${f.severity}`, f.severity === "medium" ? "med" : f.severity), el("span", "", f.title || f.what));
+    list.append(li);
+  }
+  p.replaceChildren(head, ...(uniq.length ? [list] : [el("p", "note", "Nothing risky found.")]), el("p", "peek-foot", "Click for the full report"));
+  const b = $("check").getBoundingClientRect();
+  p.style.left = `${Math.max(8, Math.min(window.innerWidth - 340, b.left))}px`;
+  p.style.top = `${b.bottom + 8}px`;
+  p.hidden = false;
+}
+$("check").addEventListener("mouseenter", () => { clearTimeout(peekTimer); peekTimer = setTimeout(showPeek, 250); });
+$("check").addEventListener("mouseleave", () => { clearTimeout(peekTimer); $("peek").hidden = true; });
+$("check").addEventListener("click", () => { $("peek").hidden = true; });
+
+// ---------------------------------------------------------------- opening
+// Hook into document setup: session clock, thumbnails, sealing transition.
+const setupDocumentBase = setupDocument;
+setupDocument = function (info) {
+  setupDocumentBase(info);
+  session.t0 = Date.now();
+  thumbs.list = [];
+  thumbs.current = -1;
+  $("thumbbtn").hidden = false;
+  if (pref("airlock.thumbs", "0") === "1") setThumbs(true);
+  else $("thumbs").hidden = true;
+  const v = $("viewer");
+  v.classList.remove("sealing");
+  void v.offsetWidth;
+  v.classList.add("sealing");
+  setTimeout(() => v.classList.remove("sealing"), 900);
+  renderTelemetry();
+};

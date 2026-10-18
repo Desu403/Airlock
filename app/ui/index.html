@@ -24,10 +24,12 @@
   </div>
   <header class="bar">
     <div class="menu-wrap" id="appwrap">
-      <button class="brand" id="appbtn" aria-haspopup="menu" aria-expanded="false" title="airlock menu"><span class="logo" aria-hidden="true"></span>airlock</button>
+      <button class="brand" id="appbtn" aria-haspopup="menu" aria-expanded="false" title="airlock menu"><span class="logo" aria-hidden="true"></span>airlock<span class="badge" id="updates-dot" hidden></span></button>
       <div class="menu left" id="appmenu" role="menu" hidden>
         <button role="menuitem" id="m-new">New window</button>
         <button role="menuitem" id="m-auto" aria-checked="true" title="Check every file you open for malware, in the background">Check files automatically <span class="tick">✓</span></button>
+        <button role="menuitem" id="m-pixels" aria-checked="false" title="Pixels only: no document text leaves the VM (no text selection or Text panel). Search still works.">Pixels only <span class="tick">✓</span></button>
+        <button role="menuitem" id="m-updates" title="Updates for airlock's VM (renderers, kernel, Firecracker, malware signatures)">Updates… <span class="menu-dot" id="m-updates-dot" hidden>new</span></button>
         <button role="menuitem" id="m-tour">Guided tour</button>
         <button role="menuitem" id="m-settings">Settings &amp; about…</button>
         <button role="menuitem" id="m-close">Close this window <kbd>Ctrl+W</kbd></button>
@@ -35,12 +37,13 @@
       </div>
     </div>
     <button id="open" title="Open a document (Ctrl+O)">Open…</button>
+    <button id="thumbbtn" class="icon" hidden aria-pressed="false" title="Page thumbnails (Ctrl+B)" aria-label="Page thumbnails"><span class="ico-thumbs" aria-hidden="true"></span></button>
     <div class="doc" id="doc" hidden>
       <span class="doc-name" id="docname"></span>
       <span class="seal" id="seal" title="The document is open inside a disposable Firecracker microVM with no network device. Only pixels, page sizes, search positions and cleaned text come out. The VM is destroyed when you close the document.">
         <span class="dot"></span><span class="label">Sealed · microVM · no network</span>
       </span>
-      <button class="check" id="check" hidden><span class="dot"></span><span class="label"></span></button>
+      <button class="check" id="check" hidden><span class="dot"></span><span class="label"></span><span class="chev" aria-hidden="true">›</span></button>
     </div>
     <div class="spacer"></div>
     <div class="group search" id="searchbox" hidden>
@@ -64,10 +67,6 @@
         <button role="menuitem" id="print" title="Prints the pixels the VM drew">Print… <kbd>Ctrl+P</kbd></button>
       </div>
     </div>
-    <button id="pixels" hidden aria-pressed="false" title="Pixels only: no document text leaves the VM (no text selection or Text panel). Search still works.">Pixels only</button>
-    <button id="updates" title="Updates for airlock's VM (renderers, kernel, Firecracker)">Updates<span class="badge" id="updates-dot" hidden></span></button>
-    <button id="tourbtn" class="icon" title="Show the guided tour of airlock" aria-label="Guided tour">?</button>
-    <button id="analyze" class="primary" hidden title="Detonate in a separate microVM wired to a fake internet and report what the document tries to do">Analyze</button>
   </header>
 
   <div class="banner" id="banner" hidden>
@@ -76,6 +75,7 @@
   </div>
 
   <main>
+    <nav class="thumbs" id="thumbs" hidden aria-label="Pages"></nav>
     <section class="viewer" id="viewer">
       <div class="empty" id="empty">
         <div class="porthole" aria-hidden="true"></div>
@@ -160,6 +160,13 @@
     </div>
   </div>
   <div id="printout" aria-hidden="true"></div>
-  <footer class="status" id="status">Ready</footer>
+  <footer class="statusbar"><span class="status-text" id="status">Ready</span><span class="telemetry" id="telemetry" hidden></span><button class="kbd-hint" id="palbtn" title="Every command, by name (Ctrl+K)"><kbd>Ctrl</kbd><kbd>K</kbd> commands</button></footer>
+  <div class="palette-wrap" id="palette" hidden>
+    <div class="palette" role="dialog" aria-label="Commands">
+      <input id="pal-q" type="text" placeholder="Type a command, a page number, or a colour…" autocomplete="off" spellcheck="false">
+      <ul id="pal-list" role="listbox"></ul>
+    </div>
+  </div>
+  <div class="peek" id="peek" hidden></div>
 </body>
 </html>

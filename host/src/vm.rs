@@ -157,7 +157,10 @@ impl Assets {
                 .find(|p| p.exists())
                 .unwrap_or_else(|| base.join("vendor/bin/vmlinux")),
             rootfs: base.join("build/rootfs.ext4"),
-            sinkhole: [exe_dir.join("sinkhole"), exe_dir.join("../lib/airlock/sinkhole"), base.join("host/target/release/sinkhole")]
+            // An update kit (<lib>/kit) first uses the installed one next to
+            // it: an AppImage's own copy sits in a FUSE mount that the VM's
+            // spare uid cannot read.
+            sinkhole: [base.join("../sinkhole"), exe_dir.join("sinkhole"), exe_dir.join("../lib/airlock/sinkhole"), base.join("host/target/release/sinkhole")]
                 .into_iter()
                 .find(|p| p.exists())
                 .unwrap_or_else(|| exe_dir.join("sinkhole")),

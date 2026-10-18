@@ -340,44 +340,44 @@ f36caa0aeea63395c43268b9819d9b4131adba62aee5430269cddbf2e2f0b872	malicious	bazaa
 f939ba21028cbd05c2312a6f62f3d54b4b01dbf3f7097c6258ff29a6451c6dee	malicious	bazaar	docx	Packing Summary 563538D.docx	Formbook CVE-2017-11882,docx,Formbook
 fc046d94184315b711c3c92b50cf56ae0c5a413a6e0287e08c71e33513bb9dec	malicious	bazaar	docx	draft contract.docx	docx
 020e539c282a5c9436164a2646275bfbae2a95d51f1ee7a58bd3230f18134598	malicious	bazaar	hta	DuplicateWaybill_DHL_AWB_734141745.hta	RemcosRAT hta,RemcosRAT
-0d2d38f4682fea395cbd5eaf88136ed2987cd91ef8be7ead3dab42a4b623a90e	malicious	bazaar	hta	Xteam30.hta	hta
-10e7a7e50171e1a71d79a2e4052cce145c09c26ed9213dd940df68261c3b5f16	malicious	bazaar	hta	fuck_niggers_8.hta	hta
+0d2d38f4682fea395cbd5eaf88136ed2987cd91ef8be7ead3dab42a4b623a90e	decoy	bazaar	hta	Xteam30.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+10e7a7e50171e1a71d79a2e4052cce145c09c26ed9213dd940df68261c3b5f16	decoy	bazaar	hta	fuck_niggers_8.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
 17496070c03f4aa884cbeb690079e58ec9af79157115f465aa7a721aaeb17111	malicious	bazaar	hta	123.pdf_(cleaned).hta	hta
-17abe5685fd70a472ed45401a618afa5b628312a7491cd761536b181a2b346c9	malicious	bazaar	hta	fuck_niggers_39.hta	hta
-18e7bea35f43858ce0174866bcaba4ea45c51be95d32d73ed3736744c44fb6c4	malicious	bazaar	hta	fuck_niggers_39.hta	hta
-27665b87b38ff24489c5e337e1f1423b73b7f67a44a04004ec4bb3512df0facf	malicious	bazaar	hta	fuck_niggers_8.hta	hta
+17abe5685fd70a472ed45401a618afa5b628312a7491cd761536b181a2b346c9	decoy	bazaar	hta	fuck_niggers_39.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+18e7bea35f43858ce0174866bcaba4ea45c51be95d32d73ed3736744c44fb6c4	decoy	bazaar	hta	fuck_niggers_39.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+27665b87b38ff24489c5e337e1f1423b73b7f67a44a04004ec4bb3512df0facf	decoy	bazaar	hta	fuck_niggers_8.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
 2c41b7dd5914336764151dddb1ea7f5240c4bb9ec5590d3eb6e5c589c588dfad	malicious	bazaar	hta	107.173.227.126_90_bestwishes.hta	hta
 3114b50fbedd1d72a25f326aeab5548daeeae18e01eb13a53e76e96cd202faef	malicious	bazaar	hta	MD00125 Sp08102026.hta	RemcosRAT hta,RemcosRAT
-35926f41576ab8d620585526de18380005a94ae518cb33dfd469110ace7d04c3	malicious	bazaar	hta	temp.hta	hta
-3b3ed840462a50adbae17d5e4c2fc09ae6a48b88e8e5958bc42d6e77702b2e90	malicious	bazaar	hta	classcomputer.hta	hta
-3c51e5995af60587fbf019f11f94d843b8ae3fb82786b6bd468bc60660783fc5	malicious	bazaar	hta	fuck_niggers_2.hta	hta
-46659614c3bddf6ff859af68fbd7d1faa53c3d6ba9e69d8f8820acb59b72f503	malicious	bazaar	hta	fuck_niggers_26.hta	hta
+35926f41576ab8d620585526de18380005a94ae518cb33dfd469110ace7d04c3	decoy	bazaar	hta	temp.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+3b3ed840462a50adbae17d5e4c2fc09ae6a48b88e8e5958bc42d6e77702b2e90	decoy	bazaar	hta	classcomputer.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+3c51e5995af60587fbf019f11f94d843b8ae3fb82786b6bd468bc60660783fc5	decoy	bazaar	hta	fuck_niggers_2.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+46659614c3bddf6ff859af68fbd7d1faa53c3d6ba9e69d8f8820acb59b72f503	decoy	bazaar	hta	fuck_niggers_26.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
 49575e2086e0f2b1787fb7a520ec2ccc65d9d0fdcf5388263a2a000829dc950d	malicious	bazaar	hta	Gemini Order No.206378105.hta	AgentTesla AgentTesla,exe,hta
-4c4d689cc456c7fbdac37c9abb959c670311b1b51e5ef41e3917762c9e82a05b	malicious	bazaar	hta	fuck_niggers_21.hta	hta
-4e3ffef03845a1da3f072a92161e3f1b9c86900056f258055908aab0b4cde997	malicious	bazaar	hta	fuck_niggers_2.hta	hta
-6b9df966d5f851687534c1abae51e4287c91484fa5aa6dc45e89ebb8368a02e7	malicious	bazaar	hta	ffffffffffffffffffffqw.hta	hta
-753cfe8e98d76cff97090f67b200443183ab91b727acca21ed8e657bb65c9a21	malicious	bazaar	hta	teach.hta	hta
+4c4d689cc456c7fbdac37c9abb959c670311b1b51e5ef41e3917762c9e82a05b	decoy	bazaar	hta	fuck_niggers_21.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+4e3ffef03845a1da3f072a92161e3f1b9c86900056f258055908aab0b4cde997	decoy	bazaar	hta	fuck_niggers_2.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+6b9df966d5f851687534c1abae51e4287c91484fa5aa6dc45e89ebb8368a02e7	decoy	bazaar	hta	ffffffffffffffffffffqw.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+753cfe8e98d76cff97090f67b200443183ab91b727acca21ed8e657bb65c9a21	decoy	bazaar	hta	teach.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
 7fba20ca7916be05767368b95627ad280474fff2aa51a290226f66a8fd5a4d50	malicious	bazaar	hta	K-2-1-13ab-Coal_Mill_Grinding_Rings.hta	hta
-82f1b1874d6003e049c69e87ed5fcf64301090dfa275acb98e9938c788ff801d	malicious	bazaar	hta	fuck_niggers_8.hta	hta
+82f1b1874d6003e049c69e87ed5fcf64301090dfa275acb98e9938c788ff801d	decoy	bazaar	hta	fuck_niggers_8.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
 8764195a7594befd2451882ee64557a0f03acaec9409644455741ea7990de93b	malicious	bazaar	hta	wemadebest.hta	RemcosRAT hta,RemcosRAT
 87bf38966f61d31d3e2fcd1362ddc959fe5006e0c2cefdc72ccbed21569553af	malicious	bazaar	hta	107.172.172.220_50_wearegood.hta	hta
-88e78e39dcca285d6fb6d44176e5bd78989213081fa5844bf5326267190f7a88	malicious	bazaar	hta	fuck_niggers_44.hta	hta
-89b9872bff91c7f1179b450693526cc5873b7815bb8f1e66c92efe4b5319ba74	malicious	bazaar	hta	fuck_niggers_2.hta	hta
+88e78e39dcca285d6fb6d44176e5bd78989213081fa5844bf5326267190f7a88	decoy	bazaar	hta	fuck_niggers_44.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+89b9872bff91c7f1179b450693526cc5873b7815bb8f1e66c92efe4b5319ba74	decoy	bazaar	hta	fuck_niggers_2.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
 8d30e21fc01b9b497cfe4ae2513d7596aad12693fce239445383b5dedc73aeac	malicious	bazaar	hta	123.pdf.hta	hta
-8d52c312436e0c4e2f7f197ea6262d25d3cbe92059ab96b803612c8275411759	malicious	bazaar	hta	fuck_niggers_30.hta	hta
+8d52c312436e0c4e2f7f197ea6262d25d3cbe92059ab96b803612c8275411759	decoy	bazaar	hta	fuck_niggers_30.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
 95187623172779e3acfc1ba0ba73e30a5888caa189aeb40f12d6c22f554b3533	malicious	bazaar	hta	goodthingswithme.hta	RemcosRAT hta,RemcosRAT
-ae60900bdab2138230f1908ca57faa66052de78c3a2f99213662be20dfab44cb	malicious	bazaar	hta	fuck_niggers_8.hta	hta
-b7afb7948a27e2c7ea27aec336486353f2e759ea13e4be4df8c09bce4e139179	malicious	bazaar	hta	rooming.hta	hta
-b9013995a589286b3cfa557386dd5055ae7ac28d5c14cf5b8bea0b520adc204d	malicious	bazaar	hta	temp.hta	hta
+ae60900bdab2138230f1908ca57faa66052de78c3a2f99213662be20dfab44cb	decoy	bazaar	hta	fuck_niggers_8.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+b7afb7948a27e2c7ea27aec336486353f2e759ea13e4be4df8c09bce4e139179	decoy	bazaar	hta	rooming.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+b9013995a589286b3cfa557386dd5055ae7ac28d5c14cf5b8bea0b520adc204d	decoy	bazaar	hta	temp.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
 b93b77be5b76a26418e7ea6e2ff217bb25276783ed06a1a77b60a64226613360	malicious	bazaar	hta	Photo_Viewer (2).hta	hta
 c66116cfe82dc563239bfbd7ac4f91e1e9af966f7729212a3c9f32d197bf0985	malicious	bazaar	hta	besofluck.htA	RemcosRAT hta,RemcosRAT
-c8b2b2c373952b97b09470dfb1f0ff3fbc57334c50f31bc524e30c2276f0ed71	malicious	bazaar	hta	teach.hta	hta
-cb153bd9b963e41ee3afd998bfe75b53226c7b54feb21ba7d54e5d816928c110	malicious	bazaar	hta	fuck_niggers_34.hta	hta
-d172a3bd408a9a96b9e18ca3e7da896ad5c6014cedb61d827919e10df040683e	malicious	bazaar	hta	fuck_niggers_26.hta	hta
-d3ac1e52b34c67274f000880489a6318ff771b747e524c66a8766bfc2648f2ea	malicious	bazaar	hta	ffffffffffffffffffffqw.hta	hta
-dbd15a7fdb3753b3890cc230208a50bed29bcbd66aa3f0986f69e691456e16d8	malicious	bazaar	hta	Zjckk0.hta	hta
+c8b2b2c373952b97b09470dfb1f0ff3fbc57334c50f31bc524e30c2276f0ed71	decoy	bazaar	hta	teach.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+cb153bd9b963e41ee3afd998bfe75b53226c7b54feb21ba7d54e5d816928c110	decoy	bazaar	hta	fuck_niggers_34.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+d172a3bd408a9a96b9e18ca3e7da896ad5c6014cedb61d827919e10df040683e	decoy	bazaar	hta	fuck_niggers_26.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+d3ac1e52b34c67274f000880489a6318ff771b747e524c66a8766bfc2648f2ea	decoy	bazaar	hta	ffffffffffffffffffffqw.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
+dbd15a7fdb3753b3890cc230208a50bed29bcbd66aa3f0986f69e691456e16d8	decoy	bazaar	hta	Zjckk0.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
 ee51871b2d52e0152ea0e645bbee33f2adcc070ec233390cb8c8fc324b4dd1df	malicious	bazaar	hta	wemadebestthingsforme.hta	RemcosRAT hta,RemcosRAT
-fd5707232a5fe34a1952afa48c805db09f6860a8888e42e656cbba2258b85b89	malicious	bazaar	hta	fuck_niggers_34.hta	hta
+fd5707232a5fe34a1952afa48c805db09f6860a8888e42e656cbba2258b85b89	decoy	bazaar	hta	fuck_niggers_34.hta	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
 feddb7d55438986e3fdc46f5422865004cde6d01d23a85c616f4c1c401603dd5	malicious	bazaar	hta	good.hta	PhantomStealer exe,hta,PhantomStealer
 01bba66a32b0e4d4a09adb4c12336b234fe9d44a8858d9e3dd76c289089d78ad	malicious	bazaar	html	CircleK_Fleet_Card_20250430_FACPJ982004695_.html	html
 0336851d92948169ecd1e2499c21ab87299055af61e55fe1c1e1e7d83d3d1278	malicious	bazaar	html	Contact Information Regarding Cooperation Armaments and Military Attache Matters	apt,html,WinterVivern
@@ -413,7 +413,7 @@ feddb7d55438986e3fdc46f5422865004cde6d01d23a85c616f4c1c401603dd5	malicious	bazaa
 99674e4a80ac3bb427590e1db2fb66a602804c38444bb6b5c0ea57f9855bb712	malicious	bazaar	html	index.html	
 a7ed7621080874c1e226891baa8c5c43979dba24acb715c098f8e9d915591332	malicious	bazaar	html	Beleg_1170887_208021.html	html
 a8602645ad4c7a9d4ee7e150e6a30102c32b38e5ae82349169e5da51db5b5927	malicious	bazaar	html	zcgbs460.html	booking,bryonsad-net,feersona-net,html
-c169def52ddb42d1d8db954e2d8c77a8faad74474df430a146e4373871bd93bf	malicious	bazaar	html	futurebuilders4c.com.html	85-239-149-178,booking,fivebellsinn-com,futurebuilders4c-com,html,v0hkpadr04mbz5lkearqa-com
+c169def52ddb42d1d8db954e2d8c77a8faad74474df430a146e4373871bd93bf	decoy	bazaar	html	futurebuilders4c.com.html	web server's 'One moment, please' holding page, not the HTA payload (verified 2026-10-18)
 ca85e1a7b11ca6dbfe60c3113490f39883158098803a2e20ef76a9046bc8feea	malicious	bazaar	html	Config_New_v8.6.html	html
 ce1c3fa67f4bf52e9987dbc10abe0f109199dca35db4ea83cf56f01c85b7d123	malicious	bazaar	html	GER26GEC0003746.html	html
 d12447bc79fd6fe4548193f49cac80ce4f5adae8e52061621f2a82ce5d0a0693	malicious	bazaar	html	index(2).html	Chrome-security-updates,html

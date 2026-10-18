@@ -613,17 +613,38 @@ async fn setup_build(app: tauri::AppHandle, state: State<'_, AppState>) -> R<()>
         return Err("a build or update is already running".into());
     }
     let result = blocking(move || {
-        use std::io::BufRead;
         let (kit, sinkhole) = setup_kit(&app).ok_or("setup files not found")?;
         let mut cmd = std::process::Command::new("sh");
-        cmd.arg("-c").arg("exec sh scripts/setup.sh build 2>&1").current_dir(&kit).stdout(std::process::Stdio::piped());
+        // AIRLOCK_PROGRESS: package names, download meters and "@@" step
+        // markers for the progress view.
+        cmd.arg("-c").arg("exec sh scripts/setup.sh build 2>&1").current_dir(&kit).env("AIRLOCK_PROGRESS", "1").stdout(std::process::Stdio::piped());
         if let Some(s) = sinkhole {
             cmd.env("AIRLOCK_SINKHOLE", s);
         }
         let mut child = cmd.spawn().map_err(err)?;
         let mut last = String::new();
-        for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
-            last = text::sanitize_line(line.as_bytes());
+        let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
+        let mut buf = Vec::new();
+        // curl redraws its meter with \r: each redraw is a line here.
+        loop {
+            buf.clear();
+            let mut byte = [0u8];
+            let mut eof = true;
+            while let Ok(1) = std::io::Read::read(&mut out, &mut byte) {
+                eof = false;
+                if byte[0] == b'\n' || byte[0] == b'\r' {
+                    break;
+                }
+                buf.push(byte[0]);
+            }
+            if eof && buf.is_empty() {
+                break;
+            }
+            let line = text::sanitize_line(&buf);
+            if line.trim().is_empty() {
+                continue;
+            }
+            last = line;
             let _ = app.emit("setup-progress", last.clone());
         }
         if child.wait().map_err(err)?.success() { Ok(()) } else { Err(format!("the build stopped: {last}")) }

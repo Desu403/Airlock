@@ -1093,20 +1093,286 @@ $("setup-fix").onclick = async () => {
   b.disabled = false;
   checkSetup();
 };
+// ---- setup progress view: the build's output turned into stages, one real
+// progress bar and a plain-words line about what is happening right now.
+// Each step has an expected duration (seconds, measured on a mid-range PC);
+// steps with a counter (downloads, packages, kernel files, crates) move by
+// it, the others creep towards their end. The ETA scales the remaining
+// expected time by how fast this computer has been so far.
+const FORGE_STAGES = [
+  ["check", "Check"], ["fetch", "Download"], ["kernel", "Kernel"], ["programs", "Programs"],
+  ["rules", "Signatures"], ["seal", "Seal image"], ["install", "Install"],
+];
+const FORGE_STEPS = {
+  check: { stage: "check", t: 1, what: "Checking this computer", why: "Virtualisation, sandboxing and the tools the build needs." },
+  fetch: { stage: "fetch", t: 15, what: "Downloading", why: "Pinned versions from the official sources; every file's fingerprint is checked." },
+  "kernel/unpack": { stage: "kernel", t: 10, what: "Unpacking the Linux kernel source", why: "The VM gets its own small kernel, built here with risky features switched off." },
+  "kernel/tools": { stage: "kernel", t: 20, what: "Getting the compiler tools", why: "Used only to build; they never end up inside the viewer." },
+  "kernel/compile": { stage: "kernel", t: 140, what: "Compiling the locked-down kernel", why: "Firecracker's minimal settings plus airlock's hardening: no modules, no debugging hooks, no unneeded drivers." },
+  "programs/tools": { stage: "programs", t: 8, what: "Getting the Rust compiler", why: "To build the airlock agent from source." },
+  "programs/agent": { stage: "programs", t: 8, what: "Building the airlock agent", why: "The tiny program inside the VM that renders pages and reports what the file tries to do." },
+  "programs/base": { stage: "programs", t: 2, what: "Applying security updates", why: "The viewer's base system starts fully patched." },
+  "programs/packages": { stage: "programs", t: 25, what: "Installing the document readers", why: "LibreOffice, MuPDF and the inspectors: they only ever run inside the VM, never on your computer." },
+  "rules/rules": { stage: "rules", t: 5, what: "Compiling the malware signatures", why: "YARA-Forge's tested rule set: thousands of documented malware patterns, checked against every file." },
+  "seal/fonts": { stage: "seal", t: 1, what: "Preparing fonts", why: "So documents look the way their author meant." },
+  "seal/office": { stage: "seal", t: 4, what: "Preparing LibreOffice", why: "A clean, prebuilt profile: documents never get to change it." },
+  "seal/pack": { stage: "seal", t: 4, what: "Packing the viewer", why: "Every file owned by the VM's root, nothing left over from the build." },
+  "seal/image": { stage: "seal", t: 3, what: "Writing the read-only disk image", why: "Each document gets a fresh copy of it; nothing is ever saved back." },
+  "install/install": { stage: "install", t: 2, what: "Installing the secure viewer", why: "Into your own folder; nothing outside it is changed." },
+};
+// Expected counts for the counted steps (cap the bar below 100% until the step ends).
+const KERNEL_FILES = 2200, AGENT_CRATES = 12, DL_MB = 145;
+const DOWNLOADS = [
+  [/^firecracker/, "Firecracker", "the micro-VM engine AWS built for Lambda: each document gets its own tiny computer"],
+  [/^alpine-minirootfs/, "Alpine Linux", "the minimal base system inside the viewer"],
+  [/^yara-forge/, "YARA-Forge malware signatures", "thousands of documented malware patterns"],
+  [/^linux-/, "the Linux kernel source", "compiled here into the VM's own locked-down kernel"],
+  [/microvm.*config/, "Firecracker's kernel settings", "the minimal starting point for the VM's kernel"],
+];
+const KERNEL_DIRS = {
+  arch: "processor support", kernel: "core kernel", mm: "memory management", fs: "file systems", net: "networking",
+  drivers: "device drivers", security: "security modules", crypto: "cryptography", block: "disk access",
+  lib: "kernel library", init: "start-up", ipc: "process communication", virt: "virtualisation", io_uring: "fast disk input/output",
+};
+function packageNote(name) {
+  const rules = [
+    [/^libreoffice-writer/, "LibreOffice Writer: opens Word and text documents"],
+    [/^libreoffice-calc/, "LibreOffice Calc: opens spreadsheets"],
+    [/^libreoffice-impress/, "LibreOffice Impress: opens presentations"],
+    [/^libreoffice/, "LibreOffice core"],
+    [/^mupdf/, "MuPDF: draws PDF pages"],
+    [/^quickjs/, "QuickJS: runs airlock's PDF inspector"],
+    [/^py3-oletools/, "oletools: finds macros and exploits in Office files"],
+    [/^py3-/, "Python library for the inspectors"],
+    [/^python3/, "Python: runs the Office inspector"],
+    [/^yara/, "YARA: matches known malware patterns"],
+    [/^zbar/, "ZBar: reads QR codes on pages"],
+    [/^imagemagick/, "ImageMagick: prepares pages for the QR reader"],
+    [/^font-|^fontconfig|^freetype|^harfbuzz/, "fonts and text shaping"],
+    [/^icu|^hunspell|^hyphen/, "language and text support"],
+    [/^cairo|^pango|^pixman|^libpng|^libjpeg|^tiff|^libwebp|^openjpeg|^lcms/, "graphics drawing"],
+    [/^gcc|^musl-dev|^binutils|^make$|^build-base|^bc$|^flex|^bison|^perl|^openssl-dev|^elfutils-dev|^linux-headers|^g\+\+|^libc-dev|^fortify|^patch$/, "compiler tools (build only)"],
+    [/^cargo|^rust/, "Rust compiler (build only)"],
+    [/^musl$|^busybox|^alpine-|^apk-tools/, "base system"],
+    [/^openssl|^libssl|^libcrypto|^ca-certificates/, "encryption library"],
+  ];
+  for (const [re, note] of rules) if (re.test(name)) return note;
+  return "supporting library";
+}
+const fmtTime = (s) => { s = Math.max(0, Math.round(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+const fmtLeft = (s) => (s < 50 ? "under a minute left" : s < 90 ? "about a minute left" : `about ${Math.round(s / 60)} min left`);
+const curlSize = (v) => { const m = /^([\d.]+)([kMG]?)$/.exec(v); if (!m) return null; return +m[1] * ({ "": 1 / 1048576, k: 1 / 1024, M: 1, G: 1024 }[m[2]]); };
+const mb = (v) => (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2)) + " MB";
+
+const forge = {
+  reset() {
+    Object.assign(this, { t0: Date.now(), step: "check", stepT0: Date.now(), done: new Set(), skipped: new Set(), count: 0, total: 0,
+      dl: { mb: 0, cur: 0 }, sub: null, live: null, lines: 0, finished: null, tEnd: 0, frac: 0 });
+    $("forge-stages").replaceChildren(...FORGE_STAGES.map(([id, label], i) => {
+      const li = el("li", "", label);
+      li.dataset.stage = id;
+      li.dataset.n = String(i + 1).padStart(2, "0");
+      return li;
+    }));
+    $("setup-log").replaceChildren();
+    $("forge").classList.remove("ok", "bad");
+    $("forge-title").textContent = "Building the secure viewer";
+    this.render();
+  },
+  enter(step) {
+    if (!FORGE_STEPS[step] || step === this.step) return;
+    // Everything before the new step is done.
+    const order = Object.keys(FORGE_STEPS);
+    for (const k of order.slice(0, order.indexOf(step))) if (!this.skipped.has(k)) this.done.add(k);
+    Object.assign(this, { step, stepT0: Date.now(), count: 0, total: 0, sub: null });
+  },
+  stepFrac() {
+    const st = FORGE_STEPS[this.step], el_ = (Date.now() - this.stepT0) / 1000;
+    const creep = 1 - Math.exp(-el_ / st.t);
+    if (this.step === "fetch") return Math.min(0.99, (this.dl.mb + this.dl.cur) / DL_MB) || creep * 0.3;
+    if (this.step === "kernel/compile") return Math.min(0.99, this.count / KERNEL_FILES);
+    if (this.step === "programs/agent" && this.count) return Math.min(0.97, this.count / AGENT_CRATES);
+    if (this.total) return Math.min(0.99, this.count / this.total);
+    return Math.min(0.95, creep);
+  },
+  // Expected seconds done and in total, over the steps not skipped.
+  progress() {
+    let all = 0, done = 0;
+    for (const [k, st] of Object.entries(FORGE_STEPS)) {
+      if (this.skipped.has(k)) continue;
+      all += st.t;
+      if (this.done.has(k)) done += st.t;
+      else if (k === this.step) done += st.t * this.stepFrac();
+    }
+    return { all, done };
+  },
+  line(raw) {
+    const line = raw.replace(/\s+$/, "");
+    let m;
+    if ((m = /^==> (.*)/.exec(line))) {
+      const t = m[1];
+      if (/^Checking host/.test(t)) this.enter("check");
+      else if (/^Fetching pinned/.test(t)) this.enter("fetch");
+      else if (/kernel .* is already built/.test(t)) {
+        for (const k of ["kernel/unpack", "kernel/tools", "kernel/compile"]) this.skipped.add(k);
+        $("forge-stages").querySelector('[data-stage="kernel"]').classList.add("skip");
+      } else if (/^Building the hardened guest kernel/.test(t)) this.enter("kernel/unpack");
+      else if (/^Building the guest image/.test(t)) this.enter("programs/tools");
+      else if (/^Installing the secure viewer/.test(t)) this.enter("install/install");
+      if (t !== "Done") this.print(t, "step");
+    } else if ((m = /^@@sub (\w+)/.exec(line))) {
+      const id = m[1];
+      const key = Object.keys(FORGE_STEPS).find((k) => k.endsWith("/" + id) && FORGE_STEPS[k].stage === this.stageOfNext(id));
+      if (key) this.enter(key);
+    } else if ((m = /^@@kernel (\d+) (\S+)/.exec(line))) {
+      this.enter("kernel/compile");
+      this.count = +m[1];
+      this.sub = `${this.count.toLocaleString()} files compiled · now: ${KERNEL_DIRS[m[2]] || m[2]}`;
+      this.print(`  CC  ${m[2]}/…  ${this.count.toLocaleString()} files`, "live", "kernel");
+    } else if ((m = /^@@rules (\d+) (\d+)/.exec(line))) {
+      this.sub = `${(+m[1]).toLocaleString()} signatures`;
+      this.print(`  ${(+m[1]).toLocaleString()} malware signatures loaded`, "ok");
+    } else if (/^@@/.test(line)) {
+      // other markers (setup.sh's own @@ok line) are not shown
+    } else if ((m = /^\s*fetching (\S+)/.exec(line))) {
+      const d = DOWNLOADS.find(([re]) => re.test(m[1]));
+      this.dl.file = m[1];
+      this.dl.what = d ? `Downloading ${d[1]}` : `Downloading ${m[1]}`;
+      this.dl.why = d ? d[2][0].toUpperCase() + d[2].slice(1) + "." : "";
+      this.dl.cur = 0;
+      this.sub = null;
+      this.print(`  ↓ ${m[1]}`, "dl");
+    } else if ((m = /^\s*verified (\S+)/.exec(line))) {
+      this.dl.mb += this.dl.cur;
+      this.dl.cur = 0;
+      this.dl.what = `Checking ${m[1]}`;
+      this.print(`  ✓ ${m[1]}: fingerprint matches the pinned SHA-256`, "ok");
+    } else if ((m = /^\s*have (\S+)/.exec(line))) {
+      this.print(`  ✓ ${m[1]} already downloaded and verified`, "ok");
+    } else if (/^\s*\d+\s+[\d.]+[kMG]?\s+\d+\s+[\d.]+[kMG]?\s+\d+\s/.test(line)) {
+      // curl's meter: % Total % Received % Xferd AvgDload AvgUpload [Total Spent Left] Speed
+      const f = line.trim().split(/\s+/);
+      const total = curlSize(f[1]), got = curlSize(f[3]), speed = curlSize(f[f.length - 1]);
+      if (got != null) this.dl.cur = got;
+      const left = f.length === 12 && /^[\d:]+$/.test(f[10]) ? f[10].split(":").reduce((a, b) => a * 60 + +b, 0) : null;
+      this.dl.frac = total ? got / total : 0;
+      if (total) {
+        this.sub = `${mb(got || 0)} of ${mb(total)}${speed ? ` · ${mb(speed)}/s` : ""}${left != null && got < total ? ` · ${left} s left` : ""}`;
+        this.print(`  ${f[0].padStart(3)}%  ${mb(got || 0)} / ${mb(total)}  ${speed ? mb(speed) + "/s" : ""}`, "live", "meter");
+      }
+    } else if ((m = /^\(\s*(\d+)\/(\d+)\) (Installing|Upgrading) (\S+)(?: \(([^)]*)\))?/.exec(line))) {
+      this.count = +m[1];
+      this.total = +m[2];
+      this.sub = `${m[1]} of ${m[2]} · ${m[4]}: ${packageNote(m[4])}`;
+      this.print(`  [${m[1].padStart(m[2].length)}/${m[2]}] ${m[3] === "Upgrading" ? "upgrade" : "install"} ${m[4]} ${m[5] || ""}`, "pkg");
+    } else if ((m = /^\s*Compiling (\S+) (v\S+)/.exec(line))) {
+      if (this.step !== "programs/agent") this.enter("programs/agent");
+      this.count++;
+      this.sub = `${this.count} components compiled · now: ${m[1]}`;
+      this.print(`  compile ${m[1]} ${m[2]}`, "pkg");
+    } else if (/^\s*#+\s+[\d.]+%$|^\s*% Total|^\s*Dload\s+Upload/.test(line)) {
+      // a plain curl progress bar (terminal runs): skipped
+    } else if (/^WARNING|^\s*\* /.test(line)) {
+      this.print(line, "dim");
+    } else if (/error|fail|mismatch|denied|not found/i.test(line)) {
+      this.print(line, "err");
+    } else {
+      this.print(line, /^\s*(OK:|Executing|Finished|built )/.test(line) ? "dim" : "");
+    }
+    this.render();
+  },
+  stageOfNext(id) {
+    // "tools" is used by both the kernel and the image stage: the next one.
+    const cur = FORGE_STEPS[this.step].stage;
+    if (id === "tools") return this.step === "kernel/unpack" || ["check", "fetch"].includes(cur) ? "kernel" : "programs";
+    const key = Object.keys(FORGE_STEPS).find((k) => k.endsWith("/" + id));
+    return key && FORGE_STEPS[key].stage;
+  },
+  print(text, cls, liveKind) {
+    const screen = $("setup-log");
+    if (liveKind && this.live && this.live.kind === liveKind && this.live.node.isConnected) {
+      this.live.node.textContent = text;
+    } else {
+      const div = el("div", "ln " + (cls || ""), text);
+      screen.append(div);
+      this.lines++;
+      this.live = liveKind ? { kind: liveKind, node: div } : null;
+      while (screen.childElementCount > 400) screen.firstElementChild.remove();
+    }
+    const nearEnd = screen.scrollHeight - screen.scrollTop - screen.clientHeight < 60;
+    if (nearEnd) screen.scrollTop = screen.scrollHeight;
+  },
+  render() {
+    const elapsed = ((this.tEnd || Date.now()) - this.t0) / 1000;
+    const { all, done } = this.progress();
+    // Never move backwards (a skipped step can shrink the total).
+    this.frac = this.finished === null ? Math.max(this.frac, Math.min(0.995, done / all)) : this.frac;
+    const pct = Math.floor(this.frac * 100);
+    $("forge-fill").style.width = `${this.frac * 100}%`;
+    $("forge-pct").textContent = `${pct}%`;
+    $("forge-bar").setAttribute("aria-valuenow", pct);
+    $("forge-elapsed").textContent = fmtTime(elapsed);
+    let eta = "";
+    if (this.finished === null && elapsed > 8 && done > 2) eta = ` · ${fmtLeft((all - done) * (elapsed / done))}`;
+    $("forge-eta").textContent = eta;
+    const st = FORGE_STEPS[this.step];
+    const isDl = this.step === "fetch" && this.dl.what;
+    if (this.finished === null) {
+      $("forge-what").textContent = isDl ? this.dl.what : st.what;
+      $("forge-why").textContent = isDl ? this.dl.why : st.why;
+    }
+    const sf = this.step === "fetch" ? this.dl.frac || 0 : this.stepFrac();
+    $("forge-subrow").hidden = !this.sub || this.finished !== null;
+    $("forge-meter").textContent = this.sub || "";
+    $("forge-subfill").style.width = `${Math.round(sf * 100)}%`;
+    const cur = st.stage;
+    let reached = true;
+    for (const li of $("forge-stages").children) {
+      const id = li.dataset.stage;
+      const stageDone = this.finished === "ok" || reached && id !== cur;
+      li.classList.toggle("done", stageDone && !li.classList.contains("skip"));
+      li.classList.toggle("now", id === cur && this.finished === null);
+      if (id === cur) reached = false;
+    }
+    $("forge-lines").textContent = `${this.lines} lines`;
+  },
+  finish(ok, message) {
+    this.finished = ok ? "ok" : "bad";
+    this.tEnd = Date.now();
+    if (ok) this.frac = 1;
+    $("forge").classList.add(ok ? "ok" : "bad");
+    $("forge-title").textContent = ok ? "The secure viewer is ready" : "The build stopped";
+    $("forge-what").textContent = ok ? `Built and checked in ${fmtTime((Date.now() - this.t0) / 1000)}` : message;
+    $("forge-why").textContent = ok ? "You can open documents now." : "Nothing on your computer was changed. Check the live output below, then try again.";
+    this.print(ok ? "✓ done" : `✕ ${message}`, ok ? "ok" : "err");
+    this.render();
+  },
+};
+
 $("setup-build").onclick = async () => {
-  const b = $("setup-build"), log = $("setup-log");
+  const b = $("setup-build");
   b.disabled = true;
-  log.hidden = false;
-  log.textContent = "";
-  status("Building the secure viewer (10-20 minutes; you can leave this open)…");
-  const off = await window.__TAURI__.event.listen("setup-progress", (ev) => {
-    log.textContent = (log.textContent + ev.payload + "\n").split("\n").slice(-200).join("\n");
-    log.scrollTop = log.scrollHeight;
-  });
+  $("forge").hidden = false;
+  $("setup-list").hidden = true;
+  $("setup").classList.add("building");
+  forge.reset();
+  status("Building the secure viewer: you can leave this open");
+  const tick = setInterval(() => forge.render(), 500);
+  const off = await window.__TAURI__.event.listen("setup-progress", (ev) => forge.line(ev.payload));
+  let ok = true;
   try { await invoke("setup_build"); status("airlock is ready"); }
-  catch (e) { status(String(e), true); }
+  catch (e) { ok = false; status(String(e), true); forge.finish(false, String(e)); }
   off();
+  clearInterval(tick);
   b.disabled = false;
+  if (ok) {
+    forge.finish(true);
+    // Let the finished bar be seen before the start page replaces it.
+    await new Promise((r) => setTimeout(r, 2500));
+  }
+  $("setup-list").hidden = false;
+  $("setup").classList.remove("building");
+  if (ok) $("forge").hidden = true;
   checkSetup();
 };
 const setupReady = checkSetup();

@@ -45,9 +45,11 @@ fetch() {
         return
     fi
     echo "   fetching $(basename "$2")"
-    curl -fL --progress-bar -o "$2.part" "$1"
+    # The app's setup screen reads curl's full meter (size, speed, time left).
+    if [ "${AIRLOCK_PROGRESS:-}" = 1 ]; then curl -fL -o "$2.part" "$1"; else curl -fL --progress-bar -o "$2.part" "$1"; fi
     echo "$3  $2.part" | sha256sum -c --quiet || { rm -f "$2.part"; die "checksum mismatch for $1"; }
     mv "$2.part" "$2"
+    echo "   verified $(basename "$2")"
 }
 
 step "Checking host prerequisites"

@@ -181,6 +181,7 @@ case $MODE in
             touch "$KIT/.airlock-kit"
         fi
         (cd "$KIT" && scripts/bootstrap.sh --vm-only)
+        printf '\n==> Installing the secure viewer\n'
         mkdir -p "$LIB"
         install -m 0755 "$KIT/vendor/bin/firecracker" "$LIB/firecracker.new" && mv -f "$LIB/firecracker.new" "$LIB/firecracker"
         install -m 0644 "$KIT/vendor/bin/vmlinux-airlock" "$LIB/vmlinux.new" && mv -f "$LIB/vmlinux.new" "$LIB/vmlinux"

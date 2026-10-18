@@ -96,7 +96,31 @@
           <button id="setup-build" class="primary" hidden>Build the secure viewer</button>
           <button id="setup-recheck">Check again</button>
         </div>
-        <pre class="setup-log" id="setup-log" hidden></pre>
+        <section class="forge" id="forge" hidden aria-live="polite">
+          <header class="forge-head">
+            <span class="forge-dot" aria-hidden="true"></span>
+            <span class="forge-title" id="forge-title">Building the secure viewer</span>
+            <span class="forge-clock"><span id="forge-elapsed">0:00</span><span id="forge-eta"></span></span>
+          </header>
+          <div class="forge-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="forge-bar">
+            <div class="forge-fill" id="forge-fill"></div>
+            <span class="forge-pct" id="forge-pct">0%</span>
+          </div>
+          <ol class="forge-stages" id="forge-stages"></ol>
+          <div class="forge-now">
+            <div class="forge-what" id="forge-what">Starting…</div>
+            <div class="forge-why" id="forge-why"></div>
+            <div class="forge-sub" id="forge-subrow" hidden>
+              <div class="forge-subbar"><div id="forge-subfill"></div></div>
+              <span id="forge-meter"></span>
+            </div>
+          </div>
+          <details class="forge-term" id="forge-term" open>
+            <summary><span>Live output</span><span class="forge-lines" id="forge-lines"></span></summary>
+            <div class="forge-screen" id="setup-log"></div>
+          </details>
+          <p class="forge-note"><strong>Why does this take a while?</strong> airlock builds its viewer on your own computer from official, fingerprint-checked sources, instead of shipping a ready-made black box. It happens once; after that every document opens in a second.</p>
+        </section>
       </div>
       <div class="pages" id="pages"></div>
       <div class="busy" id="busy" hidden><div class="spinner"></div><span id="busy-text"></span></div>

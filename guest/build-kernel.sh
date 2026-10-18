@@ -10,18 +10,28 @@ V=${KERNEL_VERSION:-6.1.190}
 SRC=build/kernel/linux-$V
 
 if [ ! -d "$SRC" ]; then
+    note "@@sub unpack"
     mkdir -p build/kernel
     tar xJf vendor/dl/kernel/linux-$V.tar.xz -C build/kernel
 fi
+note "@@sub tools"
 ensure_buildroot build-base bc flex bison elfutils-dev openssl-dev perl linux-headers xz diffutils findutils python3
 
+note "@@sub compile"
 fakeroot_sh build/buildroot "
     cd /src/$SRC
     cp /src/vendor/dl/kernel/microvm-6.1.config .config
     # Merge the hardening fragment, then let Kconfig resolve dependencies.
     ./scripts/kconfig/merge_config.sh -m .config /src/guest/kernel-hardening.config >/dev/null
     make olddefconfig >/dev/null
-    make -j\$(nproc) vmlinux >/src/build/kernel/build.log 2>&1 || { tail -40 /src/build/kernel/build.log; exit 1; }
+    if [ $NOTE = echo ]; then
+        # One line per 20 compiled files: count and source folder.
+        { make -j\$(nproc) vmlinux 2>&1; echo \$? > /tmp/rc; } | tee /src/build/kernel/build.log |
+            awk '/^  (CC|AS|AR|LD) /{ n++; if (n % 20 == 0) { split(\$2, p, \"/\"); print \"@@kernel \" n \" \" p[1]; fflush() } }'
+        [ \$(cat /tmp/rc) = 0 ] || { tail -40 /src/build/kernel/build.log; exit 1; }
+    else
+        make -j\$(nproc) vmlinux >/src/build/kernel/build.log 2>&1 || { tail -40 /src/build/kernel/build.log; exit 1; }
+    fi
 "
 
 # Every hardening line must have survived dependency resolution.

@@ -102,7 +102,7 @@ fn open_error(e: impl std::fmt::Display) -> String {
     if s.contains("RenderFailed") {
         "nothing to display: the file has no visible content (an Excel add-in, for example) or is damaged".into()
     } else if s.contains("UnsupportedType") {
-        "not a PDF or Office document".into()
+        "not a document, picture or text file airlock can show".into()
     } else if s.contains("TooManyPages") {
         "too many pages (more than 2000)".into()
     } else {
@@ -129,7 +129,7 @@ fn open_bytes(doc: Arc<Mutex<Option<Doc>>>, name: String, bytes: &[u8]) -> R<Ope
         old.session.close();
     }
     let layout = if SHEETS_SINGLE.load(Ordering::SeqCst) { Layout::OnePagePerSheet } else { Layout::Pages };
-    let session = LiveSession::open_with(bytes, layout).map_err(open_error)?;
+    let session = LiveSession::open_with(bytes, layout, Some(&name)).map_err(open_error)?;
     let info = OpenInfo {
         name,
         spreadsheet: is_spreadsheet(bytes),
@@ -193,6 +193,8 @@ async fn pick_and_open(app: tauri::AppHandle, state: State<'_, AppState>) -> R<O
             .file()
             .set_title("Open documents in airlock")
             .add_filter("Documents", &["pdf", "doc", "docx", "docm", "xls", "xlsx", "xlsm", "ppt", "pptx", "pptm", "odt", "ods", "odp", "rtf", "dotm", "dotx", "xlam", "xltm", "xltx", "potm", "ppsm", "ppsx"])
+            .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg", "avif", "heic", "ico"])
+            .add_filter("Text and code", &["txt", "md", "csv", "log", "json", "xml", "yaml", "yml", "html", "htm", "css", "js", "ts", "py", "c", "h", "cpp", "hpp", "cc", "java", "rs", "go", "sh", "ps1", "vbs", "bat", "cmd", "php", "rb", "sql", "ini", "toml"])
             .add_filter("All files", &["*"])
             .blocking_pick_files()
             .unwrap_or_default();
@@ -380,7 +382,7 @@ async fn analyze(state: State<'_, AppState>) -> R<serde_json::Value> {
     let (report, chosen) = (state.report.clone(), state.chosen.clone());
     blocking(move || {
         let started = std::time::Instant::now();
-        let a = analysis::run(&bytes, "analyze", false, &|_| {}).map_err(err)?;
+        let a = analysis::run(&bytes, Some(&name), "analyze", false, &|_| {}).map_err(err)?;
         let mut j = a.report.to_json();
         j["document"] = name.into();
         j["seconds"] = (started.elapsed().as_secs_f32() as f64).into();
@@ -527,6 +529,41 @@ const MIME_TYPES: &[&str] = &[
     "application/vnd.ms-excel.addin.macroEnabled.12",
     "application/vnd.ms-excel.template.macroEnabled.12",
     "application/vnd.ms-powerpoint.slideshow.macroEnabled.12",
+    // Pictures and text / source code (shown syntax-coloured).
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "image/tiff",
+    "image/svg+xml",
+    "image/avif",
+    "image/heic",
+    "image/vnd.microsoft.icon",
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "text/html",
+    "text/css",
+    "text/xml",
+    "application/xml",
+    "application/json",
+    "application/x-yaml",
+    "text/x-csrc",
+    "text/x-chdr",
+    "text/x-c++src",
+    "text/x-c++hdr",
+    "text/x-python",
+    "text/x-script.python",
+    "text/x-java",
+    "text/x-rust",
+    "text/x-go",
+    "application/javascript",
+    "text/javascript",
+    "application/x-shellscript",
+    "text/x-shellscript",
+    "application/x-powershell",
+    "text/x-log",
 ];
 
 /// An AppImage is a single file the desktop knows nothing about: register it
@@ -672,6 +709,8 @@ fn appimage_kit() -> Option<PathBuf> {
             }
         }
         let _ = std::fs::copy(bundled.join(".kit-version"), user.join(".kit-version"));
+        // Check again now: the new kit may bring viewer features.
+        let _ = std::fs::remove_file(user.join("build/update-status"));
         log_event(&format!("update kit refreshed from this AppImage ({})", version(&bundled).trim()));
     }
     Some(user)
@@ -1010,6 +1049,7 @@ fn parse_status(text: &str) -> UpdateStatus {
             "firecracker" => st.changes.extend(pair("Firecracker")),
             "alpine" => st.changes.extend(pair("Alpine base")),
             "rules" => st.changes.extend(pair("Malware signatures")),
+            "viewer" => st.changes.insert(0, "New viewer features from this version of airlock (pictures, code, scripts…)".into()),
             "pkg" => {
                 let f: Vec<&str> = v.split_whitespace().collect();
                 if let [name, old, new] = f[..] {

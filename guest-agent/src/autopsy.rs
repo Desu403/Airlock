@@ -9,7 +9,13 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::Path;
 
 /// Files the analysis VM itself writes.
-const EXPECTED: &[&str] = &["/work", "/work/doc.pdf", "/work/clean.pdf", "/work/emulate.js", "/lost+found"];
+const EXPECTED: &[&str] = &[
+    "/work", "/work/doc.pdf", "/work/clean.pdf", "/work/emulate.js", "/lost+found",
+    // media.rs: the picture or text as written for the converters, and their output.
+    "/work/image.png", "/work/image.jpg", "/work/image.gif", "/work/image.webp", "/work/image.tif", "/work/image.bmp", "/work/image.jp2",
+    "/work/image.psd", "/work/image.avif", "/work/image.heic", "/work/image.ico", "/work/image.svg", "/work/image-conv.png", "/work/image.pdf",
+    "/work/source.txt", "/work/code.xhtml", "/work/code.pdf",
+];
 
 fn sha256_hex(path: &Path) -> String {
     use sha2::{Digest, Sha256};

@@ -100,16 +100,17 @@ pub struct LiveSession {
 impl LiveSession {
     /// Boots a live VM for `doc` (PDF or Office). The VM has no network device.
     pub fn open(doc: &[u8]) -> Result<Self> {
-        Self::open_with(doc, Layout::Pages)
+        Self::open_with(doc, Layout::Pages, None)
     }
 
-    pub fn open_with(doc: &[u8], layout: Layout) -> Result<Self> {
+    /// `name`: the file's name, for its extension (which language to colour).
+    pub fn open_with(doc: &[u8], layout: Layout, name: Option<&str>) -> Result<Self> {
         let started = Instant::now();
         let assets = vm::Assets::locate()?;
         let run = vm::RunDir::create("live")?;
         let doc_disk = vm::write_doc_disk(&run.path, doc)?;
         let listener = run.listen()?;
-        let spec = vm::Spec { mode: "live", drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }], sinkhole_events: None, options: layout.options() };
+        let spec = vm::Spec { mode: "live", drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }], sinkhole_events: None, options: layout.options(), ext: name.and_then(vm::ext_hint) };
         let mut child = vm::spawn(&assets, &run, &spec, &run.path.join("console.log"))?;
 
         let deadline = Instant::now() + BOOT_TIMEOUT;

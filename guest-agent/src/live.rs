@@ -39,7 +39,10 @@ fn unescape(s: &str) -> Option<char> {
 }
 
 /// One structured-text pass over the whole document: page sizes + glyph boxes.
-fn load_pages(pdf: &str, out: &mut File) -> Vec<Page> {
+/// Colours of code_render.py's gutter and wrap points (keep in sync).
+const CODE_SKIP: [&str; 3] = ["#4d6267", "#9aa1a9", "#010203"];
+
+fn load_pages(pdf: &str, out: &mut File, code: bool) -> Vec<Page> {
     let r = monitor::run(&["/usr/bin/mutool", "draw", "-q", "-F", "stext", "-o", "-", pdf], WORK, &Opts::new(Net::Deny, Duration::from_secs(180)));
     send_indicators(out, &r.events);
     let xml = r.stdout.unwrap_or_else(|| fail(out, Error::RenderFailed));
@@ -52,6 +55,9 @@ fn load_pages(pdf: &str, out: &mut File) -> Vec<Page> {
             pages.push(Page { w, h, chars: Vec::new() });
         } else if l.starts_with("<char ") {
             let (Some(p), Some(q), Some(c)) = (pages.last_mut(), attr(l, "quad"), attr(l, "c").and_then(unescape)) else { continue };
+            if code && attr(l, "color").is_some_and(|col| CODE_SKIP.contains(&col)) {
+                continue;
+            }
             // Only '\n' entries may end a line.
             let c = if c.is_control() { ' ' } else { c };
             let v: Vec<f32> = q.split_whitespace().filter_map(|x| x.parse().ok()).collect();
@@ -248,8 +254,10 @@ fn text_stats(t: &str) -> String {
     )
 }
 
-pub fn serve(mut out: File, pdf: &str) -> ! {
-    let pages = load_pages(pdf, &mut out);
+/// `code`: the pages come from media.rs's code renderer, whose line-number
+/// gutter and wrap points are left out of the text (search, Text panel, copy).
+pub fn serve(mut out: File, pdf: &str, code: bool) -> ! {
+    let pages = load_pages(pdf, &mut out, code);
     let _ = send(&mut out, Kind::Hello, pages.len() as u32, 0, 0, &[]);
     for (i, p) in pages.iter().enumerate() {
         let _ = send(&mut out, Kind::PageInfo, i as u32, pt10(p.w).max(1), pt10(p.h).max(1), &[]);

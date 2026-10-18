@@ -17,6 +17,7 @@ mod autopsy;
 mod emulate;
 mod live;
 mod lure;
+mod media;
 mod office;
 mod monitor;
 mod selftest;
@@ -140,6 +141,14 @@ fn send_indicators(out: &mut File, events: &[(Ind, String)]) {
 }
 
 /// Pages in a PDF (0 if unknown), via `mutool pages` under the monitor.
+/// The file's extension from the host (kernel option airlock.ext=, only
+/// [a-z0-9]{1,8}): which language to colour. Never used to decide the type.
+fn ext_hint() -> Option<String> {
+    let cmdline = fs::read_to_string("/proc/cmdline").ok()?;
+    let e = cmdline.split_whitespace().find_map(|t| t.strip_prefix("airlock.ext="))?;
+    (e.len() <= 8 && e.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())).then(|| e.to_string())
+}
+
 fn page_count(pdf: &str) -> u32 {
     let r = monitor::run(&["/usr/bin/mutool", "pages", pdf], WORK, &monitor::Opts::new(Net::Deny, Duration::from_secs(60)));
     r.stdout.map_or(0, |o| o.windows(14).filter(|w| w == b"<page pagenum=").count() as u32)
@@ -295,6 +304,8 @@ fn main() {
     let doc_path = match kind {
         office::Kind::Pdf => format!("{WORK}/doc.pdf"),
         office::Kind::Office(ext) => format!("{WORK}/office.{ext}"),
+        office::Kind::Image(ext) => format!("{WORK}/image.{ext}"),
+        office::Kind::Text => format!("{WORK}/source.txt"),
     };
     if fs::write(&doc_path, &doc).is_err() {
         fail(&mut out, Error::Internal);
@@ -333,6 +344,29 @@ fn main() {
             }
             pdf
         }
+        office::Kind::Image(ext) => {
+            if scratch {
+                send_indicators(&mut out, &media::hidden_data(&doc, ext));
+                log("scanning with YARA");
+                send_indicators(&mut out, &yara::scan(WORK, &doc_path, None, false));
+            }
+            log(&format!("converting the {ext} picture"));
+            let (events, pdf) = media::convert_image(&doc_path, ext, WORK, net);
+            send_indicators(&mut out, &events);
+            pdf.unwrap_or_else(|| fail(&mut out, Error::RenderFailed))
+        }
+        office::Kind::Text => {
+            if scratch {
+                send_indicators(&mut out, &media::script_check(&doc));
+                log("scanning with YARA");
+                send_indicators(&mut out, &yara::scan(WORK, &doc_path, None, false));
+            }
+            let ext = ext_hint();
+            let (events, pdf, lang) = media::convert_text(&doc_path, ext.as_deref(), WORK, net);
+            log(&format!("text shown as {lang}"));
+            send_indicators(&mut out, &events);
+            pdf.unwrap_or_else(|| fail(&mut out, Error::RenderFailed))
+        }
     };
     drop(doc);
     // Phishing content: what the first pages show (QR codes, wording),
@@ -344,7 +378,7 @@ fn main() {
         send_indicators(&mut out, &lure::check(&pdf_path, WORK, &links, pages));
     }
     if mode == Mode::Live {
-        live::serve(out, &pdf_path);
+        live::serve(out, &pdf_path, kind == office::Kind::Text);
     }
 
     // Page count: `mutool pages` prints one <page pagenum=...> element per page.

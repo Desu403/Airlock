@@ -21,7 +21,7 @@ fakeroot_sh $B/buildroot '
 AGENT=$B/agent-target/release/airlock-agent
 file "$AGENT" | grep -q "static" || { echo "agent is not static" >&2; exit 1; }
 
-# 2. Guest root: renderers (MuPDF, QuickJS, LibreOffice) + oletools; no package manager left behind.
+# 2. Guest root: renderers (MuPDF, QuickJS, LibreOffice, Pygments for code) + oletools; no package manager left behind.
 rm -rf $B/guestroot && mkdir -p $B/guestroot
 tar xzf "$ALPINE_TAR" -C $B/guestroot
 fakeroot_sh $B/guestroot '
@@ -30,12 +30,13 @@ fakeroot_sh $B/guestroot '
     apk upgrade --no-progress '"$QUIET"'
     '"$NOTE"' "@@sub packages"
     apk add --no-progress '"$QUIET"' mupdf-tools quickjs \
-        python3 py3-oletools yara zbar imagemagick \
+        python3 py3-oletools py3-pygments yara zbar imagemagick \
         libreoffice-writer libreoffice-calc libreoffice-impress \
         font-liberation font-dejavu
     install -D -m 0644 -o 0 -g 0 /src/guest/office_triage.py /usr/lib/airlock/office_triage.py
     install -D -m 0644 -o 0 -g 0 /src/guest/pdf_walk.js /usr/lib/airlock/pdf_walk.js
     install -D -m 0644 -o 0 -g 0 /src/guest/unpack.py /usr/lib/airlock/unpack.py
+    install -D -m 0644 -o 0 -g 0 /src/guest/code_render.py /usr/lib/airlock/code_render.py
     # Known-malware signatures (YARA-Forge rule package), compiled once here.
     '"$NOTE"' "@@sub rules"
     mkdir /tmp/rules && unzip -q /src/'"$RULES_ZIP"' -d /tmp/rules
@@ -65,7 +66,9 @@ fakeroot_sh $B/guestroot '
 '
 rmdir $B/guestroot/src
 # What went into this image, and when (read by doctor and scripts/update.sh).
-{ echo "built $(date +%s)"; cat $B/rootfs.rules.tmp $B/rootfs.packages.tmp; } > $B/rootfs.info.new
+# "kit": which airlock build (AppImage kit) this image came from, so a newer
+# AppImage's viewer features show up as an available update.
+{ echo "built $(date +%s)"; [ ! -f .kit-version ] || echo "kit $(cat .kit-version)"; cat $B/rootfs.rules.tmp $B/rootfs.packages.tmp; } > $B/rootfs.info.new
 rm -f $B/rootfs.packages.tmp $B/rootfs.rules.tmp
 note "@@sub pack"
 # Pack from inside the fake root so every file is recorded as root:root.

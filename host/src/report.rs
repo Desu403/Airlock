@@ -135,6 +135,16 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
             }
         }
         Ind::PhishText => finding(Static, Medium, "T1566 Phishing", if text.starts_with("callback") { "Looks like a callback scam" } else { "Pretends to be a well-known company" }, if text.starts_with("callback") { "It uses a well-known name, claims a charge you did not make and gives a phone number to call. Calling connects you to scammers who ask for payment or remote access." } else { "It uses a well-known company's name and asks you to open or verify something, but its link goes to a site that company does not own: the pattern of phishing pages." }, text.to_string()),
+        Ind::Script => {
+            let (sev, att, title, why) = match text.split(':').next().unwrap_or("") {
+                "download-run" => (High, "T1105 Ingress Tool Transfer", "Downloads and runs a program", "The script fetches something from the internet and starts it: how most malware arrives after you open an attachment. Only run it if it is an installer you were expecting from a source you trust."),
+                "hidden-powershell" => (High, "T1059.001 PowerShell", "Runs hidden or encoded PowerShell", "Its commands are encoded or run in a hidden window, so you cannot see what it does. Legitimate scripts have no reason to hide."),
+                "smuggling" => (High, "T1027.006 HTML Smuggling", "Builds a hidden file when opened", "This web page assembles a file inside your browser and offers it as a download, so the file never crosses e-mail filters. A known way to deliver malware."),
+                "shell" => (Medium, "T1059.005 Visual Basic", "Can run programs on Windows", "It uses Windows scripting objects that start programs, read and write files or change settings. Normal for some admin scripts, but never in a file sent to you unexpectedly."),
+                _ => (Medium, "T1027 Obfuscated Files", "Scrambled script", "Large parts of the script are encoded or built from character codes, so a reader cannot see what it does: a common way to hide malware from scanners."),
+            };
+            finding(Static, sev, att, title, why, text.splitn(2, ':').nth(1).unwrap_or(text).trim().to_string())
+        }
         Ind::PdfLure => finding(Static, Medium, "T1566.002 Spearphishing Link", "The page is one big link", "Phishing PDFs show a picture of a document or a \"View\" button, and clicking almost anywhere opens a website, usually a fake login page. Real documents rarely do this.", text.to_string()),
         Ind::HiddenData if text.contains("program") || text.contains("archive") || text.contains("Office/OLE") || text.contains("web page") => finding(Static, High, "T1027.009 Embedded Payloads", "Hides a program or archive inside the file", "The file is built to be two things at once: a document you can open and a hidden program or archive. Only done to smuggle malware past scanners.", text.to_string()),
         Ind::HiddenData if text.starts_with("an OLE container whose contents cannot be read") => finding(Static, Medium, "T1027 Obfuscated Files", "Its contents could not be checked", "The file is damaged or deliberately broken, so airlock could not look inside it. Treat it as unknown, not as safe.", text.to_string()),
@@ -466,7 +476,10 @@ impl Report {
         let static_sev = self.findings.iter().filter(|f| matches!(f.source, Source::Static | Source::Signature)).map(|f| f.severity).max();
         let has = |att: &str| self.findings.iter().any(|f| f.source == Source::Static && f.severity == Severity::High && f.attack.starts_with(att));
         // Decisive static evidence: we never run macros, so these stand on their own.
+        // Scripts: hidden/encoded PowerShell and HTML smuggling (bench: never in
+        // harmless code). Download-and-run stays "suspicious": installers do it.
         let decisive = has("T1203") || has("T1564.007") || has("T1221") || (has("T1204.002") && has("T1059")) || has("T1027.009")
+            || has("T1059.001") || has("T1027.006")
             // A PDF that starts a program by itself.
             || self.findings.iter().any(|f| f.source == Source::Static && f.severity == Severity::High && f.what.starts_with("automatic action Launch"))
             // A rule written for a known malware family or exploit.

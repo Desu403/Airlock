@@ -213,6 +213,10 @@ pub enum Ind {
     /// Phishing wording on the first pages (brand + request + elsewhere link,
     /// or a callback scam).
     PhishText = 69,
+    /// A script (text file) with a dangerous pattern; the text starts with
+    /// its kind: "download-run", "hidden-powershell", "smuggling", "shell",
+    /// "obfuscated".
+    Script = 70,
 }
 
 impl Ind {
@@ -261,6 +265,7 @@ impl Ind {
             67 => HiddenData,
             68 => QrLink,
             69 => PhishText,
+            70 => Script,
             _ => return None,
         })
     }

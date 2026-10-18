@@ -56,7 +56,41 @@ application/vnd.openxmlformats-officedocument.wordprocessingml.template
 application/vnd.ms-word.template.macroEnabled.12
 application/vnd.ms-excel.addin.macroEnabled.12
 application/vnd.ms-excel.template.macroEnabled.12
-application/vnd.ms-powerpoint.slideshow.macroEnabled.12"
+application/vnd.ms-powerpoint.slideshow.macroEnabled.12
+image/png
+image/jpeg
+image/gif
+image/webp
+image/bmp
+image/tiff
+image/svg+xml
+image/avif
+image/heic
+image/vnd.microsoft.icon
+text/plain
+text/markdown
+text/csv
+text/html
+text/css
+text/xml
+application/xml
+application/json
+application/x-yaml
+text/x-csrc
+text/x-chdr
+text/x-c++src
+text/x-c++hdr
+text/x-python
+text/x-script.python
+text/x-java
+text/x-rust
+text/x-go
+application/javascript
+text/javascript
+application/x-shellscript
+text/x-shellscript
+application/x-powershell
+text/x-log"
 
 die() { echo "error: $*" >&2; exit 1; }
 # put MODE SRC DEST: replace atomically, so a running airlock keeps its copy.

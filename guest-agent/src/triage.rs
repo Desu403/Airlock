@@ -367,7 +367,7 @@ fn report_walk(w: &Walk, out: &mut Vec<(Ind, String)>) {
 }
 
 /// What a run of bytes starts with, if it is a program or an archive.
-fn payload_kind(b: &[u8]) -> Option<&'static str> {
+pub(crate) fn payload_kind(b: &[u8]) -> Option<&'static str> {
     let magic: &[(&[u8], &str)] = &[
         (b"MZ", "Windows program"),
         (b"\x7fELF", "Linux program"),

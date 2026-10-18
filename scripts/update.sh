@@ -140,10 +140,16 @@ PKGS=$(outdated_packages) || die "could not read Alpine's package index"
 NPKG=$(printf '%s' "$PKGS" | grep -c . || true)
 BUILT=$(sed -n 's/^built //p' "$INFO" 2>/dev/null || echo 0)
 AGE=$(( ($(date +%s) - ${BUILT:-0}) / 86400 ))
+# A newer airlock (AppImage) brings new viewer features: its kit differs
+# from the one the installed image was built from.
+KITV=$(cat .kit-version 2>/dev/null || true)
+BUILT_KIT=$(sed -n 's/^kit //p' "$INFO" 2>/dev/null | head -1)
+VIEWER_NEW=0
+[ -z "$KITV" ] || [ "$KITV" = "$BUILT_KIT" ] || VIEWER_NEW=1
 
 if [ "$MODE" = status ]; then
     avail=0
-    [ "$KV" = "$(pin KERNEL_VERSION)" ] && [ "$FCV" = "$(pin FC_VERSION)" ] && [ "$AV" = "$(pin ALPINE_VERSION)" ] && [ "$YV" = "$(pin YARA_RULES_VERSION)" ] && [ "$NPKG" = 0 ] || avail=1
+    [ "$KV" = "$(pin KERNEL_VERSION)" ] && [ "$FCV" = "$(pin FC_VERSION)" ] && [ "$AV" = "$(pin ALPINE_VERSION)" ] && [ "$YV" = "$(pin YARA_RULES_VERSION)" ] && [ "$NPKG" = 0 ] && [ "$VIEWER_NEW" = 0 ] || avail=1
     {
         echo "checked=$(date +%s)"
         echo "available=$avail"
@@ -153,6 +159,7 @@ if [ "$MODE" = status ]; then
         echo "rules=$(pin YARA_RULES_VERSION) $YV"
         echo "image_age_days=$AGE"
         echo "packages=$NPKG"
+        [ "$VIEWER_NEW" = 0 ] || echo "viewer=${BUILT_KIT:-old} $KITV"
         # The renderers first: they are what a document attacks.
         printf '%s\n' "$PKGS" | grep . | sort -k1,1 | awk '{k = ($1 ~ /^(mupdf|libreoffice|quickjs|python3|py3-oletools|musl)/) ? 0 : 1; print k, $0}' |
             sort -s -k1,1n | head -30 | cut -d' ' -f2- | sed 's/^/pkg=/'
@@ -169,6 +176,7 @@ show "guest kernel (6.1 LTS)" "$(pin KERNEL_VERSION)" "$KV"
 show "Firecracker" "$(pin FC_VERSION)" "$FCV"
 show "Alpine base" "$(pin ALPINE_VERSION)" "$AV"
 show "malware signatures (YARA-Forge)" "$(pin YARA_RULES_VERSION)" "$YV"
+[ "$VIEWER_NEW" = 0 ] || show "airlock viewer (new features from the app)" "${BUILT_KIT:-old}" "$KITV"
 if [ "$NPKG" = 0 ]; then
     echo "   guest packages: all current"
 else

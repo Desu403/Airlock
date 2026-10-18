@@ -318,6 +318,16 @@ pub struct Spec {
     pub sinkhole_events: Option<PathBuf>,
     /// Extra kernel command line options for the agent (fixed strings only).
     pub options: &'static [&'static str],
+    /// The file's extension ("cpp", "jpg"): which language to colour, as the
+    /// document disk carries no name. Only [a-z0-9]{1,8} reaches the VM.
+    pub ext: Option<String>,
+}
+
+/// "Report.CPP" -> Some("cpp"); anything else (no dot, odd characters) -> None.
+pub fn ext_hint(name: &str) -> Option<String> {
+    let (_, ext) = name.rsplit_once('.')?;
+    let ext = ext.to_ascii_lowercase();
+    (1..=8).contains(&ext.len()).then_some(()).filter(|_| ext.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())).map(|_| ext)
 }
 
 const SANDBOX_PATH: &str = "/usr/bin";
@@ -338,6 +348,10 @@ pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<C
     for o in spec.options {
         boot_args.push(' ');
         boot_args.push_str(o);
+    }
+    if let Some(e) = spec.ext.as_deref().filter(|e| ext_hint(&format!(".{e}")).as_deref() == Some(*e)) {
+        boot_args.push_str(" airlock.ext=");
+        boot_args.push_str(e);
     }
     let mut net_ifaces = vec![];
     if spec.sinkhole_events.is_some() {

@@ -27,6 +27,7 @@ dependencies = [
  "libc",
  "png 0.17.16",
  "serde_json",
+ "sha2",
  "unicode-general-category",
  "unicode-normalization",
 ]

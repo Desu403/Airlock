@@ -709,6 +709,7 @@ fn appimage_kit() -> Option<PathBuf> {
             }
         }
         let _ = std::fs::copy(bundled.join(".kit-version"), user.join(".kit-version"));
+        let _ = std::fs::copy(bundled.join(".vm-version"), user.join(".vm-version"));
         // Check again now: the new kit may bring viewer features.
         let _ = std::fs::remove_file(user.join("build/update-status"));
         log_event(&format!("update kit refreshed from this AppImage ({})", version(&bundled).trim()));
@@ -860,6 +861,9 @@ async fn about_info() -> R<serde_json::Value> {
                     j["image_built"] = t.trim().parse::<u64>().unwrap_or(0).into();
                 } else if let Some(r) = l.strip_prefix("rules ") {
                     j["rules"] = r.into();
+                    if let Some((n, updated)) = airlock_core::known::status() {
+                        j["known"] = serde_json::json!({ "count": n, "updated": updated });
+                    }
                 } else if ["mupdf-", "libreoffice-common-", "yara-", "python3-3", "quickjs-", "py3-oletools-", "zbar-"].iter().any(|p| l.starts_with(p)) {
                     pkgs.push(l.to_string());
                 }

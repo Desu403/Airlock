@@ -68,7 +68,7 @@ rmdir $B/guestroot/src
 # What went into this image, and when (read by doctor and scripts/update.sh).
 # "kit": which airlock build (AppImage kit) this image came from, so a newer
 # AppImage's viewer features show up as an available update.
-{ echo "built $(date +%s)"; [ ! -f .kit-version ] || echo "kit $(cat .kit-version)"; cat $B/rootfs.rules.tmp $B/rootfs.packages.tmp; } > $B/rootfs.info.new
+{ echo "built $(date +%s)"; [ ! -f .vm-version ] || echo "kit $(cat .vm-version)"; cat $B/rootfs.rules.tmp $B/rootfs.packages.tmp; } > $B/rootfs.info.new
 rm -f $B/rootfs.packages.tmp $B/rootfs.rules.tmp
 note "@@sub pack"
 # Pack from inside the fake root so every file is recorded as root:root.

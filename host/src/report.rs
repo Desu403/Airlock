@@ -458,6 +458,19 @@ impl Report {
 
     /// The VM could not identify the file: nothing in it was checked, so
     /// it must never come out as "No threats found".
+    /// The file's fingerprint is in the local list of known malware.
+    pub fn known_malware(&mut self, sha256: &str, list_size: u64) {
+        self.findings.push(finding(
+            Source::Signature,
+            Severity::High,
+            "-",
+            "Known malware",
+            "This exact file is catalogued as malware by MalwareBazaar (abuse.ch), a public database security researchers feed with real samples. airlock checked its fingerprint against a local copy of that list: nothing was sent anywhere.",
+            format!("SHA-256 {sha256} is in the local list of {list_size} known-malware fingerprints"),
+        ));
+        self.findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+    }
+
     pub fn unreadable(&mut self) {
         self.findings.push(finding(
             Source::Static,

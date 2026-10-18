@@ -77,6 +77,10 @@ pub fn run(doc: &[u8], name: Option<&str>, mode: &'static str, verbose: bool, pr
     if matches!(s.guest_error, Some(airlock_proto::Error::UnsupportedType)) {
         report.unreadable();
     }
+    if let Some((sha, n)) = crate::known::lookup(doc) {
+        report.known_malware(&sha, n);
+        note(format!("Fingerprint found in the local list of {n} known-malware fingerprints (MalwareBazaar)"));
+    }
     note(format!("Report built from {} observation(s). Both VMs and their disks are gone; your computer only received the findings", indicators.len()));
     Ok(Analysis { report, session: s, log })
 }

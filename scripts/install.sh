@@ -164,6 +164,10 @@ put 0755 host/target/release/airlock "$BIN/airlock"
 put 0755 host/target/release/sinkhole "$LIB/sinkhole"
 put 0755 vendor/bin/firecracker "$LIB/firecracker"
 put 0644 vendor/bin/vmlinux-airlock "$LIB/vmlinux"
+# Known-malware fingerprints (scripts/known-malware.sh): fetched now if the
+# source tree has none; the daily update check keeps them fresh.
+[ -f build/known-malware.bin ] || sh scripts/known-malware.sh build full || true
+for f in known-malware.bin known-malware.info; do [ ! -f "build/$f" ] || put 0644 "build/$f" "$LIB/$f"; done
 # Copy then rename: VMs already running keep their old image.
 cp --reflink=auto --sparse=always build/rootfs.ext4 "$LIB/rootfs.ext4.new"
 chmod 0644 "$LIB/rootfs.ext4.new"

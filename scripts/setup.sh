@@ -182,7 +182,7 @@ case $MODE in
                 cp -r "$d" "$KIT/$d"
             done
             touch "$KIT/.airlock-kit"
-            [ -f .kit-version ] && cp .kit-version "$KIT/.kit-version"
+            for v in .kit-version .vm-version; do [ ! -f "$v" ] || cp "$v" "$KIT/$v"; done
         fi
         (cd "$KIT" && scripts/bootstrap.sh --vm-only)
         printf '\n==> Installing the secure viewer\n'
@@ -194,6 +194,8 @@ case $MODE in
         # The fake-internet helper ships prebuilt (in the AppImage) or from host/.
         SINKHOLE=${AIRLOCK_SINKHOLE:-host/target/release/sinkhole}
         [ -f "$SINKHOLE" ] && install -m 0755 "$SINKHOLE" "$LIB/sinkhole.new" && mv -f "$LIB/sinkhole.new" "$LIB/sinkhole"
+        printf '\n==> Fetching the list of known malware fingerprints\n'
+        sh scripts/known-malware.sh "$LIB" full || echo "   (not fetched now; the next update check tries again)"
         echo "@@ok	vm	The secure viewer is built and installed"
         ;;
     unfix)

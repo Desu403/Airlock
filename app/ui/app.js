@@ -1933,6 +1933,7 @@ async function showSettings() {
   row("VM kernel", info.kernel && info.kernel.replace(/^Linux version (\S+).*/, "Linux $1 (hardened)"));
   row("VM engine", info.firecracker);
   if (info.rules) { const [n, c] = info.rules.split(" "); row("Malware rules", `${Number(c).toLocaleString()} signatures (${n})`); }
+  row("Known malware", info.known ? `${info.known.count.toLocaleString()} fingerprints (MalwareBazaar, ${new Date(info.known.updated * 1000).toLocaleDateString()}), checked offline` : "list not downloaded yet: the next update check fetches it");
   if (info.packages?.length) row("Readers in the VM", info.packages.join(", "));
   const lines = info.log || [];
   logBox.replaceChildren(...(lines.length ? lines : ["(empty)"]).map((l) => {

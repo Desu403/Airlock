@@ -142,10 +142,16 @@ BUILT=$(sed -n 's/^built //p' "$INFO" 2>/dev/null || echo 0)
 AGE=$(( ($(date +%s) - ${BUILT:-0}) / 86400 ))
 # A newer airlock (AppImage) brings new viewer features: its kit differs
 # from the one the installed image was built from.
-KITV=$(cat .kit-version 2>/dev/null || true)
+KITV=$(cat .vm-version 2>/dev/null || true)
 BUILT_KIT=$(sed -n 's/^kit //p' "$INFO" 2>/dev/null | head -1)
 VIEWER_NEW=0
 [ -z "$KITV" ] || [ "$KITV" = "$BUILT_KIT" ] || VIEWER_NEW=1
+
+# Known-malware fingerprints (MalwareBazaar): refreshed with every daily
+# check, next to the VM image; a failed download keeps the current list.
+if [ "$MODE" = status ] || [ "$MODE" = update ]; then
+    sh scripts/known-malware.sh "$(dirname "$ROOTFS")" auto >/dev/null 2>&1 || true
+fi
 
 if [ "$MODE" = status ]; then
     avail=0

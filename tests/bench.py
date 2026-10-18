@@ -239,7 +239,10 @@ def harmless_file(r):
 
 def analyze(path, out):
     t = time.time()
-    p = subprocess.run([AIRLOCK, "analyze", path, "--out", out, "--report-only"], capture_output=True, text=True, timeout=600)
+    # Every malicious sample here comes from MalwareBazaar, so its fingerprint
+    # list would match them all: the bench measures airlock's own detection.
+    env = dict(os.environ, AIRLOCK_NO_KNOWN_LIST="1")
+    p = subprocess.run([AIRLOCK, "analyze", path, "--out", out, "--report-only"], capture_output=True, text=True, timeout=600, env=env)
     rep = None
     try:
         with open(os.path.join(out, "report.json")) as f:

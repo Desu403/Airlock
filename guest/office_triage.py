@@ -200,7 +200,8 @@ def ooxml(path, where=""):
             except Exception:
                 pass
         if "/embeddings/" in low:
-            emit("EMBEDDED", f"embedded object {n}{where}")
+            if not where:  # nested documents: only real threats are reported
+                emit("EMBEDDED", f"embedded object {n}")
         # Parts Word renders as part of the document (altChunk), by content.
         try:
             if z.getinfo(n).file_size <= 64 << 20:
@@ -586,6 +587,27 @@ def rtf(data, where=""):
             emit("EMBEDDED", f"RTF{where} embeds raw object data")
 
 
+def ole_kind(path):
+    """An OLE container that is no Word, Excel or PowerPoint file (and no
+    bare macro project) while arriving as a document: unusual in itself."""
+    try:
+        import olefile
+        ole = olefile.OleFileIO(path)
+        names = {p[0].lower() for p in ole.listdir(streams=True, storages=True)[:5000] if p}
+        ole.close()
+    except Exception:
+        return
+    # PowerPoint 4.0 ("pp40") and password-protected Office files
+    # ("encryptedpackage") are documents too; prefixes absorb damaged names.
+    known = ("worddocument", "workbook", "book", "powerpoint document", "pp40", "encryptedpackage", "encryptioninfo", "macros", "_vba_project", "vba", "project")
+    # Nothing readable inside: damaged or deliberately broken. Not proof of
+    # anything, but its contents could not be checked: never "clean".
+    if not names:
+        emit("MALFORMED", "an OLE container whose contents cannot be read (damaged or deliberately broken), so nothing inside it could be checked")
+    elif not any(n.startswith(known) for n in names):
+        emit("MALFORMED", f"an OLE container that is not a Word, Excel or PowerPoint document (it holds: {', '.join(sorted(names)[:6])})")
+
+
 def main():
     path = sys.argv[1]
     with open(path, "rb") as f:
@@ -600,6 +622,7 @@ def main():
         elif head.startswith(b"\xd0\xcf\x11\xe0"):
             ole_objects(path, "")
             ppt(path)
+            ole_kind(path)
 
 
 if __name__ == "__main__":

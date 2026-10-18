@@ -21,6 +21,20 @@ the document, the VM is destroyed.
   its unpacked insides (decompressed PDF; every ZIP part, OLE stream and
   macro's source) and anything it drops, and name the family or exploit
   when one is known.
+- **Phishing content** — QR codes on the first pages are read inside the VM;
+  pages that borrow a brand (Microsoft, Adobe, PayPal, Meta, …) but link
+  elsewhere, and callback scams ("call this number to cancel"), are flagged.
+- **Tripwire** — a viewing VM that tries to start a program, use the network
+  or attack its kernel is destroyed at once (`airlock containment` proves it).
+- **AI-text hints** (optional, Text panel) — leftovers that AI chat tools put
+  into pasted text (citation codes, hidden markers, stock phrasing). Hints,
+  not proof.
+
+**Measured, not claimed** (`tests/bench.py`, ~3,000 real documents by hash):
+on 177 samples of well-known document exploits (CVE-2017-0199, -11882,
+-8570, 2018-0802, 2021-40444, Follina, 2023-36884, 2026-21509) 97% come out
+"likely malicious" and none is missed; on 2,093 harmless documents (Govdocs1,
+Apache POI test files) none does.
 
 Supported: PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, ODT/ODS/ODP, RTF (type is
 detected from content, never from the file name).
@@ -67,6 +81,14 @@ desktop app (`--no-app` skips it). The app runs its web view in WebKit's
 own bubblewrap + seccomp sandbox, with an airlock-only cache directory.
 
 ## Setup
+
+**AppImage** (`scripts/appimage.sh` builds `dist/airlock-*.AppImage`): run it;
+a setup screen checks the computer, fixes what needs root with one password
+prompt, and builds the VM in your user account (about 600 MB of pinned,
+checksum-verified downloads, 10-20 minutes). The same steps by hand:
+`scripts/setup.sh check | plan | fix | build`.
+
+**From source:**
 
 ```sh
 git clone <this repo> airlock && cd airlock
@@ -179,8 +201,10 @@ nothing, which is why the behaviour checks come first. Rules for a
 technique rather than a family (`SUSP_…`, `INDICATOR_…`) never decide the
 verdict on their own.
 
-Not yet: distribution packages (AppImage/.deb — waiting on a slimmer guest
-image; `scripts/install.sh` does a per-user install), Windows and macOS hosts, executing Office macros (needs a Windows guest — planned). The guest image is
+Not yet: .deb/.rpm packages (the AppImage and `scripts/install.sh` do
+per-user installs; the AppImage runs without WebKit's extra web-view sandbox,
+which `scripts/install.sh` keeps), Windows and macOS hosts, executing Office
+macros (needs a Windows guest). The guest image is
 ~1.1 GB because of LibreOffice.
 
 Guest packages (MuPDF, LibreOffice, …) come from Alpine's 3.24 branch at

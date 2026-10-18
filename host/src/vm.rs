@@ -168,13 +168,15 @@ impl Assets {
             rootfs: lib.join("rootfs.ext4"),
             sinkhole: lib.join("sinkhole"),
         };
-        let candidates = match std::env::var_os("AIRLOCK_HOME") {
-            Some(home) => vec![source_tree(PathBuf::from(home))],
+        let candidates = match (std::env::var_os("AIRLOCK_HOME"), std::env::var_os("AIRLOCK_LIB")) {
+            (Some(home), _) => vec![source_tree(PathBuf::from(home))],
+            // An installed layout chosen explicitly (as scripts/setup.sh's AIRLOCK_LIB).
+            (None, Some(lib)) => vec![installed(PathBuf::from(lib))],
             // Next to the binary (scripts/install.sh), then the source tree
             // it was built from (development), then the per-user install
             // the AppImage's setup creates (on other computers the source
             // tree does not exist).
-            None => {
+            (None, None) => {
                 let mut c = vec![installed(exe_dir.join("../lib/airlock")), source_tree(Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))];
                 if let Some(home) = std::env::var_os("HOME") {
                     c.push(installed(PathBuf::from(home).join(".local/lib/airlock")));

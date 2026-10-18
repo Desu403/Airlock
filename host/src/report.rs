@@ -129,6 +129,7 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         Ind::PdfUnreadable => finding(Static, Medium, "T1027 Obfuscated Files", if text.starts_with("password") { "Password protected" } else { "The PDF's structure could not be read" }, "Damaged or deliberately malformed files can hide things from scanners, so its contents could not be fully checked.", text.to_string()),
         Ind::PdfLure => finding(Static, Medium, "T1566.002 Spearphishing Link", "The page is one big link", "Phishing PDFs show a picture of a document or a \"View\" button, and clicking almost anywhere opens a website, usually a fake login page. Real documents rarely do this.", text.to_string()),
         Ind::HiddenData if text.contains("program") || text.contains("archive") || text.contains("Office/OLE") || text.contains("web page") => finding(Static, High, "T1027.009 Embedded Payloads", "Hides a program or archive inside the file", "The file is built to be two things at once: a document you can open and a hidden program or archive. Only done to smuggle malware past scanners.", text.to_string()),
+        Ind::HiddenData if text.starts_with("the RTF header is deliberately malformed") => finding(Static, Medium, "T1027 Obfuscated Files", "Deliberately malformed file", "Its first bytes are written in a way no editor produces, so that other programs read it differently from Word. Only done to slip past scanners.", text.to_string()),
         Ind::HiddenData => finding(Static, Medium, "T1027 Obfuscated Files", "Hides data after the end of the document", "Readers stop at the document's end, so this part is invisible to you; a common place to smuggle a payload.", text.to_string()),
         Ind::PdfFeature => {
             let t = text.to_ascii_lowercase();
@@ -280,7 +281,7 @@ fn link_risk(url: &str) -> Option<(Severity, &'static str, &'static str)> {
     if host.parse::<std::net::Ipv4Addr>().is_ok() || host.starts_with('[') {
         return Some((Severity::Medium, "Link to a bare IP address", "Real organisations link to named websites; a raw number address is typical of malware servers."));
     }
-    let program = [".exe", ".msi", ".scr", ".hta", ".jse", ".vbs", ".vbe", ".wsf", ".bat", ".cmd", ".ps1", ".lnk", ".iso", ".img", ".vhd", ".vhdx", ".jar", ".appx", ".msix", ".one", ".cpl", ".dll"];
+    let program = [".exe", ".msi", ".scr", ".hta", ".jse", ".application", ".appref-ms", ".search-ms", ".vbs", ".vbe", ".wsf", ".bat", ".cmd", ".ps1", ".lnk", ".iso", ".img", ".vhd", ".vhdx", ".jar", ".appx", ".msix", ".one", ".cpl", ".dll"];
     if program.iter().any(|e| path.ends_with(e)) {
         return Some((Severity::Medium, "Link downloads a program", "Clicking it would download something that runs as a program, not a document."));
     }

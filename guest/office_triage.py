@@ -242,6 +242,15 @@ def ooxml(path):
 # Embedded OLE objects, identified by class id (not by name, which is free text).
 EQUATION_CLSIDS = {"0002CE02-0000-0000-C000-000000000046", "0002CE03-0000-0000-C000-000000000046"}
 URL_MONIKER = bytes.fromhex("e0c9ea79f9bace118c8200aa004ba90b")
+# Web browser controls embedded as objects: Office renders a web page (and
+# whatever it launches) inside the document. CVE-2026-21509 (2026) uses one
+# to load a ClickOnce ".application" that Windows runs as a program.
+BROWSER_CLSIDS = {
+    "EAB22AC3-30C1-11CF-A7EB-0000C05BAE0B": "Shell.Explorer.1",
+    "8856F961-340A-11D0-A96B-00C04FD705A2": "Shell.Explorer.2 (WebBrowser)",
+    "25336920-03F9-11CF-8FD0-00AA00686F13": "HTML document",
+    "3050F4D8-98B5-11CF-BB82-00AA00BDCE0B": "HTML application",
+}
 
 
 def moniker_url(stream):
@@ -322,6 +331,16 @@ def ole_objects(data, where):
                 seen += 1
                 kids = [k for k in (getattr(e, "kids", None) or []) if k is not None]
                 todo.extend(kids)
+                browser = BROWSER_CLSIDS.get((e.clsid or "").upper())
+                if browser:
+                    urls = []
+                    for k in kids:
+                        if k.entry_type == olefile.STGTY_STREAM and k.size:
+                            raw = ole._open(k.isectStart, k.size).read(1 << 20)
+                            for enc in ("utf-16-le", "latin-1"):
+                                urls += re.findall(r"(?i)(?:https?|file|ftp)://[\x21-\x7e]{4,300}", raw.decode(enc, "replace"))
+                    emit("EXPLOIT", f"embedded web browser control ({browser}){where} that loads {urls[0][:200] if urls else 'a web page'} (CVE-2026-21509 style)")
+                    continue
                 if (e.clsid or "").upper() not in EQUATION_CLSIDS:
                     continue
                 names = {k.name.lower(): k for k in kids}
@@ -485,6 +504,10 @@ def rtf_end(data):
 
 
 def rtf_structure(data, objects, where=""):
+    # Every RTF writer starts "{\\rtf1"; anything else ("{\\rt", a NUL in
+    # place of the version) is made to trip up other parsers. Word accepts it.
+    if not re.match(rb"\{\\rtf1", data):
+        emit("MALFORMED", f"the RTF header is deliberately malformed{where} ({data[:8]!r}): no editor writes this; it is made to confuse scanners")
     # Word only reads the outer group; anything after it is a hiding place.
     tail = data[rtf_end(data):].strip(b" \t\r\n\x00")
     if len(tail) > 256:

@@ -91,6 +91,7 @@ pub fn triage(path: &str, work: &str) -> Vec<(Ind, String)> {
             "EXPLOIT" => Ind::OfficeExploit,
             "EMBEDDED" => Ind::OfficeEmbedded,
             "LINK" => Ind::OfficeLink,
+            "MALFORMED" => Ind::HiddenData,
             "CONTAINER" => Ind::OfficeContainer,
             "ERROR" => Ind::OfficeError,
             _ => continue,

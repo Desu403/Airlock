@@ -1147,6 +1147,7 @@ async function runDemo() {
     if (cmd === "tscroll") $("panel-body").scrollTop = Number(arg) || 0;
     if (cmd === "settings") await showSettings();
     if (cmd === "theme") { setPref("airlock.theme", arg); applyTheme(); }
+    if (cmd === "background") { setPref("airlock.background", arg); applyTheme(); }
     if (cmd === "panelw") { setPref("airlock.panelWidth", arg); applyPanelWidth(); if (state.fitMode) fitWidth(); }
     if (cmd === "text") await showText();
     if (cmd === "aitext") { setPref("airlock.aiHints", "1"); await showText(); await new Promise((r) => setTimeout(r, Number(arg) || 3000)); }
@@ -1540,6 +1541,9 @@ const TOUR = [
   { target: null, kicker: "Welcome", title: "Open anything. Risk nothing.",
     text: "airlock opens every PDF and Office file inside its own throwaway virtual machine, a tiny separate computer with no network.",
     how: "Your computer never reads the file itself. It only receives pictures of the pages and cleaned-up text. Close the document and the whole VM is destroyed." },
+  { target: "appbtn", kicker: "Menu", title: "The airlock menu",
+    text: "Click the airlock logo for: New window, Check files automatically (on by default), Settings & about, the guided tour, Close this window and Exit airlock.",
+    how: "Settings & about is where you pick the colours and background, see every version, read the app log (VMs that stopped, attacks the tripwire blocked, updates, errors) and, for the AppImage, uninstall airlock." },
   { target: "open", kicker: "Open", title: "Open a document",
     text: "Pick files here, press Ctrl+O, or drag them onto the window.",
     how: "Each document gets a brand-new VM that boots in about a second. Open several at once and each gets its own window and VM, so documents never share anything." },
@@ -1552,8 +1556,8 @@ const TOUR = [
   { target: "zoombox", kicker: "View", title: "Zoom",
     text: "Zoom in and out, or Fit to match the window width. The + and − keys work too.",
     how: "The VM redraws each page sharply at the new size: no blurry scaling." },
-  { target: "textbtn", kicker: "Read", title: "Page text",
-    text: "Shows the text of the current page. You can also select and copy text straight from the page.",
+  { target: "textbtn", kicker: "Read", title: "Document text",
+    text: "Shows the document's text, page by page, scrolling together with the pages. You can also select and copy text straight from the page.",
     how: "The text is strictly cleaned before it leaves the VM: only normal visible characters, nothing hidden or invisible." },
   { target: "savewrap", kicker: "Keep", title: "Save a safe copy, or print",
     text: "Safe PDF copy (Ctrl+S) writes a new PDF made only of the page pictures. Print (Ctrl+P) prints them.",
@@ -1568,7 +1572,7 @@ const TOUR = [
     text: "Finds out what a file tries to do: contact servers, run programs, drop files, exploit the reader. Every file you open is checked automatically; the badge next to Sealed shows the result (turn it off in the airlock logo menu).",
     how: "It runs the file in a second VM wired to a fake internet, then inspects that VM's disk from a third one. The report explains every finding in plain words, with the technical evidence underneath." },
   { target: "tourbtn", kicker: "That's it", title: "You're ready",
-    text: "Replay this tour anytime with the ? button. Right-click anywhere (or click the airlock logo) for a new window, Close this window (Ctrl+W) or Exit airlock, which closes every document (Ctrl+Q). The same is in the tray icon and in the launcher's right-click menu.",
+    text: "Replay this tour anytime with the ? button. Side panels can be widened by dragging their left edge. Right-click anywhere (or click the airlock logo) for a new window, Close this window (Ctrl+W) or Exit airlock, which closes every document (Ctrl+Q). The same is in the tray icon and in the launcher's right-click menu.",
     how: "Tip: when a file looks suspicious, press Analyze before you trust it." },
 ];
 
@@ -1727,6 +1731,15 @@ const THEMES = [
   ["amber", "Amber", "#fbbf24", "#fb923c", "#b45309"],
   ["matrix", "Matrix", "#4ade80", "#a3e635", "#15803d"],
 ];
+// Backgrounds: every surface, line and text shade is mixed from this and the accent.
+const BACKGROUNDS = [
+  ["abyss", "Abyss", "#070b0e"],
+  ["midnight", "Midnight", "#060914"],
+  ["graphite", "Graphite", "#0e0f11"],
+  ["void", "Void", "#000000"],
+  ["nebula", "Nebula", "#0d0716"],
+  ["ember", "Ember", "#120a07"],
+];
 const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(", ");
 function applyTheme() {
   const id = pref("airlock.theme", "teal");
@@ -1739,6 +1752,9 @@ function applyTheme() {
   st.setProperty("--cyan", t[3]);
   st.setProperty("--cyan-rgb", rgb(t[3]));
   st.setProperty("--seal-deep", t[0] === "custom" ? `color-mix(in srgb, ${t[2]} 55%, #000)` : t[4]);
+  const bid = pref("airlock.background", "abyss");
+  const bg = BACKGROUNDS.find((x) => x[0] === bid)?.[2] || (/^#[0-9a-f]{6}$/i.test(bid) ? bid : BACKGROUNDS[0][2]);
+  st.setProperty("--base", bg);
 }
 applyTheme();
 
@@ -1770,10 +1786,34 @@ async function showSettings() {
   input.oninput = () => { setPref("airlock.theme", input.value); applyTheme(); for (const b of swatches.children) b.setAttribute("aria-pressed", String(b === custom)); };
   swatches.append(custom);
 
+  // Background
+  const bgs = el("div", "swatches");
+  const curBg = pref("airlock.background", "abyss");
+  const pickBg = (id, node) => { setPref("airlock.background", id); applyTheme(); for (const b of bgs.children) b.setAttribute("aria-pressed", String(b === node)); };
+  for (const [id, name, c] of BACKGROUNDS) {
+    const sw = el("button", "swatch bg");
+    sw.title = name;
+    sw.style.setProperty("--a", c);
+    sw.append(el("span", "chip"), el("span", "", name));
+    sw.setAttribute("aria-pressed", String(curBg === id));
+    sw.onclick = () => pickBg(id, sw);
+    bgs.append(sw);
+  }
+  const bgCustom = el("label", "swatch custom");
+  const bgInput = el("input");
+  bgInput.type = "color";
+  bgInput.value = /^#/.test(curBg) ? curBg : "#070b0e";
+  bgCustom.setAttribute("aria-pressed", String(/^#/.test(curBg)));
+  bgCustom.title = "Dark colours keep text easy to read";
+  bgCustom.append(bgInput, el("span", "", "Custom"));
+  bgInput.oninput = () => pickBg(bgInput.value, bgCustom);
+  bgs.append(bgCustom);
+
   // About
   const about = el("dl", "about");
   const logBox = el("div", "console-log tall", "Loading…");
-  body.replaceChildren(sec("Colour"), swatches, sec("About airlock"), about, sec("App log"),
+  body.replaceChildren(sec("Accent colour"), swatches, sec("Background"), bgs,
+    el("p", "note", "Lines, panels and text shades follow both choices. Dark backgrounds keep text easy to read."), sec("About airlock"), about, sec("App log"),
     el("p", "note", "Everything airlock did on this computer: VMs that stopped, attacks the tripwire blocked, updates, errors. Documents' contents are never logged."), logBox);
   let info = {};
   try { info = await invoke("about_info"); } catch (e) { about.append(el("dd", "", String(e))); }

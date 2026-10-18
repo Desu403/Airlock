@@ -1194,6 +1194,7 @@ async function runDemo() {
     if (cmd === "scroll") $("viewer").scrollTop = Number(arg) || 0;
     if (cmd === "tscroll") $("panel-body").scrollTop = Number(arg) || 0;
     if (cmd === "settings") await showSettings();
+    if (cmd === "about") await showAbout();
     if (cmd === "palette") { openPalette(); $("pal-q").value = arg || ""; renderPalette(); }
     if (cmd === "thumbs") setThumbs(true);
     if (cmd === "openentry") { const fs = await invoke("archive_entries"); const f = fs[Number(arg) || 0]; if (f) await invoke("open_entry", { index: f.index, name: f.name }); }
@@ -1627,8 +1628,8 @@ const TOUR = [
     text: "airlock opens every PDF and Office file inside its own throwaway virtual machine, a tiny separate computer with no network.",
     how: "Your computer never reads the file itself. It only receives pictures of the pages and cleaned-up text. Close the document and the whole VM is destroyed." },
   { target: "appbtn", kicker: "Menu", title: "The airlock menu",
-    text: "Click the airlock logo for: New window, Check files automatically (on by default), Pixels only (no text leaves the VM, for files you really distrust), Updates (a dot on the logo means one is ready), Settings & about, the guided tour, and closing.",
-    how: "Settings & about is where you pick the colours and background, see every version, read the app log (VMs that stopped, attacks the tripwire blocked, updates, errors) and, for the AppImage, uninstall airlock." },
+    text: "Click the airlock logo for: New window, Check files automatically (on by default), Pixels only (no text leaves the VM, for files you really distrust), Updates (a dot on the logo means one is ready), Settings, About airlock, the guided tour, and closing.",
+    how: "Settings is where you pick the colours and background (and, for the AppImage, uninstall). About airlock shows what protects you and how fresh it is, every version, and the app log: VMs that stopped, attacks the tripwire blocked, updates, errors." },
   { target: "open", kicker: "Open", title: "Open a document",
     text: "Pick files here, press Ctrl+O, or drag them onto the window.",
     how: "Each document gets a brand-new VM that boots in about a second. Open several at once and each gets its own window and VM, so documents never share anything." },
@@ -1867,7 +1868,7 @@ function applyTheme() {
 applyTheme();
 
 async function showSettings() {
-  const body = openPanel("Settings & about");
+  const body = openPanel("Settings");
   const sec = (title) => el("h3", "set-head", title);
   // Colour
   const swatches = el("div", "swatches");
@@ -1918,40 +1919,8 @@ async function showSettings() {
   bgInput.oninput = () => pickBg(bgInput.value, bgCustom);
   bgs.append(bgCustom);
 
-  // About
-  const about = el("dl", "about");
-  const logBox = el("div", "console-log tall", "Loading…");
   body.replaceChildren(sec("Accent colour"), swatches, sec("Background"), bgs,
-    el("p", "note", "Lines, panels and text shades follow both choices. A custom background becomes a deep shade of the colour you pick, so text always stays readable."), sec("About airlock"), about, sec("App log"),
-    el("p", "note", "Everything airlock did on this computer: VMs that stopped, attacks the tripwire blocked, updates, errors. Documents' contents are never logged."), logBox);
-  let info = {};
-  try { info = await invoke("about_info"); } catch (e) { about.append(el("dd", "", String(e))); }
-  const row = (k, v) => { if (v) about.append(el("dt", "", k), el("dd", "", String(v))); };
-  row("Version", info.app);
-  row("Running from", info.install);
-  row("Secure viewer", info.vm_dir);
-  if (info.image_built) row("Viewer built", new Date(info.image_built * 1000).toLocaleString());
-  row("VM kernel", info.kernel && info.kernel.replace(/^Linux version (\S+).*/, "Linux $1 (hardened)"));
-  row("VM engine", info.firecracker);
-  if (info.rules) { const [n, c] = info.rules.split(" "); row("Malware rules", `${Number(c).toLocaleString()} signatures (${n})`); }
-  row("Malware sites", info.urlhaus ? `${info.urlhaus.toLocaleString()} active addresses (URLhaus), links are checked offline` : "list not downloaded yet");
-  row("Known malware", info.known ? `${info.known.count.toLocaleString()} fingerprints (MalwareBazaar, ${new Date(info.known.updated * 1000).toLocaleDateString()}), checked offline` : "list not downloaded yet: the next update check fetches it");
-  if (info.packages?.length) row("Readers in the VM", info.packages.join(", "));
-  const lines = info.log || [];
-  logBox.replaceChildren(...(lines.length ? lines : ["(empty)"]).map((l) => {
-    const m = /^(\d{9,})\s+(pid \d+\s+)?(.*)$/.exec(l);
-    const row = el("div", "ln");
-    if (m) row.append(el("span", "t", new Date(Number(m[1]) * 1000).toLocaleString()), document.createTextNode(` ${m[3]}`));
-    else row.textContent = l;
-    if (/attack|tripwire|crash|could not|error|failed/i.test(l)) row.classList.add("warn");
-    return row;
-  }));
-  logBox.scrollTop = logBox.scrollHeight;
-  const copy = el("button", "", "Copy log");
-  copy.onclick = async () => { try { await navigator.clipboard.writeText(lines.join("\n")); copy.textContent = "Copied"; } catch { copy.textContent = "Could not copy"; } };
-  const rowEl = el("div", "row");
-  rowEl.append(copy);
-  body.append(rowEl);
+    el("p", "note", "Lines, panels and text shades follow both choices. A custom background becomes a deep shade of the colour you pick, so text always stays readable."));
   // Uninstall (AppImage only)
   try {
     const u = await invoke("uninstall_info");
@@ -1963,6 +1932,48 @@ async function showSettings() {
   } catch {}
 }
 $("m-settings").onclick = () => { toggleAppMenu(false); showSettings(); };
+// About airlock: what protects you (layers and how fresh they are), the
+// versions of everything that touches a document, and the app's own log.
+async function showAbout() {
+  const body = openPanel("About airlock");
+  const sec = (title) => el("h3", "set-head", title);
+  const group = () => el("dl", "about");
+  const version = group(), protection = group(), readers = group();
+  const logBox = el("div", "console-log tall", "Loading…");
+  body.replaceChildren(sec("airlock"), version, sec("Protection"), protection, sec("Inside the VM"), readers, sec("App log"),
+    el("p", "note", "Everything airlock did on this computer: VMs that stopped, attacks the tripwire blocked, updates, errors. Documents' contents are never logged."), logBox);
+  let info = {};
+  try { info = await invoke("about_info"); } catch (e) { version.append(el("dd", "", String(e))); }
+  const row = (dl, k, v) => { if (v) dl.append(el("dt", "", k), el("dd", "", String(v))); };
+  row(version, "Version", info.app);
+  row(version, "Running from", info.install);
+  row(version, "Secure viewer", info.vm_dir);
+  if (info.image_built) row(version, "Viewer built", new Date(info.image_built * 1000).toLocaleString());
+  if (info.rules) { const [n, c] = info.rules.split(" "); row(protection, "Malware rules", `${Number(c).toLocaleString()} signatures (${n})`); }
+  row(protection, "Known malware", info.known ? `${info.known.count.toLocaleString()} fingerprints (MalwareBazaar, ${new Date(info.known.updated * 1000).toLocaleDateString()}), checked offline` : "list not downloaded yet: the next update check fetches it");
+  row(protection, "Malware sites", info.urlhaus ? `${info.urlhaus.toLocaleString()} active addresses (URLhaus), links checked offline` : "list not downloaded yet");
+  row(protection, "Isolation", "a fresh Firecracker microVM per document, no network, a spare user id, tripwire on any attack");
+  row(readers, "VM kernel", info.kernel && info.kernel.replace(/^Linux version (\S+).*/, "Linux $1 (hardened)"));
+  row(readers, "VM engine", info.firecracker);
+  if (info.packages?.length) row(readers, "Readers", info.packages.join(", "));
+  const lines = info.log || [];
+  logBox.replaceChildren(...(lines.length ? lines : ["(empty)"]).map((l) => {
+    const m = /^(\d{9,})\s+(pid \d+\s+)?(.*)$/.exec(l);
+    const r = el("div", "ln");
+    if (m) r.append(el("span", "t", new Date(Number(m[1]) * 1000).toLocaleString()), document.createTextNode(` ${m[3]}`));
+    else r.textContent = l;
+    if (/attack|tripwire|crash|could not|error|failed/i.test(l)) r.classList.add("warn");
+    return r;
+  }));
+  logBox.scrollTop = logBox.scrollHeight;
+  const copy = el("button", "", "Copy log");
+  copy.onclick = async () => { try { await navigator.clipboard.writeText(lines.join("\n")); copy.textContent = "Copied"; } catch { copy.textContent = "Could not copy"; } };
+  const rowEl = el("div", "row");
+  rowEl.append(copy);
+  body.append(rowEl);
+}
+$("m-about").onclick = () => { toggleAppMenu(false); showAbout(); };
+
 $("m-close").onclick = closeWindow;
 function showAutoCheck() { $("m-auto").setAttribute("aria-checked", String(autoCheckOn())); }
 $("m-auto").onclick = () => {
@@ -2062,7 +2073,8 @@ function paletteCommands() {
     [autoCheckOn() ? "Stop checking files automatically" : "Check files automatically", "", true, () => $("m-auto").click()],
     ["Spreadsheets: one page per sheet / pages", "", doc && !$("sheetbtn").hidden, () => $("sheetbtn").click()],
     ["Updates…", "", true, showUpdates],
-    ["Settings & about…", "", true, showSettings],
+    ["Settings…", "", true, showSettings],
+    ["About airlock (versions, protection, log)…", "", true, showAbout],
     ["Guided tour", "", true, startTour],
     ["New window", "", true, () => invoke("new_window")],
     ["Close this window", "Ctrl+W", true, closeWindow],

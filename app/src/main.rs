@@ -940,7 +940,7 @@ async fn about_info() -> R<serde_json::Value> {
                     if let Some((n, updated)) = airlock_core::known::status() {
                         j["known"] = serde_json::json!({ "count": n, "updated": updated });
                     }
-                } else if ["mupdf-", "libreoffice-common-", "yara-", "python3-3", "quickjs-", "py3-oletools-", "zbar-"].iter().any(|p| l.starts_with(p)) {
+                } else if ["mupdf-", "libreoffice-common-", "yara-", "python3-3", "quickjs-", "py3-oletools-", "py3-pygments-2", "zbar-", "7zip-", "imagemagick-7", "clamav-scanner-"].iter().any(|p| l.starts_with(p)) {
                     pkgs.push(l.to_string());
                 }
             }

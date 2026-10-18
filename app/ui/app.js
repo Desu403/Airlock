@@ -826,7 +826,8 @@ function showCheck() {
   if (!cls) return;
   b.className = `check ${cls}`;
   b.querySelector(".label").textContent = label;
-  b.title = title;
+  // With a report, hovering shows the summary card instead of a tooltip.
+  if (check.report && !check.running && !check.attacked) b.removeAttribute("title"); else b.title = title;
   b.setAttribute("aria-label", `Malware check: ${label}`);
 }
 
@@ -1036,8 +1037,9 @@ function renderUpdates(body) {
 
   const row = el("div", "row");
   const check = el("button", "", "Check now");
-  const go = el("button", "primary", updates.running ? "Updating…" : "Update now");
-  go.disabled = updates.running;
+  const upToDate = !st.error && !st.available && !updates.running;
+  const go = el("button", "primary", updates.running ? "Updating…" : upToDate ? "Up to date ✓" : "Update now");
+  go.disabled = updates.running || upToDate;
   check.disabled = updates.running;
   check.onclick = async () => {
     check.disabled = true; check.textContent = "Checking…";
@@ -1046,6 +1048,12 @@ function renderUpdates(body) {
   };
   go.onclick = () => runUpdate(body);
   row.append(go, check);
+  if (upToDate) {
+    const again = el("button", "link", "Rebuild anyway");
+    again.title = "Rebuilds the viewer from the newest packages and runs every test again (about 4 minutes). Not needed when everything is up to date.";
+    again.onclick = () => runUpdate(body);
+    row.append(again);
+  }
   nodes.push(row, el("p", "note", "Downloads are verified (kernel.org signatures, published checksums). The full test suite must pass before the new version is used; otherwise the current one stays."));
 
   const toggle = (key, text, onChange) => {
@@ -1358,6 +1366,8 @@ const forge = {
     $("forge").querySelector(".forge-note").innerHTML = update
       ? "<strong>Why does this take a while?</strong> The new viewer is built on your computer from verified sources and must pass the full test suite before it replaces the current one. You can keep reading documents meanwhile."
       : "<strong>Why does this take a while?</strong> airlock builds its viewer on your own computer from official, fingerprint-checked sources, instead of shipping a ready-made black box. It happens once; after that every document opens in a second.";
+    // An update's package list is for those who want it: folded.
+    $("forge-term").open = !update;
     $("forge-stages").replaceChildren(...forgeStages(mode).map(([id, label], i) => {
       const li = el("li", "", label);
       li.dataset.stage = id;
@@ -1955,8 +1965,15 @@ document.addEventListener("contextmenu", (e) => {
   if (e.target.closest("input, textarea")) return;
   e.preventDefault();
   toggleAppMenu(false);
+  // airlock's menu belongs to the document area; the side panel only offers
+  // Copy for selected text; the toolbar, menus and status bar have none.
+  const inDoc = !!e.target.closest("#viewer, #thumbs");
+  const inPanel = !!e.target.closest("#panel");
+  const selected = !!String(getSelection() || "").trim();
+  if (!inDoc && !(inPanel && selected)) { hideCtx(); return; }
   const m = $("ctxmenu");
-  m.querySelectorAll("[data-doc]").forEach((b) => (b.hidden = !state.docOpen));
+  m.querySelectorAll("[data-doc]").forEach((b) => (b.hidden = !state.docOpen || !inDoc));
+  m.querySelectorAll("#c-new, #c-close, #c-quit, hr:not([data-doc])").forEach((b) => (b.hidden = !inDoc));
   $("c-copy").hidden = !String(getSelection() || "").trim();
   m.hidden = false;
   const x = Math.min(e.clientX, innerWidth - m.offsetWidth - 4), y = Math.min(e.clientY, innerHeight - m.offsetHeight - 4);
@@ -2254,3 +2271,12 @@ setupDocument = function (info) {
   setTimeout(() => v.classList.remove("sealing"), 900);
   renderTelemetry();
 };
+
+$("m-palette").onclick = () => { toggleAppMenu(false); openPalette(); };
+
+// The logo comes alive while airlock is working: a check running, an update
+// or the first build. Calm otherwise.
+setInterval(() => {
+  const working = !!check.running || updates.running || !$("forge").hidden && forge.finished === null;
+  $("appbtn").classList.toggle("working", working);
+}, 400);

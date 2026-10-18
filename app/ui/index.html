@@ -16,7 +16,7 @@
     <hr data-doc>
     <button role="menuitem" id="c-safe" data-doc>Save safe PDF copy <kbd>Ctrl+S</kbd></button>
     <button role="menuitem" id="c-print" data-doc>Print <kbd>Ctrl+P</kbd></button>
-    <button role="menuitem" id="c-analyze" data-doc>Analyze for malware</button>
+    <button role="menuitem" id="c-analyze" data-doc>Malware report</button>
     <hr data-doc>
     <button role="menuitem" id="c-new">New window</button>
     <button role="menuitem" id="c-close">Close this window <kbd>Ctrl+W</kbd></button>
@@ -26,12 +26,18 @@
     <div class="menu-wrap" id="appwrap">
       <button class="brand" id="appbtn" aria-haspopup="menu" aria-expanded="false" title="airlock menu"><span class="logo" aria-hidden="true"></span>airlock<span class="badge" id="updates-dot" hidden></span></button>
       <div class="menu left" id="appmenu" role="menu" hidden>
-        <button role="menuitem" id="m-new">New window</button>
+        <div class="menu-label">Safety</div>
         <button role="menuitem" id="m-auto" aria-checked="true" title="Check every file you open for malware, in the background">Check files automatically <span class="tick">✓</span></button>
-        <button role="menuitem" id="m-pixels" aria-checked="false" title="Pixels only: no document text leaves the VM (no text selection or Text panel). Search still works.">Pixels only <span class="tick">✓</span></button>
+        <button role="menuitem" id="m-pixels" aria-checked="false" title="No document text leaves the VM (no text selection or Text panel). Search still works.">Pixels only <span class="tick">✓</span></button>
+        <hr>
+        <div class="menu-label">airlock</div>
+        <button role="menuitem" id="m-palette">All commands… <kbd>Ctrl+K</kbd></button>
         <button role="menuitem" id="m-updates" title="Updates for airlock's VM (renderers, kernel, Firecracker, malware signatures)">Updates… <span class="menu-dot" id="m-updates-dot" hidden>new</span></button>
-        <button role="menuitem" id="m-tour">Guided tour</button>
         <button role="menuitem" id="m-settings">Settings &amp; about…</button>
+        <button role="menuitem" id="m-tour">Guided tour</button>
+        <hr>
+        <div class="menu-label">Window</div>
+        <button role="menuitem" id="m-new">New window</button>
         <button role="menuitem" id="m-close">Close this window <kbd>Ctrl+W</kbd></button>
         <button role="menuitem" id="m-quit">Exit airlock (all windows) <kbd>Ctrl+Q</kbd></button>
       </div>
@@ -78,7 +84,7 @@
     <nav class="thumbs" id="thumbs" hidden aria-label="Pages"></nav>
     <section class="viewer" id="viewer">
       <div class="empty" id="empty">
-        <div class="porthole" aria-hidden="true"></div>
+        <div class="porthole" aria-hidden="true"><span class="iris"></span></div>
         <h1>Open documents you don't trust.</h1>
         <p>Drop a PDF, Office file, picture or code file here, or press <kbd>Ctrl</kbd>+<kbd>O</kbd>.</p>
         <ul class="promises">

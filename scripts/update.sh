@@ -227,7 +227,17 @@ if [ "$KIT" = 1 ]; then
 else
     build() { scripts/bootstrap.sh --tests; }
 fi
-if ! build >"$LOG" 2>&1; then
+# The app's progress view reads the build as it happens (AIRLOCK_PROGRESS).
+rc=0
+if [ "${AIRLOCK_PROGRESS:-}" = 1 ]; then
+    export AIRLOCK_PROGRESS
+    rm -f build/.build-rc
+    { build 2>&1 || echo $? > build/.build-rc; } | tee "$LOG"
+    [ ! -f build/.build-rc ] || { rc=$(cat build/.build-rc); rm -f build/.build-rc; }
+else
+    build >"$LOG" 2>&1 || rc=$?
+fi
+if [ "$rc" != 0 ]; then
     restore
     tail -15 "$LOG" >&2
     die "the new version failed its checks; the previous version is back in place (full log: $LOG)"

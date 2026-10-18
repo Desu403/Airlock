@@ -380,6 +380,27 @@ function setZoom(z, anchorPage) {
   if (p) $("viewer").scrollTop = p.el.offsetTop - 12;
 }
 
+// Ctrl + scroll wheel (or touchpad pinch, which arrives as Ctrl+wheel):
+// zoom around the pointer, smoothly for small touchpad steps.
+$("viewer").addEventListener("wheel", (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault(); // not the web view's own page zoom
+  if (!state.docOpen || !state.pages.length) return;
+  const viewer = $("viewer"), box = viewer.getBoundingClientRect();
+  const mx = e.clientX - box.left, my = e.clientY - box.top;
+  const delta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+  const old = state.zoom;
+  const next = Math.min(3, Math.max(0.25, old * Math.exp(-delta * 0.0025)));
+  if (Math.abs(next - old) < 0.001) return;
+  state.fitMode = false;
+  const ratio = next / old;
+  const x = viewer.scrollLeft + mx, y = viewer.scrollTop + my;
+  state.zoom = next;
+  layout();
+  viewer.scrollLeft = x * ratio - mx;
+  viewer.scrollTop = y * ratio - my;
+}, { passive: false });
+
 function stepZoom(dir) {
   state.fitMode = false;
   const z = state.zoom;
@@ -1041,6 +1062,10 @@ function renderUpdates(body) {
   installBox.disabled = pref("airlock.autoUpdateCheck", "1") !== "1";
   nodes.push(checkLabel, installLabel);
 
+  if (updates.forge) {
+    $("forge").hidden = false;
+    nodes.push($("forge"));
+  }
   if (updates.log.length) {
     const ul = el("ul", "progress");
     for (const l of updates.log) ul.append(el("li", "", l));
@@ -1052,6 +1077,8 @@ function renderUpdates(body) {
     nodes.push(el("p", "", "airlock itself was updated too. Documents opened from now on already use the new VM; restart to use the new app."), r);
   }
   body.replaceChildren(...nodes);
+  // Moving the console into the panel resets its scroll: back to the end.
+  if (updates.forge) $("setup-log").scrollTop = $("setup-log").scrollHeight;
 }
 
 function showUpdates() {
@@ -1066,7 +1093,10 @@ async function runUpdate(body, quiet = false) {
   if (!updates.status) await checkUpdates(false).catch(() => {});
   updates.running = true;
   updates.restart = false;
-  updates.log = ["Starting…"];
+  updates.log = [];
+  forge.reset("update");
+  updates.forge = true;
+  const tick = setInterval(() => forge.render(), 500);
   if (!quiet) {
     if (!body || $("panel-title").textContent !== "Updates") body = openPanel("Updates");
     renderUpdates(body);
@@ -1080,15 +1110,16 @@ async function runUpdate(body, quiet = false) {
       const t = l.trim();
       if (t && !t.startsWith("==>") && !t.startsWith("undo:")) updates.log.push(t);
     }
-    updates.log.push(r.ok ? "Done — all checks passed." : "The update failed its checks; the previous version is still in place.");
+    forge.finish(r.ok, "The new version failed its checks; the current one is still in place.");
     updates.restart = r.ok && r.restart;
     ok = r.ok;
     status(r.ok ? "airlock updated" : "Update failed — nothing was changed", !r.ok);
     try { await checkUpdates(true); } catch {}
   } catch (e) {
-    updates.log.push(`Update failed: ${e}`);
+    forge.finish(false, `Update failed: ${e}`);
     status(`Update failed: ${e}`, true);
   } finally {
+    clearInterval(tick);
     updates.running = false;
     if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates($("panel-body"));
   }
@@ -1100,13 +1131,9 @@ async function runUpdate(body, quiet = false) {
   }
 }
 
-window.__TAURI__.event.listen("update-progress", (e) => {
-  const line = String(e.payload);
-  // Steps only ("==> Rebuilding…"); the full log is in build/update.log.
-  if (!line.startsWith("==>")) return;
-  updates.log.push(line.slice(4));
-  if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates($("panel-body"));
-});
+// Every line goes to the progress console, also while the panel is closed
+// (an automatic update can be watched by opening Updates).
+window.__TAURI__.event.listen("update-progress", (e) => { if (updates.forge) forge.line(String(e.payload)); });
 
 $("updates").onclick = showUpdates;
 
@@ -1146,6 +1173,7 @@ async function runDemo() {
     if (cmd === "scroll") $("viewer").scrollTop = Number(arg) || 0;
     if (cmd === "tscroll") $("panel-body").scrollTop = Number(arg) || 0;
     if (cmd === "settings") await showSettings();
+    if (cmd === "czoom") { const b = $("viewer").getBoundingClientRect(); $("viewer").dispatchEvent(new WheelEvent("wheel", { deltaY: Number(arg), ctrlKey: true, clientX: b.left + b.width / 2, clientY: b.top + 200, bubbles: true, cancelable: true })); }
     if (cmd === "theme") { setPref("airlock.theme", arg); applyTheme(); }
     if (cmd === "background") { setPref("airlock.background", arg); applyTheme(); }
     if (cmd === "panelw") { setPref("airlock.panelWidth", arg); applyPanelWidth(); if (state.fitMode) fitWidth(); }
@@ -1245,11 +1273,14 @@ $("setup-fix").onclick = async () => {
 // steps with a counter (downloads, packages, kernel files, crates) move by
 // it, the others creep towards their end. The ETA scales the remaining
 // expected time by how fast this computer has been so far.
-const FORGE_STAGES = [
+// Setup builds the VM once; an update also checks upstream versions first
+// and must pass the regression suite ("Tests") before the new VM is used.
+const forgeStages = (mode) => [
   ["check", "Check"], ["fetch", "Download"], ["kernel", "Kernel"], ["programs", "Programs"],
-  ["rules", "Signatures"], ["seal", "Seal image"], ["install", "Install"],
+  ["rules", "Signatures"], ["seal", "Seal image"], ...(mode === "update" ? [["tests", "Tests"]] : []), ["install", "Install"],
 ];
 const FORGE_STEPS = {
+  "check/upstream": { stage: "check", t: 12, what: "Checking for newer versions", why: "kernel.org, Firecracker's releases, Alpine and YARA-Forge; every download is verified against signed or published checksums." },
   check: { stage: "check", t: 1, what: "Checking this computer", why: "Virtualisation, sandboxing and the tools the build needs." },
   fetch: { stage: "fetch", t: 15, what: "Downloading", why: "Pinned versions from the official sources; every file's fingerprint is checked." },
   "kernel/unpack": { stage: "kernel", t: 10, what: "Unpacking the Linux kernel source", why: "The VM gets its own small kernel, built here with risky features switched off." },
@@ -1264,10 +1295,11 @@ const FORGE_STEPS = {
   "seal/office": { stage: "seal", t: 4, what: "Preparing LibreOffice", why: "A clean, prebuilt profile: documents never get to change it." },
   "seal/pack": { stage: "seal", t: 4, what: "Packing the viewer", why: "Every file owned by the VM's root, nothing left over from the build." },
   "seal/image": { stage: "seal", t: 3, what: "Writing the read-only disk image", why: "Each document gets a fresh copy of it; nothing is ever saved back." },
+  "tests/tests": { stage: "tests", t: 150, what: "Testing the new viewer", why: "airlock's full test suite: real exploit samples must be caught, ordinary documents must stay clean, escape attempts must kill the VM. If anything fails, the current version stays." },
   "install/install": { stage: "install", t: 2, what: "Installing the secure viewer", why: "Into your own folder; nothing outside it is changed." },
 };
 // Expected counts for the counted steps (cap the bar below 100% until the step ends).
-const KERNEL_FILES = 2200, AGENT_CRATES = 12, DL_MB = 145;
+const KERNEL_FILES = 2200, AGENT_CRATES = 12, DL_MB = 145, TEST_CHECKS = 27;
 const DOWNLOADS = [
   [/^firecracker/, "Firecracker", "the micro-VM engine AWS built for Lambda: each document gets its own tiny computer"],
   [/^alpine-minirootfs/, "Alpine Linux", "the minimal base system inside the viewer"],
@@ -1311,10 +1343,15 @@ const curlSize = (v) => { const m = /^([\d.]+)([kMG]?)$/.exec(v); if (!m) return
 const mb = (v) => (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2)) + " MB";
 
 const forge = {
-  reset() {
-    Object.assign(this, { t0: Date.now(), step: "check", stepT0: Date.now(), done: new Set(), skipped: new Set(), count: 0, total: 0,
+  reset(mode = "setup") {
+    const update = mode === "update";
+    Object.assign(this, { mode, t0: Date.now(), step: update ? "check/upstream" : "check", stepT0: Date.now(), done: new Set(),
+      skipped: new Set(update ? [] : ["check/upstream", "tests/tests"]), count: 0, total: 0,
       dl: { mb: 0, cur: 0 }, sub: null, live: null, lines: 0, finished: null, tEnd: 0, frac: 0 });
-    $("forge-stages").replaceChildren(...FORGE_STAGES.map(([id, label], i) => {
+    $("forge").querySelector(".forge-note").innerHTML = update
+      ? "<strong>Why does this take a while?</strong> The new viewer is built on your computer from verified sources and must pass the full test suite before it replaces the current one. You can keep reading documents meanwhile."
+      : "<strong>Why does this take a while?</strong> airlock builds its viewer on your own computer from official, fingerprint-checked sources, instead of shipping a ready-made black box. It happens once; after that every document opens in a second.";
+    $("forge-stages").replaceChildren(...forgeStages(mode).map(([id, label], i) => {
       const li = el("li", "", label);
       li.dataset.stage = id;
       li.dataset.n = String(i + 1).padStart(2, "0");
@@ -1322,7 +1359,7 @@ const forge = {
     }));
     $("setup-log").replaceChildren();
     $("forge").classList.remove("ok", "bad");
-    $("forge-title").textContent = "Building the secure viewer";
+    $("forge-title").textContent = update ? "Updating the secure viewer" : "Building the secure viewer";
     this.render();
   },
   enter(step) {
@@ -1357,7 +1394,13 @@ const forge = {
     let m;
     if ((m = /^==> (.*)/.exec(line))) {
       const t = m[1];
-      if (/^Checking host/.test(t)) this.enter("check");
+      if (/^(Checking upstream|Verifying kernel|Firecracker v|Alpine \d|Keeping the current)/.test(t)) {
+        if (this.step === "check/upstream") this.sub = t;
+      } else if (/^Rebuilding and running|^Done$/.test(t)) {
+        // update.sh / bootstrap.sh bookkeeping
+      } else if (/^Fetching test fixtures/.test(t)) this.enter("tests/tests");
+      else if (/^Updated/.test(t)) this.enter("install/install");
+      else if (/^Checking host/.test(t)) this.enter("check");
       else if (/^Fetching pinned/.test(t)) this.enter("fetch");
       else if (/kernel .* is already built/.test(t)) {
         for (const k of ["kernel/unpack", "kernel/tools", "kernel/compile"]) this.skipped.add(k);
@@ -1418,6 +1461,11 @@ const forge = {
       this.print(`  compile ${m[1]} ${m[2]}`, "pkg");
     } else if (/^\s*#+\s+[\d.]+%$|^\s*% Total|^\s*Dload\s+Upload/.test(line)) {
       // a plain curl progress bar (terminal runs): skipped
+    } else if ((m = /^(ok|FAIL)\s+(.*)/.exec(line)) && this.step === "tests/tests") {
+      this.count++;
+      this.total = Math.max(TEST_CHECKS, this.count + 1);
+      this.sub = `${this.count} of ${TEST_CHECKS} checks · ${m[2].replace(/\s*\(.*$/, "")}`;
+      this.print(`  ${m[1] === "ok" ? "✓" : "✕"} ${m[2]}`, m[1] === "ok" ? "ok" : "err");
     } else if (/^WARNING|^\s*\* /.test(line)) {
       this.print(line, "dim");
     } else if (/error|fail|mismatch|denied|not found/i.test(line)) {
@@ -1487,9 +1535,11 @@ const forge = {
     this.tEnd = Date.now();
     if (ok) this.frac = 1;
     $("forge").classList.add(ok ? "ok" : "bad");
-    $("forge-title").textContent = ok ? "The secure viewer is ready" : "The build stopped";
-    $("forge-what").textContent = ok ? `Built and checked in ${fmtTime((Date.now() - this.t0) / 1000)}` : message;
-    $("forge-why").textContent = ok ? "You can open documents now." : "Nothing on your computer was changed. Check the live output below, then try again.";
+    const update = this.mode === "update";
+    $("forge-title").textContent = ok ? (update ? "Updated · all checks passed" : "The secure viewer is ready") : (update ? "Update stopped" : "The build stopped");
+    $("forge-what").textContent = ok ? `${update ? "Updated" : "Built"} and checked in ${fmtTime((Date.now() - this.t0) / 1000)}` : message;
+    $("forge-why").textContent = ok ? (update ? "Documents you open from now on use the updated viewer." : "You can open documents now.")
+      : (update ? "The current version is still in place and keeps working. The live output below shows what failed." : "Nothing on your computer was changed. Check the live output below, then try again.");
     this.print(ok ? "✓ done" : `✕ ${message}`, ok ? "ok" : "err");
     this.render();
   },
@@ -1498,6 +1548,7 @@ const forge = {
 $("setup-build").onclick = async () => {
   const b = $("setup-build");
   b.disabled = true;
+  $("setup").append($("forge"));
   $("forge").hidden = false;
   $("setup-list").hidden = true;
   $("setup").classList.add("building");
@@ -1554,7 +1605,7 @@ const TOUR = [
     text: "Type to find words. Enter and Shift+Enter jump between matches.",
     how: "The search runs inside the VM. Only the positions of the matches come back as numbers, and airlock draws the highlights itself." },
   { target: "zoombox", kicker: "View", title: "Zoom",
-    text: "Zoom in and out, or Fit to match the window width. The + and − keys work too.",
+    text: "Zoom in and out, or Fit to match the window width. The + and − keys and Ctrl + scroll wheel work too.",
     how: "The VM redraws each page sharply at the new size: no blurry scaling." },
   { target: "textbtn", kicker: "Read", title: "Document text",
     text: "Shows the document's text, page by page, scrolling together with the pages. You can also select and copy text straight from the page.",

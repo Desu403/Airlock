@@ -929,6 +929,27 @@ async fn uninstall(app: tauri::AppHandle, system: bool, remove_appimage: bool) -
     Ok(done)
 }
 
+/// Reads a build's output as lines; curl redraws its meter with \r, so each
+/// redraw is a line too. Lines are sanitised; blank ones are skipped.
+fn stream_lines(out: impl std::io::Read, mut f: impl FnMut(String)) {
+    use std::io::BufRead;
+    let mut out = std::io::BufReader::new(out);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        let Ok(n) = out.read_until(b'\n', &mut buf) else { break };
+        if n == 0 {
+            break;
+        }
+        for part in buf.split(|&b| b == b'\r' || b == b'\n') {
+            let line = text::sanitize_line(part);
+            if !line.trim().is_empty() {
+                f(line);
+            }
+        }
+    }
+}
+
 /// Builds and installs the VM (user space), streaming "setup-progress".
 #[tauri::command]
 async fn setup_build(app: tauri::AppHandle, state: State<'_, AppState>) -> R<()> {
@@ -947,30 +968,10 @@ async fn setup_build(app: tauri::AppHandle, state: State<'_, AppState>) -> R<()>
         }
         let mut child = cmd.spawn().map_err(err)?;
         let mut last = String::new();
-        let mut out = std::io::BufReader::new(child.stdout.take().unwrap());
-        let mut buf = Vec::new();
-        // curl redraws its meter with \r: each redraw is a line here.
-        loop {
-            buf.clear();
-            let mut byte = [0u8];
-            let mut eof = true;
-            while let Ok(1) = std::io::Read::read(&mut out, &mut byte) {
-                eof = false;
-                if byte[0] == b'\n' || byte[0] == b'\r' {
-                    break;
-                }
-                buf.push(byte[0]);
-            }
-            if eof && buf.is_empty() {
-                break;
-            }
-            let line = text::sanitize_line(&buf);
-            if line.trim().is_empty() {
-                continue;
-            }
-            last = line;
-            let _ = app.emit("setup-progress", last.clone());
-        }
+        stream_lines(child.stdout.take().unwrap(), |line| {
+            last = line.clone();
+            let _ = app.emit("setup-progress", line);
+        });
         if child.wait().map_err(err)?.success() { Ok(()) } else { Err(format!("the build stopped: {last}")) }
     })
     .await;
@@ -1068,23 +1069,26 @@ async fn run_update(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Upda
         return Err("an update is already running".into());
     }
     let result = blocking(move || {
-        use std::io::BufRead;
         let tree = source_tree().ok_or("no airlock source checkout found to update from")?;
         let mut cmd = std::process::Command::new("sh");
-        cmd.arg("-c").arg("exec scripts/update.sh 2>&1").current_dir(&tree).stdout(std::process::Stdio::piped());
+        // AIRLOCK_PROGRESS: the build's own output (downloads, packages,
+        // kernel files, test results) for the live progress view.
+        cmd.arg("-c").arg("exec scripts/update.sh 2>&1").current_dir(&tree).env("AIRLOCK_PROGRESS", "1").stdout(std::process::Stdio::piped());
         if let Some(cli) = appimage_cli() {
             cmd.env("AIRLOCK_CLI", cli);
         }
         let mut child = cmd.spawn().map_err(err)?;
         let mut tail: Vec<String> = Vec::new();
-        for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
-            let line = text::sanitize_line(line.as_bytes());
+        stream_lines(child.stdout.take().unwrap(), |line| {
             let _ = app.emit("update-progress", line.clone());
-            tail.push(line);
-            if tail.len() > 40 {
-                tail.remove(0);
+            // Meter redraws and per-file lines would crowd out the summary.
+            if !line.starts_with("@@") && !line.trim_start().starts_with(|c: char| c.is_ascii_digit()) {
+                tail.push(line);
+                if tail.len() > 40 {
+                    tail.remove(0);
+                }
             }
-        }
+        });
         let ok = child.wait().map_err(err)?.success();
         let _ = std::fs::remove_file(tree.join("build/update-status"));
         let lines = if ok { tail.iter().skip_while(|l| !l.starts_with("==> Updated")).cloned().collect() } else { tail };

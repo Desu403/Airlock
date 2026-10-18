@@ -76,7 +76,13 @@ able to touch the host, and *see* what it tries to do.
   never the extension). Static: oletools inside the VM (VBA source, AutoExec,
   suspicious keywords, IOCs, **VBA stomping via pcodedmp**, XLM), external
   relationships (remote template, Follina `mhtml:`/`ms-msdt`), DDE fields,
-  RTF objects (Equation Editor, OLE2Link). Render: LibreOffice headless as
+  RTF objects (Equation Editor, OLE2Link); embedded OLE objects by class id
+  (Equation Editor) and link flag + URL moniker (CVE-2017-0199); RTF parts
+  inside .docx (altChunk); self-loading objects in malformed RTF; data hidden
+  after an RTF's end; relationships read with an XML parser (any namespace
+  prefix); Word field codes assembled across runs (split DDE). Links to free
+  hosting / file sharing, bare IPs, program downloads and network shares are
+  rated medium (host/src/report.rs link_risk). Render: LibreOffice headless as
   nobody under the monitor with a prebuilt profile; macros never run.
   Spreadsheets are exported by the profile's one macro (`guest/lo-sheets.xba`,
   loading with MacroExecutionMode NEVER_EXECUTE): each sheet is fitted to the
@@ -154,3 +160,15 @@ able to touch the host, and *see* what it tries to do.
 - `guest/build-rootfs.sh` — rootless guest image build
 - `host/` — `airlock` CLI
 - `vendor/` — Firecracker + guest kernel (downloaded, checksummed; gitignored)
+
+## Containment (tripwire)
+
+A viewing VM never needs to start programs, use the network, touch other
+processes or reach risky kernel interfaces. The in-VM monitor blocks each
+attempt and reports it; the host ends the session on the first report
+(`live::is_attack`, the tripwire), so an exploit gets no second try. A VM
+that breaks the protocol is killed as hostile, and one that does not answer
+in time is destroyed (fail closed). `airlock containment <doc>` proves all
+three with a deliberately hostile guest (attack payload, junk output, and a
+root fork bomb + memory fill + all CPUs), checking that the host stays
+responsive and the VM within its size; it runs in tests/run.sh.

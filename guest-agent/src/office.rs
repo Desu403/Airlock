@@ -40,8 +40,14 @@ pub fn detect(doc: &[u8]) -> Option<Kind> {
             Kind::Office("xls")
         } else if contains(doc, &utf16("PowerPoint Document")) {
             Kind::Office("ppt")
+        } else if contains(doc, &utf16("_VBA_PROJECT")) || contains(doc, &utf16("PROJECT")) {
+            // A bare macro project (PowerPoint .ppa add-ins are delivered
+            // like this): nothing to show, but everything to check.
+            Kind::Office("doc")
         } else {
-            return None;
+            // Any other OLE file can still carry objects (browser controls,
+            // formulas, links): checked, even if there is nothing to show.
+            Kind::Office("doc")
         });
     }
     if doc.starts_with(b"PK\x03\x04") {
@@ -87,6 +93,7 @@ pub fn triage(path: &str, work: &str) -> Vec<(Ind, String)> {
             "EXPLOIT" => Ind::OfficeExploit,
             "EMBEDDED" => Ind::OfficeEmbedded,
             "LINK" => Ind::OfficeLink,
+            "MALFORMED" => Ind::HiddenData,
             "CONTAINER" => Ind::OfficeContainer,
             "ERROR" => Ind::OfficeError,
             _ => continue,
@@ -142,7 +149,15 @@ pub fn convert(path: &str, work: &str, net: Net, ext: &str) -> Vec<(Ind, String)
             allow_unix: true,
             allow_fork: true,
             // LibreOffice start-up probes (paper size, GnuPG). Denied, but normal.
-            quiet_exec: &["/bin/sh [sh -c paperconf 2>/dev/null]", "/usr/bin/gpgconf [/usr/bin/gpgconf --*"],
+            // Media in slides: GStreamer's plugin scanner and GLib's network
+            // monitor (netlink). Denied, but normal.
+            quiet_exec: &[
+                "/bin/sh [sh -c paperconf 2>/dev/null]",
+                "/usr/bin/gpgconf [/usr/bin/gpgconf --*",
+                "/usr/lib/../libexec/gstreamer-1.0/gst-plugin-scanner [*",
+                "/usr/libexec/gstreamer-1.0/gst-plugin-scanner [*",
+            ],
+            quiet_netlink: true,
             env: &[("HOME", &dir), ("XDG_CACHE_HOME", &cache), ("XDG_CONFIG_HOME", &dir), ("SAL_USE_VCLPLUGIN", "svp"), ("LANG", "C.UTF-8")],
             ..Opts::new(net, Duration::from_secs(120))
         },

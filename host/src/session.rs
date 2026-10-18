@@ -9,7 +9,10 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::{Duration, Instant};
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
-const IO_TIMEOUT: Duration = Duration::from_secs(90);
+/// Longest silence from the guest: longer than any single step inside it
+/// (Office triage 90 s, LibreOffice conversion 120 s), which send nothing
+/// until they finish.
+const IO_TIMEOUT: Duration = Duration::from_secs(200);
 
 #[derive(Default)]
 pub struct Session {
@@ -20,6 +23,9 @@ pub struct Session {
     /// The VM died on its own mid-session (e.g. guest kernel panic: the
     /// hardened kernel panics on any oops, a typical exploit side effect).
     pub vm_died: Option<String>,
+    /// The VM stopped answering (still running): it was destroyed, and the
+    /// report keeps what was found until then.
+    pub vm_hung: Option<String>,
     pub elapsed: Duration,
 }
 
@@ -55,7 +61,10 @@ pub fn run(assets: &vm::Assets, run: &vm::RunDir, spec: &vm::Spec, verbose: bool
     if connected && result.is_err() && session.protocol_violation.is_none() {
         // Did the VM die by itself while we were talking to it?
         std::thread::sleep(Duration::from_millis(200));
-        if child.try_wait()?.is_some() {
+        let timed_out = result.as_ref().err().and_then(|e| e.root_cause().downcast_ref::<std::io::Error>()).is_some_and(|e| matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut));
+        if timed_out && child.try_wait()?.is_none() {
+            session.vm_hung = Some(format!("the viewer stopped responding for {} s (stuck on the file; exploits can do this, so can very large files) and was destroyed", IO_TIMEOUT.as_secs()));
+        } else if child.try_wait()?.is_some() {
             let console = vm::sanitized_log(&log);
             session.vm_died = Some(if console.contains("Kernel panic") {
                 "the guest kernel panicked mid-session (typical side effect of a kernel exploit attempt)".into()
@@ -79,7 +88,7 @@ pub fn run(assets: &vm::Assets, run: &vm::RunDir, spec: &vm::Spec, verbose: bool
     }
     match result {
         Ok(()) => Ok(session),
-        Err(_) if session.protocol_violation.is_some() || session.vm_died.is_some() => Ok(session),
+        Err(_) if session.protocol_violation.is_some() || session.vm_died.is_some() || session.vm_hung.is_some() => Ok(session),
         Err(e) => Err(e),
     }
 }

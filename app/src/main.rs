@@ -66,7 +66,7 @@ type R<T> = Result<T, String>;
 
 fn err(e: impl std::fmt::Display) -> String {
     let s = format!("{e:#}");
-    if s.starts_with(airlock_core::live::VM_STOPPED) || s.starts_with("protocol violation") {
+    if s.starts_with(airlock_core::live::VM_STOPPED) || s.starts_with(airlock_core::live::TRIPWIRE) || s.starts_with("protocol violation") {
         log_event(&s);
     }
     s
@@ -328,6 +328,29 @@ async fn page_text(page: u32, state: State<'_, AppState>) -> R<String> {
     .await
 }
 
+/// Hints that the text came from an AI chat tool (first 30 pages). Counts of
+/// characters the sanitiser removes come from the VM as numbers only.
+#[tauri::command]
+async fn ai_hints(state: State<'_, AppState>) -> R<serde_json::Value> {
+    text_allowed(&state)?;
+    let doc = state.doc.clone();
+    blocking(move || {
+        let mut g = doc.lock().unwrap();
+        let d = g.as_mut().ok_or("no document open")?;
+        let mut stats = std::collections::BTreeMap::<String, u64>::new();
+        let mut text = String::new();
+        for p in 0..d.session.pages.len().min(30) as u32 {
+            for (k, v) in d.session.text_stats(p).map_err(err)? {
+                *stats.entry(k).or_default() += v;
+            }
+            text.push_str(&d.session.text(p).map_err(err)?);
+            text.push('\n');
+        }
+        Ok(airlock_core::aitext::analyze(&stats, &text).to_json())
+    })
+    .await
+}
+
 /// Text lines + boxes for the invisible, selectable layer over a page.
 #[tauri::command]
 async fn page_lines(page: u32, state: State<'_, AppState>) -> R<Vec<LineOut>> {
@@ -473,6 +496,12 @@ fn sandbox_web_content() {
     let has = |cmd: &str| std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()));
     if std::env::var_os("WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS").is_some() {
         eprintln!("airlock: WARNING: web-content sandbox disabled by the environment");
+    } else if std::env::var_os("APPIMAGE").is_some() {
+        // The AppImage's bundled WebKit finds its helpers by relative paths,
+        // which do not resolve inside its own bubblewrap sandbox: it runs
+        // without that extra layer (WebKitGTK's default). Documents still
+        // arrive as pixels from the VM; scripts/install.sh keeps the sandbox.
+        eprintln!("airlock: note: AppImage build, WebKit's extra web-content sandbox is off");
     } else if has("bwrap") && has("xdg-dbus-proxy") {
         // Single-threaded here: nothing else reads the environment yet.
         std::env::set_var("WEBKIT_FORCE_SANDBOX", "1");
@@ -501,11 +530,107 @@ fn source_tree() -> Option<PathBuf> {
     [
         std::env::var_os("AIRLOCK_SOURCE").map(PathBuf::from),
         exe_dir.map(|d| d.join("../lib/airlock/kit")),
+        // Created by the AppImage's first-run setup.
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/lib/airlock/kit")),
         Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")),
     ]
     .into_iter()
     .flatten()
     .find(|p| p.join("scripts/update.sh").is_file())
+}
+
+// ---------------------------------------------------------------- first-run setup
+// scripts/setup.sh checks this computer, fixes what needs root with one
+// password prompt (pkexec), and builds the VM in user space. The AppImage
+// carries it in its resources ("kit"); a source checkout or an install has it too.
+
+/// Where to run setup.sh from, and the bundled sinkhole (AppImage).
+fn setup_kit(app: &tauri::AppHandle) -> Option<(PathBuf, Option<PathBuf>)> {
+    let res = app.path().resource_dir().ok();
+    let sinkhole = res.as_ref().map(|r| r.join("bin/sinkhole")).filter(|p| p.is_file());
+    let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from));
+    [
+        std::env::var_os("AIRLOCK_SOURCE").map(PathBuf::from),
+        res.map(|r| r.join("kit")),
+        std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/lib/airlock/kit")),
+        exe_dir.map(|d| d.join("../lib/airlock/kit")),
+        Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..")),
+    ]
+    .into_iter()
+    .flatten()
+    .find(|p| p.join("scripts/setup.sh").is_file())
+    .map(|k| (k, sinkhole))
+}
+
+#[derive(Serialize)]
+struct SetupItem {
+    /// ok, fix (setup can fix it), build (the VM is not built yet), fail
+    status: String,
+    id: String,
+    text: String,
+}
+
+fn setup_items(out: &[u8]) -> Vec<SetupItem> {
+    String::from_utf8_lossy(out)
+        .lines()
+        .filter_map(|l| l.strip_prefix("@@"))
+        .filter_map(|l| {
+            let mut f = l.splitn(3, '\t');
+            Some(SetupItem { status: f.next()?.into(), id: f.next()?.into(), text: text::sanitize_line(f.next()?.as_bytes()) })
+        })
+        .take(40)
+        .collect()
+}
+
+/// What this computer still needs (empty kit = nothing to check: dev build).
+#[tauri::command]
+async fn setup_check(app: tauri::AppHandle) -> R<Vec<SetupItem>> {
+    blocking(move || {
+        let Some((kit, _)) = setup_kit(&app) else { return Ok(Vec::new()) };
+        let out = std::process::Command::new("sh").arg("scripts/setup.sh").arg("check").current_dir(&kit).output().map_err(err)?;
+        Ok(setup_items(&out.stdout))
+    })
+    .await
+}
+
+/// Applies the root fixes (one password prompt via pkexec).
+#[tauri::command]
+async fn setup_fix(app: tauri::AppHandle) -> R<Vec<String>> {
+    blocking(move || {
+        let (kit, _) = setup_kit(&app).ok_or("setup files not found")?;
+        let out = std::process::Command::new("sh").arg("scripts/setup.sh").arg("fix").current_dir(&kit).output().map_err(err)?;
+        let lines: Vec<String> = String::from_utf8_lossy(&[out.stdout, out.stderr].concat()).lines().map(|l| text::sanitize_line(l.as_bytes())).take(60).collect();
+        if out.status.success() { Ok(lines) } else { Err(format!("the fix did not complete: {}", lines.last().cloned().unwrap_or_default())) }
+    })
+    .await
+}
+
+/// Builds and installs the VM (user space), streaming "setup-progress".
+#[tauri::command]
+async fn setup_build(app: tauri::AppHandle, state: State<'_, AppState>) -> R<()> {
+    let updating = state.updating.clone();
+    if updating.swap(true, Ordering::SeqCst) {
+        return Err("a build or update is already running".into());
+    }
+    let result = blocking(move || {
+        use std::io::BufRead;
+        let (kit, sinkhole) = setup_kit(&app).ok_or("setup files not found")?;
+        let mut cmd = std::process::Command::new("sh");
+        cmd.arg("-c").arg("exec sh scripts/setup.sh build 2>&1").current_dir(&kit).stdout(std::process::Stdio::piped());
+        if let Some(s) = sinkhole {
+            cmd.env("AIRLOCK_SINKHOLE", s);
+        }
+        let mut child = cmd.spawn().map_err(err)?;
+        let mut last = String::new();
+        for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
+            last = text::sanitize_line(line.as_bytes());
+            let _ = app.emit("setup-progress", last.clone());
+        }
+        if child.wait().map_err(err)?.success() { Ok(()) } else { Err(format!("the build stopped: {last}")) }
+    })
+    .await;
+    updating.store(false, Ordering::SeqCst);
+    result
 }
 
 #[derive(Serialize, Default)]
@@ -685,6 +810,10 @@ fn main() {
             reopen,
             quit_everything,
             close_window,
+            ai_hints,
+            setup_check,
+            setup_fix,
+            setup_build,
             set_sheet_layout,
             new_window,
             save_safe_copy,

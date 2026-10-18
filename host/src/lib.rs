@@ -1,6 +1,7 @@
 //! airlock core: disposable microVMs, the strict host side of the guest
 //! protocol, reports. Shared by the CLI and the desktop app.
 
+pub mod aitext;
 pub mod analysis;
 pub mod live;
 pub mod pdf;

@@ -384,3 +384,25 @@ label.check { display: flex; gap: 8px; align-items: center; font-size: 13px; col
   .tour, .tour-spot, .tour-card, .tour-fill { transition: none; }
   .tour-card.enter, .tour-spot::before, .tour-spot::after { animation: none; }
 }
+
+/* AI-text hints (Text panel, optional) */
+.ai-hints { margin: 8px 0 12px; }
+.ai-card { border-radius: var(--radius); padding: 10px 12px; background: var(--surface-2); border: 1px solid var(--border); }
+.ai-card.strong { background: var(--med-bg); color: var(--text); border-color: var(--med); }
+.ai-card.some { background: var(--low-bg); color: var(--text); border-color: var(--low); }
+.ai-card p { margin: 4px 0; font-size: 13px; line-height: 1.45; }
+.ai-card ul { margin: 6px 0 4px; padding-left: 18px; font-size: 13px; line-height: 1.5; }
+.ai-tag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; padding: 1px 6px; border-radius: 999px; background: var(--info-bg); color: var(--info); }
+.ai-tag.strong { background: var(--med-bg); color: var(--med); }
+
+/* First-run setup */
+.setup { max-width: 640px; text-align: left; }
+.setup h1, .setup > p { text-align: center; }
+.setup-list { list-style: none; padding: 0; margin: 0 0 16px; display: flex; flex-direction: column; gap: 6px; }
+.setup-list li { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius); background: var(--surface); border: 1px solid var(--border); font-size: 14px; line-height: 1.45; }
+.setup-list .mark { flex: none; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 700; }
+.setup-list .ok .mark { background: var(--ok-bg); color: var(--ok); }
+.setup-list .fix .mark, .setup-list .build .mark { background: var(--med-bg); color: var(--med); }
+.setup-list .fail .mark { background: var(--high-bg); color: var(--high); }
+.setup-actions { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+.setup-log { margin-top: 14px; max-height: 180px; overflow: auto; font-size: 12px; background: var(--surface-2); padding: 10px; border-radius: var(--radius); white-space: pre-wrap; }

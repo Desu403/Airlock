@@ -5,7 +5,7 @@
 
 use airlock_proto::Ind;
 use std::fs;
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::Path;
 
 /// Files the analysis VM itself writes.
@@ -41,6 +41,12 @@ fn kind_of(path: &Path) -> &'static str {
     }
 }
 
+/// "/lu1441ft.tmp" or "/lu1441ft.tmp/lu144{GUID}.tmp": LibreOffice's temp dir.
+fn is_lo_temp(rel: &str) -> bool {
+    let first = rel.trim_start_matches('/').split('/').next().unwrap_or("");
+    first.len() > 6 && first.starts_with("lu") && first.ends_with(".tmp") && first[2..first.len() - 4].bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
 /// `files`: regular files found, for the YARA scan (path, report name).
 fn walk(root: &Path, dir: &Path, out: &mut Vec<(Ind, String)>, files: &mut Vec<(String, String)>, budget: &mut usize) {
     let Ok(rd) = fs::read_dir(dir) else { return };
@@ -53,7 +59,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(Ind, String)>, files: &mut Vec<(
         let Ok(m) = fs::symlink_metadata(&p) else { continue };
         let ft = m.file_type();
         if ft.is_dir() {
-            if !EXPECTED.contains(&rel.as_str()) && !rel.starts_with("/work/lo-profile") {
+            if !EXPECTED.contains(&rel.as_str()) && !rel.starts_with("/work/lo-profile") && !is_lo_temp(&rel) {
                 *budget -= 1;
                 out.push((Ind::FileDropped, format!("directory {rel}")));
             }
@@ -63,6 +69,19 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(Ind, String)>, files: &mut Vec<(
             continue;
         }
         if EXPECTED.contains(&rel.as_str()) || (rel.starts_with("/work/office.") && !rel[13..].contains('/')) {
+            continue;
+        }
+        // LibreOffice's own leftovers when it is killed or crashes: its
+        // single-instance pipe and its temp dir (/luXXXX.tmp/). Still scanned
+        // for known malware, not reported as dropped.
+        let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if ft.is_socket() && name.starts_with("OSL_PIPE_") && name.contains("_SingleOfficeIPC_") {
+            continue;
+        }
+        if is_lo_temp(&rel) {
+            if ft.is_file() {
+                files.push((p.display().to_string(), format!("LibreOffice temp file {rel}")));
+            }
             continue;
         }
         // LibreOffice profile: compare with the pristine template from the image.
@@ -80,7 +99,8 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(Ind, String)>, files: &mut Vec<(
         *budget -= 1;
         let mode = m.permissions().mode();
         let mut flags = String::new();
-        if mode & 0o111 != 0 {
+        // Sockets and pipes have mode bits too; they are not programs.
+        if mode & 0o111 != 0 && (ft.is_file() || ft.is_symlink()) {
             flags.push_str(" executable-bit");
         }
         if mode & 0o6000 != 0 {

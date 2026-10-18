@@ -8,6 +8,7 @@
 //   @@ACT  <trigger> <1|0> <action type> <hex detail>   (every other action)
 //   @@EMB  <hex name> <size> <hex first 64 bytes>        (embedded file)
 //   @@FEAT <XFA|RichMedia|Media|Encrypt|Password>
+//   @@BIG  <percent of the page> <page> <hex URI>      (a link covering >= 25%)
 //   @@DONE                                              (walk completed)
 var MAX_ACTIONS = 256, MAX_PAGES = 500, MAX_ANNOTS = 4000, MAX_FIELDS = 4000, MAX_EMB = 64;
 var doc = Document.openDocument(scriptArgs[0]);
@@ -155,6 +156,26 @@ function nameTree(node, depth, each) {
     }
 }
 
+// Phishing PDFs are a picture of a document under one big link ("View
+// document"): report web links that cover a quarter of the page or more.
+var pageArea = {};
+function num(o) { var r = o.resolve(); return r.isNumber() ? r.asNumber() : NaN; }
+function bigLink(ad, p) {
+    var sub = ad.get("Subtype"), a = ad.get("A"), rect = ad.get("Rect");
+    if (!has(sub) || !sub.isName() || sub.asName() !== "Link" || !has(a) || !has(rect)) return;
+    a = a.resolve();
+    if (!a.isDictionary() || !has(a.get("S")) || a.get("S").asName() !== "URI") return;
+    rect = rect.resolve();
+    if (!rect.isArray() || rect.length < 4) return;
+    var w = Math.abs(num(rect.get(2)) - num(rect.get(0))), h = Math.abs(num(rect.get(3)) - num(rect.get(1)));
+    if (pageArea[p] === undefined) {
+        var b = doc.loadPage(p).getBounds();
+        pageArea[p] = Math.abs((b[2] - b[0]) * (b[3] - b[1]));
+    }
+    var pct = Math.round(100 * Math.min(1, (w * h) / pageArea[p]));
+    if (pageArea[p] > 0 && pct >= 25) print("@@BIG\t" + pct + "\t" + (p + 1) + "\t" + hex(a.get("URI")));
+}
+
 function field(f, depth) {
     if (!has(f) || depth > 16 || fields++ >= MAX_FIELDS) return;
     var d = f.resolve();
@@ -205,6 +226,7 @@ function walk() {
                     if (sub.asName() === "Screen" || sub.asName() === "Movie" || sub.asName() === "Sound") media = true;
                 }
                 action(ad.get("A"), "link or button clicked (page " + (p + 1) + ")", false, 0);
+                bigLink(ad, p);
                 aa(ad.get("AA"), ANNOT_EVENTS, "page " + (p + 1) + " annotation");
             }
         }

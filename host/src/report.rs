@@ -127,6 +127,18 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         Ind::PdfJsClick => finding(Static, Low, "T1059.007 JavaScript", "JavaScript that only runs when you click or type", "Typical for interactive forms. Nothing runs by itself.", format!("JavaScript: {text}")),
         Ind::PdfJsForm => finding(Static, Info, "-", "Standard form-field scripts", "Fillable forms use Adobe's built-in functions to format numbers, dates and totals. Harmless.", text.to_string()),
         Ind::PdfUnreadable => finding(Static, Medium, "T1027 Obfuscated Files", if text.starts_with("password") { "Password protected" } else { "The PDF's structure could not be read" }, "Damaged or deliberately malformed files can hide things from scanners, so its contents could not be fully checked.", text.to_string()),
+        Ind::QrLink => {
+            let url = text.split_once(": ").map_or(text, |(_, u)| u);
+            match link_risk(url) {
+                Some((sev, title, why)) => finding(Static, sev, "T1566.002 Spearphishing Link", title, why, format!("QR code on {text}")),
+                None => finding(Static, Low, "T1566.002 Spearphishing Link", "A QR code with a link", "Scanning it with a phone opens this address. Legitimate on invoices and tickets; also used to move phishing onto phones, where links are hard to check.", format!("QR code on {text}")),
+            }
+        }
+        Ind::PhishText => finding(Static, Medium, "T1566 Phishing", if text.starts_with("callback") { "Looks like a callback scam" } else { "Pretends to be a well-known company" }, if text.starts_with("callback") { "It uses a well-known name, claims a charge you did not make and gives a phone number to call. Calling connects you to scammers who ask for payment or remote access." } else { "It uses a well-known company's name and asks you to open or verify something, but its link goes to a site that company does not own: the pattern of phishing pages." }, text.to_string()),
+        Ind::PdfLure => finding(Static, Medium, "T1566.002 Spearphishing Link", "The page is one big link", "Phishing PDFs show a picture of a document or a \"View\" button, and clicking almost anywhere opens a website, usually a fake login page. Real documents rarely do this.", text.to_string()),
+        Ind::HiddenData if text.contains("program") || text.contains("archive") || text.contains("Office/OLE") || text.contains("web page") => finding(Static, High, "T1027.009 Embedded Payloads", "Hides a program or archive inside the file", "The file is built to be two things at once: a document you can open and a hidden program or archive. Only done to smuggle malware past scanners.", text.to_string()),
+        Ind::HiddenData if text.starts_with("the RTF header is deliberately malformed") => finding(Static, Medium, "T1027 Obfuscated Files", "Deliberately malformed file", "Its first bytes are written in a way no editor produces, so that other programs read it differently from Word. Only done to slip past scanners.", text.to_string()),
+        Ind::HiddenData => finding(Static, Medium, "T1027 Obfuscated Files", "Hides data after the end of the document", "Readers stop at the document's end, so this part is invisible to you; a common place to smuggle a payload.", text.to_string()),
         Ind::PdfFeature => {
             let t = text.to_ascii_lowercase();
             let (title, why, sev, att) = if t.starts_with("encryption") {
@@ -149,6 +161,10 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
             finding(Static, sev, att, title, why, format!("contains {text}"))
         }
         Ind::PdfUri if text.starts_with("mailto:") => finding(Static, Info, "-", "Email link", "Clicking it opens your mail program.", format!("email link {text}")),
+        Ind::PdfUri | Ind::OfficeLink if link_risk(text).is_some() => {
+            let (sev, title, why) = link_risk(text).unwrap_or((Info, "", ""));
+            finding(Static, sev, "T1566.002 Spearphishing Link", title, why, format!("link to {text}"))
+        }
         Ind::PdfUri => finding(Static, Info, "T1566.002 Spearphishing Link", "Link to a website", "An ordinary clickable link. Check where it really goes before clicking.", format!("link to {text}")),
         // Compressed object streams are how modern PDF writers save files.
         Ind::PdfObfuscation if text.contains("only visible after decompression") => finding(Static, Low, "T1027 Obfuscated Files", "Some contents are compressed", "Normal in modern PDFs; it also hides them from simple scanners.", text.to_string()),
@@ -178,9 +194,12 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         // ---- Office
         Ind::OfficeMacro => finding(Static, Medium, "T1059.005 Visual Basic", "Contains macros", WHY_MACRO, format!("VBA macro {text}")),
         Ind::OfficeAutoExec => finding(Static, High, "T1204.002 Malicious File", "A macro runs automatically when opened", "If you click \"Enable content\" in Office, this code starts by itself. That is how most Office malware runs.", format!("macro runs automatically on open: {text}")),
+        Ind::OfficeSuspicious if text.starts_with("runs when you click") => finding(Static, Medium, "T1204.002 Malicious File", "A macro runs when you click a button", "It only runs if you click or use a control in Office after enabling macros. Common in legitimate forms, and also used to trick people into starting malware.", format!("macro {text}")),
         Ind::OfficeSuspicious => {
             let k = text.to_ascii_lowercase();
             let dangerous = [
+                // "Run" is also Application.Run (calls another macro), but the
+                // verdict needs an automatic macro too before it calls it an attack.
                 "shell", "urldownloadtofile", "powershell", "createprocess", "run", "exec", "wscript", "mshta", "certutil", "regsvr32", "rundll32",
                 // script-host execution (see EXEC_PRIMITIVES in guest/office_triage.py)
                 "scriptcontrol", "addcode", "callbyname", "macscript",
@@ -196,11 +215,15 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
         }
         Ind::OfficeIoc => finding(Static, Medium, "T1105 Ingress Tool Transfer", "A macro mentions web addresses or files", "Addresses or program names inside macro code often show where malware would be downloaded from.", format!("macro mentions {text}")),
         Ind::OfficeObfuscation => finding(Static, Medium, "T1027 Obfuscated Files", "A macro hides what it does", "The macro encodes its text so it cannot be read at a glance, a common trick to slip past scanners.", format!("macro hides strings: {text}")),
-        Ind::OfficeStomping => finding(Static, High, "T1564.007 VBA Stomping", "Hidden macro code", "The macro you would see in Office is a decoy; Office would actually run different, hidden code. Only done to deceive.", text.to_string()),
+        // oletools' check also fires on some old legitimate macros (saved by
+        // another Office version): strong, but not decisive on its own.
+        Ind::OfficeStomping => finding(Static, Medium, "T1564.007 VBA Stomping", "Macro code may be hidden", "The macro text you would see in Office does not match the compiled code Office would actually run. Attackers do this to hide code; old files saved by another Office version can also show it.", text.to_string()),
         Ind::OfficeXlm => finding(Static, High, "T1059 Command and Scripting Interpreter", "Old Excel 4.0 macros", "A 30-year-old macro language that many scanners miss; popular with malware for exactly that reason.", text.to_string()),
         Ind::OfficeExternal => {
             let (sev, att, title, why) = if text.starts_with("remote template") {
                 (High, "T1221 Template Injection", "Downloads content from the internet when opened", "Office would fetch a template from a web address as soon as the file opens. Attackers use this to bring in macros or exploits from outside.")
+            } else if text.starts_with("external frame") {
+                (High, "T1221 Template Injection", "Loads a web page into the document when opened", "Word would load a page from a web address into the document as soon as it opens: a way to bring an exploit in from outside.")
             } else if text.starts_with("external image") {
                 (Medium, "T1187 Forced Authentication", "Loads an image from the internet", "Opening it tells the sender you read it, and on Windows it can leak your login details to their server.")
             } else {
@@ -209,6 +232,8 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
             finding(Static, sev, att, title, why, text.to_string())
         }
         Ind::OfficeExploit => finding(Static, High, "T1203 Exploitation for Client Execution", "Known exploit technique", WHY_EXPLOIT, format!("EXPLOIT: {text}")),
+        Ind::OfficeEmbedded if text.starts_with("hidden data after the end") => finding(Static, Medium, "T1027 Obfuscated Files", "Hides data after the end of the document", "Word stops reading where the document ends; the rest is invisible to you and a common place to smuggle a payload.", text.to_string()),
+        Ind::OfficeEmbedded if text.starts_with("object set to load by itself") => finding(Static, Medium, "T1203 Exploitation for Client Execution", "An embedded object loads by itself", "Most embedded objects wait for a double-click; this one is loaded the moment the file opens, which is how many document exploits start.", text.to_string()),
         Ind::OfficeEmbedded => finding(Static, Medium, "T1027.009 Embedded Payloads", "Contains an embedded object", "Files or controls hidden inside the document; can carry a program.", text.to_string()),
         Ind::OfficeLink => finding(Static, Info, "T1566.002 Spearphishing Link", "Link to a website", "An ordinary clickable link. Check where it really goes before clicking.", format!("link to {text}")),
         Ind::OfficeContainer => finding(Static, Low, "-", "Macro-enabled file format", "This file type is allowed to carry macros.", text.to_string()),
@@ -235,6 +260,62 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
             finding(Outside, sev, "T1105 Ingress Tool Transfer", title, why, format!("left on disk: {text}"))
         }
     }
+}
+
+/// Links of the kind phishing documents use: free web hosting and file
+/// storage that anyone can publish to anonymously, bare IP addresses,
+/// direct downloads of programs, Windows file shares. (title, explanation)
+fn link_risk(url: &str) -> Option<(Severity, &'static str, &'static str)> {
+    let u = url.trim().to_ascii_lowercase();
+    // \\server\share or file://server/share (file:///C:/... is this computer).
+    let file_host = u.strip_prefix("file://").map(|r| r.split(['/', '\\']).next().unwrap_or(""));
+    if u.starts_with("\\\\") || file_host.is_some_and(|h| !h.is_empty() && h != "localhost") {
+        return Some((Severity::Medium, "Links to a network file share", "On Windows, opening it can send your login details to whoever runs that server."));
+    }
+    let rest = u.split_once("://").map(|(_, r)| r)?;
+    let host = rest.split(['/', '?', '#']).next().unwrap_or("").rsplit('@').next().unwrap_or("");
+    let host = host.rsplit_once(':').filter(|(_, p)| p.bytes().all(|b| b.is_ascii_digit())).map_or(host, |(h, _)| h);
+    let path = rest[rest.find('/').unwrap_or(rest.len())..].split(['?', '#']).next().unwrap_or("");
+    const FREE_HOSTING: &[&str] = &[
+        "vercel.app", "netlify.app", "pages.dev", "workers.dev", "r2.dev", "web.app", "firebaseapp.com", "firebasestorage.googleapis.com",
+        "storage.googleapis.com", "blob.core.windows.net", "web.core.windows.net", "backblazeb2.com", "glitch.me",
+        "herokuapp.com", "onrender.com", "replit.app", "replit.dev", "repl.co", "ngrok.io", "ngrok-free.app", "ngrok.app", "trycloudflare.com",
+        "duckdns.org", "ddns.net", "000webhostapp.com", "surge.sh", "ipfs.io", "dweb.link", "cloudflare-ipfs.com", "fleek.co",
+        "telegra.ph", "pastebin.com", "dropboxusercontent.com", "transfer.sh", "gofile.io", "files.catbox.moe", "cdn.discordapp.com",
+        "myqcloud.com", "pixeldrain.com", "filecloudtrial.com", "mediafire.com", "mega.nz", "file.io", "tmpfiles.org", "temp.sh", "filebin.net",
+        "sendspace.com", "anonfiles.com", "bayfiles.com", "zippyshare.com",
+    ];
+    let on = |d: &str| host == d || host.ends_with(&format!(".{d}"));
+    // Amazon S3 buckets (not every amazonaws.com service).
+    let s3 = host.ends_with(".amazonaws.com") && (host.starts_with("s3.") || host.starts_with("s3-") || host.contains(".s3.") || host.contains(".s3-"));
+    if host.parse::<std::net::Ipv4Addr>().is_ok() || host.starts_with('[') {
+        return Some((Severity::Medium, "Link to a bare IP address", "Real organisations link to named websites; a raw number address is typical of malware servers."));
+    }
+    let program = [".exe", ".msi", ".scr", ".hta", ".jse", ".application", ".appref-ms", ".search-ms", ".vbs", ".vbe", ".wsf", ".bat", ".cmd", ".ps1", ".lnk", ".iso", ".img", ".vhd", ".vhdx", ".jar", ".appx", ".msix", ".one", ".cpl", ".dll"];
+    if program.iter().any(|e| path.ends_with(e)) {
+        return Some((Severity::Medium, "Link downloads a program", "Clicking it would download something that runs as a program, not a document."));
+    }
+    // File drops on general sites: only their sharing paths.
+    let share = (on("supabase.co") && path.starts_with("/storage/"))
+        || (on("dropbox.com") && (path.starts_with("/scl/") || path.starts_with("/s/")))
+        || (on("4sync.com") && path.contains("download"));
+    if on("t.me") || on("telegram.me") {
+        return Some((Severity::Medium, "Link to a Telegram chat", "Scams and malware campaigns move victims to Telegram, where nobody moderates them. Real documents rarely link there."));
+    }
+    const SHORTENERS: &[&str] = &[
+        "bit.ly", "tinyurl.com", "is.gd", "cutt.ly", "rb.gy", "shorturl.at", "t.co", "ow.ly", "rebrand.ly", "surl.li", "urlgoal.com", "tiny.cc", "s.id", "shorturl.ae", "v.gd", "buff.ly",
+    ];
+    if SHORTENERS.iter().any(|d| on(d)) {
+        return Some((Severity::Low, "Short link hides where it goes", "You cannot see the real destination before clicking. Common in newsletters, and also in phishing."));
+    }
+    if s3 || share || FREE_HOSTING.iter().any(|d| on(d)) {
+        return Some((
+            Severity::Medium,
+            "Link to a free hosting or file-sharing site",
+            "Anyone can publish there anonymously in minutes, so phishing documents use them for fake login and \"view document\" pages. Real companies rarely do.",
+        ));
+    }
+    None
 }
 
 fn s(v: &serde_json::Value, k: &str) -> String {
@@ -273,6 +354,42 @@ fn sinkhole_findings(path: &Path) -> Vec<Finding> {
         }
     }
     out
+}
+
+/// Documents that link pictures from the web (old newsletters, reports):
+/// LibreOffice fetches them on open. When everything that went out is DNS
+/// plus plain picture downloads, it is tracking, not an attack: medium.
+/// Anything else (TLS, raw connections, other downloads) keeps it high.
+fn linked_pictures_only(findings: &mut [Finding]) {
+    let net = |f: &Finding| {
+        (f.source == Source::Outside && (f.what.starts_with("DNS lookup of ") || f.what.starts_with("HTTP \"") || f.what.starts_with("TLS ") || f.what.starts_with("TCP ") || f.what.starts_with("packets: ")))
+            || (f.source == Source::Monitor && f.what.starts_with("network: "))
+    };
+    let picture = |what: &str| {
+        let req = what.strip_prefix("HTTP \"").and_then(|r| r.split('"').next()).unwrap_or("");
+        let mut parts = req.split_whitespace();
+        let (method, path) = (parts.next().unwrap_or(""), parts.next().unwrap_or("").split(['?', '#']).next().unwrap_or("").to_ascii_lowercase());
+        matches!(method, "GET" | "HEAD" | "OPTIONS" | "PROPFIND")
+            && [".jpg", ".jpeg", ".png", ".gif", ".bmp", ".svg", ".wmf", ".emf", ".tif", ".tiff", ".ico", ".webp"].iter().any(|e| path.ends_with(e))
+    };
+    let http: Vec<&Finding> = findings.iter().filter(|f| f.source == Source::Outside && f.what.starts_with("HTTP \"")).collect();
+    let only = !http.is_empty()
+        && http.iter().all(|f| picture(&f.what))
+        && findings.iter().filter(|f| net(f)).all(|f| {
+            f.what.starts_with("DNS lookup of ")
+                || f.what.starts_with("HTTP \"")
+                || (f.source == Source::Monitor && (f.what.ends_with(":53") || f.what.ends_with(":80")))
+        })
+        && !findings.iter().any(|f| f.severity == Severity::High && !net(f) && f.source != Source::Static && f.source != Source::Signature);
+    if !only {
+        return;
+    }
+    for f in findings.iter_mut().filter(|f| net(f)) {
+        f.severity = Severity::Medium;
+        f.attack = "T1187 Forced Authentication";
+        f.title = "Loads pictures from the internet when opened".into();
+        f.explain = "Office would download linked pictures as soon as the file opens. That tells the sender you opened it (tracking); only pictures were fetched here.";
+    }
 }
 
 pub struct Report {
@@ -320,10 +437,25 @@ impl Report {
                 f.explain = "airlock ran it in a fake Adobe Reader: it did not touch the internet, files or programs, and hid nothing. Typical for forms (filling in dates, totals, checks).";
             }
         }
+        linked_pictures_only(&mut findings);
         let mut seen = std::collections::HashSet::new();
         findings.retain(|f| seen.insert(f.what.clone()));
         findings.sort_by(|a, b| b.severity.cmp(&a.severity));
         Report { findings }
+    }
+
+    /// The VM could not identify the file: nothing in it was checked, so
+    /// it must never come out as "No threats found".
+    pub fn unreadable(&mut self) {
+        self.findings.push(finding(
+            Source::Static,
+            Severity::Medium,
+            "-",
+            "airlock could not read this file",
+            "It is not a document type airlock knows, so nothing inside it could be checked. Treat it as unknown, not as safe.",
+            "unsupported or unrecognised file type".into(),
+        ));
+        self.findings.sort_by(|a, b| b.severity.cmp(&a.severity));
     }
 
     pub fn verdict(&self) -> Verdict {
@@ -445,6 +577,60 @@ impl Report {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn linked_pictures_are_tracking_not_attacks() {
+        use super::*;
+        let ind = |s: &str| (Ind::Connect, s.to_string());
+        let dir = std::env::temp_dir().join(format!("airlock-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ev = dir.join("net.jsonl");
+        let line = |req: &str| format!("{{\"t\":\"tcp\",\"dst\":\"10.0.0.1:80\",\"proto\":\"http\",\"request\":\"{req}\",\"host\":\"ih.example.com\"}}");
+        std::fs::write(&ev, format!("{{\"t\":\"dns\",\"name\":\"ih.example.com\"}}\n{}\n", line("GET /img/95.jpg HTTP/1.1"))).unwrap();
+        let r = Report::build(&[ind("connect 10.0.0.1:53"), ind("connect 10.0.0.1:80")], Some(&ev), &[]);
+        assert_eq!(r.verdict().label, "SUSPICIOUS", "{:?}", r.findings.iter().map(|f| (&f.title, f.severity)).collect::<Vec<_>>());
+        std::fs::write(&ev, format!("{{\"t\":\"dns\",\"name\":\"ih.example.com\"}}\n{}\n", line("GET /stage2.bin HTTP/1.1"))).unwrap();
+        let r = Report::build(&[ind("connect 10.0.0.1:80")], Some(&ev), &[]);
+        assert_eq!(r.verdict().label, "MALICIOUS BEHAVIOUR");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn phishing_style_links_stand_out() {
+        use super::link_risk;
+        for risky in [
+            "https://update-two-tau.vercel.app/payment-receipt",
+            "https://cleavemornedocs.s3.us-east-005.backblazeb2.com/x.html",
+            "https://mybucket.s3.amazonaws.com/login.html",
+            "http://185.12.3.4/doc",
+            "https://example.com/invoice.pdf.exe?x=1",
+            "\\\\attacker\\share\\a.docx",
+            "HTTPS://User@Evil.Workers.Dev:8443/a",
+            "https://fnvimoyvwkbxbmczlqus.supabase.co/storage/v1/object/public/a/b.html",
+            "https://www.dropbox.com/scl/fi/abc/file.pdf",
+            "https://t.me/OneRevealed",
+            "https://surl.li/yerloi",
+            "file://fileserver/share/doc.pdf",
+        ] {
+            assert!(link_risk(risky).is_some(), "{risky}");
+        }
+        for fine in [
+            "https://www.example.com/terms",
+            "https://uc1.1c.ru/course/lid-1c-map/",
+            "https://console.aws.amazon.com/",
+            "https://lambda.us-east-1.amazonaws.com/x",
+            "https://notvercel.app.example.org/",
+            "mailto:a@b.c",
+            "https://example.com/setup-guide.pdf",
+            "https://github.com/mozilla/pdf.js",
+            "https://www.dropbox.com/business",
+            "https://app.supabase.co/docs",
+            "file:///C:/Users/me/report.pdf",
+            "file://localhost/etc/x",
+        ] {
+            assert!(link_risk(fine).is_none(), "{fine}");
+        }
+    }
+
     use super::*;
 
     fn title(ind: Ind, text: &str) -> (Severity, String) {

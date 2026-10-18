@@ -6,7 +6,7 @@ use crate::monitor::{self, Net, Opts};
 use crate::{fail, finish, pam_to_rgba, send, send_indicators};
 use airlock_proto::{Cmd, Error, Header, Kind, HEADER_LEN, MAX_DIM, MAX_LINES, MAX_PAGES, MAX_PAGE_TEXT, MAX_RECTS};
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::time::Duration;
 
 const WORK: &str = "/tmp/work";
@@ -160,6 +160,94 @@ fn lines(p: &Page) -> Vec<([u32; 4], String)> {
     out
 }
 
+/// Containment test hooks (kernel option airlock.test=..., set by the
+/// host's AIRLOCK_GUEST_TEST for `airlock containment`). On the first page
+/// render this viewing VM turns hostile:
+///   attack  - the selftest payload (run programs, connect out) under the
+///             renderer's monitor: the host's tripwire must end the session;
+///   garbage - junk instead of a page: the host must treat it as hostile;
+///   stress  - a fully compromised guest (root, no monitor) forks, fills
+///             memory and spins every CPU: the host must stay responsive,
+///             the VM within its size, and the session must end.
+fn hostile_test(out: &mut File) {
+    static DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    let cmdline = std::fs::read_to_string("/proc/cmdline").unwrap_or_default();
+    let Some(test) = cmdline.split_whitespace().find_map(|t| t.strip_prefix("airlock.test=")) else { return };
+    if DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    crate::log(&format!("containment test: {test}"));
+    match test {
+        "attack" => {
+            let r = monitor::run(&["/sbin/airlock-agent", "--payload"], WORK, &Opts::new(Net::Deny, Duration::from_secs(20)));
+            send_indicators(out, &r.events);
+        }
+        "garbage" => {
+            let mut junk = [0u8; 4096];
+            let mut x: u32 = 0x9e37_79b9;
+            for b in junk.iter_mut() {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                *b = x as u8;
+            }
+            let _ = out.write_all(&junk);
+        }
+        "stress" => {
+            for _ in 0..4 {
+                std::thread::spawn(|| loop {
+                    std::hint::spin_loop();
+                });
+            }
+            std::thread::spawn(|| {
+                let mut hog: Vec<Vec<u8>> = Vec::new();
+                loop {
+                    hog.push(vec![0xA5; 16 << 20]);
+                }
+            });
+            for _ in 0..100_000 {
+                // SAFETY: the children only spin; this VM is being torn down.
+                if unsafe { libc::fork() } == 0 {
+                    loop {
+                        std::hint::spin_loop();
+                    }
+                }
+            }
+            loop {
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Counts of characters AI chat tools tend to leave in pasted text, most of
+/// which the host's text sanitiser removes (so they are counted here): zero-
+/// width characters, special spaces, typographic dashes and quotes, private-
+/// use citation markers, and leftover citation tokens. Numbers only.
+fn text_stats(t: &str) -> String {
+    let count = |f: &dyn Fn(char) -> bool| t.chars().filter(|c| f(*c)).count();
+    let lower = t.to_lowercase();
+    let tokens = ["oaicite", "contentreference", "turn0search", "turn0news", "turn1search", "turn0view", "citeturn", "filecite"].iter().map(|k| lower.matches(k).count()).sum::<usize>();
+    format!(
+        "chars={} words={} zw={} nnbsp={} nbsp={} thin={} emdash={} endash={} curly={} ellipsis={} bidi={} pua={} brackets={} cite={}",
+        t.chars().count(),
+        t.split_whitespace().count(),
+        count(&|c| matches!(c, '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{2060}' | '\u{FEFF}' | '\u{180E}')),
+        count(&|c| c == '\u{202F}'),
+        count(&|c| c == '\u{00A0}'),
+        count(&|c| matches!(c, '\u{2009}' | '\u{200A}' | '\u{2007}' | '\u{2008}')),
+        count(&|c| c == '\u{2014}'),
+        count(&|c| c == '\u{2013}'),
+        count(&|c| matches!(c, '\u{2018}' | '\u{2019}' | '\u{201C}' | '\u{201D}')),
+        count(&|c| c == '\u{2026}'),
+        count(&|c| matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')),
+        count(&|c| matches!(c, '\u{E000}'..='\u{F8FF}')),
+        count(&|c| matches!(c, '\u{3010}' | '\u{3011}')),
+        tokens,
+    )
+}
+
 pub fn serve(mut out: File, pdf: &str) -> ! {
     let pages = load_pages(pdf, &mut out);
     let _ = send(&mut out, Kind::Hello, pages.len() as u32, 0, 0, &[]);
@@ -188,6 +276,7 @@ pub fn serve(mut out: File, pdf: &str) -> ! {
                 let n = (h.a + 1).to_string();
                 let argv = ["/usr/bin/mutool", "draw", "-q", "-r", &dpi, "-c", "rgb", "-F", "pam", "-o", "-", pdf, &n];
                 let r = monitor::run(&argv, WORK, &Opts::new(Net::Deny, Duration::from_secs(30)));
+                hostile_test(&mut out);
                 send_indicators(&mut out, &r.events);
                 let Some((w, hgt, rgba)) = r.stdout.as_deref().and_then(pam_to_rgba) else { fail(&mut out, Error::RenderFailed) };
                 if send(&mut out, Kind::Page, h.a, w, hgt, &rgba).is_err() {
@@ -215,6 +304,11 @@ pub fn serve(mut out: File, pdf: &str) -> ! {
                 let Some(p) = pages.get(h.a as usize) else { continue };
                 let text = capped(p.chars.iter().map(|(c, _)| *c).collect());
                 let _ = send(&mut out, Kind::PageText, h.a, 0, 0, text.as_bytes());
+            }
+            Cmd::TextStats => {
+                let Some(p) = pages.get(h.a as usize) else { continue };
+                let text: String = p.chars.iter().map(|(c, _)| *c).collect();
+                let _ = send(&mut out, Kind::PageText, h.a, 0, 0, text_stats(&text).as_bytes());
             }
             Cmd::GetLayout => {
                 let Some(p) = pages.get(h.a as usize) else { continue };

@@ -27,11 +27,13 @@ fn main() {
 fn run() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let cmd = args.next().unwrap_or_else(|| usage());
-    let (mut input, mut out_dir, mut verbose) = (None, None, false);
+    let (mut input, mut out_dir, mut verbose, mut report_only) = (None, None, false, false);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--out" => out_dir = Some(PathBuf::from(args.next().unwrap_or_else(|| usage()))),
             "--verbose" | "-v" => verbose = true,
+            // Test bench: just report.json, no page images or safe copy.
+            "--report-only" => report_only = true,
             _ if input.is_none() => input = Some(PathBuf::from(a)),
             _ => usage(),
         }
@@ -48,11 +50,28 @@ fn run() -> Result<()> {
             if cmd == "view" {
                 view(&doc, &out, verbose)
             } else {
-                analyze(&doc, &out, verbose, "analyze").map(|_| ())
+                analyze(&doc, &out, verbose, "analyze", !report_only).map(|_| ())
             }
         }
         "doctor" => doctor(),
         "livecheck" => livecheck(&read_doc(&input.unwrap_or_else(|| usage()))?),
+        "containment" => containment(&read_doc(&input.unwrap_or_else(|| usage()))?),
+        // Developer aid: the (sanitised) text of the first pages, read in a VM.
+        "text" => {
+            let mut s = live::LiveSession::open(&read_doc(&input.unwrap_or_else(|| usage()))?)?;
+            let (mut stats, mut all) = (std::collections::BTreeMap::<String, u64>::new(), String::new());
+            for p in 0..s.pages.len().min(3) as u32 {
+                let t = s.text(p)?;
+                println!("--- page {} ---\n{t}", p + 1);
+                all.push_str(&t);
+                for (k, v) in s.text_stats(p)? {
+                    *stats.entry(k).or_default() += v;
+                }
+            }
+            println!("--- AI-text hints ---\n{:?}\n{}", stats, serde_json::to_string_pretty(&airlock_core::aitext::analyze(&stats, &all).to_json())?);
+            s.close();
+            Ok(())
+        }
         "selftest" => selftest(out_dir.unwrap_or_else(|| PathBuf::from("selftest.airlock")), verbose),
         _ => usage(),
     }
@@ -107,18 +126,19 @@ fn view(doc: &[u8], out_dir: &Path, verbose: bool) -> Result<()> {
     Ok(())
 }
 
-fn analyze(doc: &[u8], out_dir: &Path, verbose: bool, mode: &'static str) -> Result<report::Report> {
+fn analyze(doc: &[u8], out_dir: &Path, verbose: bool, mode: &'static str, pages: bool) -> Result<report::Report> {
     let a = analysis::run(doc, mode, verbose, &|line| eprintln!("airlock: {line}"))?;
     let (rep, s) = (a.report, a.session);
     rep.print();
     std::fs::create_dir_all(out_dir)?;
     std::fs::write(out_dir.join("report.json"), serde_json::to_vec_pretty(&rep.to_json())?)?;
-    if s.protocol_violation.is_none() {
+    if s.protocol_violation.is_none() && pages {
         save_pages(&s.pages, out_dir)?;
     }
     match s.guest_error {
         Some(e) => eprintln!("airlock: rendering failed ({e:?}); report saved to {}/report.json", out_dir.display()),
-        None => eprintln!("airlock: wrote {}/report.json, safe.pdf and page PNGs", out_dir.display()),
+        None if pages => eprintln!("airlock: wrote {}/report.json, safe.pdf and page PNGs", out_dir.display()),
+        None => eprintln!("airlock: wrote {}/report.json", out_dir.display()),
     }
     Ok(rep)
 }
@@ -127,7 +147,7 @@ fn selftest(out_dir: PathBuf, verbose: bool) -> Result<()> {
     eprintln!("airlock selftest: a simulated *exploited renderer* runs inside the VM and tries to");
     eprintln!("phone home, drop files, run a shell, fork, ptrace and attack the kernel.\n");
     let blank = pdf::write(&[pdf::Page { width: 200, height: 260, rgb: vec![255; 200 * 260 * 3] }], DPI);
-    let rep = analyze(&blank, &out_dir, verbose, "selftest")?;
+    let rep = analyze(&blank, &out_dir, verbose, "selftest", true)?;
     let has = |needle: &str| rep.findings.iter().any(|f| f.what.contains(needle));
     let checks = [
         ("DNS lookup seen by the sinkhole", has("DNS lookup of c2.airlock-selftest.example")),
@@ -186,6 +206,81 @@ fn livecheck(doc: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Proves the viewing VM's containment by making it hostile on purpose
+/// (guest test hooks, see guest-agent/src/live.rs) and checking that the
+/// host ends it every time, stays responsive, and keeps it within its size.
+fn containment(doc: &[u8]) -> Result<()> {
+    use std::time::{Duration, Instant};
+    let open = |test: &str| -> Result<live::LiveSession> {
+        std::env::set_var("AIRLOCK_GUEST_TEST", test);
+        let s = live::LiveSession::open(doc);
+        std::env::remove_var("AIRLOCK_GUEST_TEST");
+        s
+    };
+    let gone = |s: &mut live::LiveSession| {
+        let t = Instant::now();
+        while s.alive() && t.elapsed() < Duration::from_secs(3) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        !s.alive()
+    };
+
+    // 1. Attack attempts while viewing: the tripwire ends the session.
+    let mut s = open("attack")?;
+    let e = s.render(0, 96).err().map(|e| format!("{e:#}")).unwrap_or_default();
+    anyhow::ensure!(e.starts_with(live::TRIPWIRE), "attack: expected the tripwire, got {e:?}");
+    anyhow::ensure!(gone(&mut s), "attack: the VM was still running after the tripwire");
+    eprintln!("ok   attack while viewing -> tripwire, VM destroyed ({})", e.split(": ").nth(1).unwrap_or("").chars().take(70).collect::<String>());
+
+    // 2. Junk instead of a page: treated as hostile.
+    let mut s = open("garbage")?;
+    let e = s.render(0, 96).err().map(|e| format!("{e:#}")).unwrap_or_default();
+    anyhow::ensure!(e.starts_with("protocol violation"), "garbage: expected a protocol violation, got {e:?}");
+    anyhow::ensure!(gone(&mut s), "garbage: the VM was still running");
+    eprintln!("ok   junk sent to the host -> treated as hostile, VM destroyed");
+
+    // 3. A fully compromised guest: forks, fills memory, spins every CPU.
+    let mut s = open("stress")?;
+    s.set_request_timeout(Duration::from_secs(12))?;
+    let pids = s.jail_pids();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let watch = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            // Host responsiveness: how late a 10 ms sleep wakes up; and the
+            // jail's memory (all of its processes) and process count.
+            let (mut worst_ms, mut peak_kib, mut peak_procs) = (0u128, 0u64, 0usize);
+            while !stop.load(std::sync::atomic::Ordering::SeqCst) {
+                let t = Instant::now();
+                std::thread::sleep(Duration::from_millis(10));
+                worst_ms = worst_ms.max(t.elapsed().as_millis().saturating_sub(10));
+                let live: Vec<u64> = pids
+                    .iter()
+                    .filter_map(|p| std::fs::read_to_string(format!("/proc/{p}/status")).ok())
+                    .filter_map(|st| st.lines().find_map(|l| l.strip_prefix("VmRSS:")).and_then(|v| v.split_whitespace().next()?.parse().ok()))
+                    .collect();
+                peak_procs = peak_procs.max(live.len());
+                peak_kib = peak_kib.max(live.iter().sum());
+            }
+            (worst_ms, peak_kib, peak_procs)
+        })
+    };
+    let e = s.render(0, 96).err().map(|e| format!("{e:#}")).unwrap_or_default();
+    let ended = gone(&mut s);
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let (worst_ms, peak_kib, peak_procs) = watch.join().map_err(|_| anyhow::anyhow!("watcher panicked"))?;
+    anyhow::ensure!(e.starts_with(live::VM_STOPPED), "stress: expected the session to end, got {e:?}");
+    anyhow::ensure!(ended, "stress: the VM was still running after it stopped answering");
+    // The VM has 2048 MiB; Firecracker itself needs a little on top.
+    anyhow::ensure!(peak_kib < (2048 + 256) * 1024, "stress: the VM used {} MiB on the host", peak_kib / 1024);
+    anyhow::ensure!(worst_ms < 250, "stress: the host stalled for {worst_ms} ms");
+    eprintln!(
+        "ok   compromised guest (fork bomb, memory fill, all CPUs) -> host stayed responsive (worst delay {worst_ms} ms), VM at most {} MiB in {peak_procs} host processes, destroyed when it stopped answering",
+        peak_kib / 1024
+    );
+    Ok(())
+}
+
 /// Reports how fresh the guest image is: stale renderers are the realistic risk.
 fn image_age(rootfs: &std::path::Path) {
     const MAX_DAYS: u64 = 30;
@@ -218,6 +313,32 @@ fn image_age(rootfs: &std::path::Path) {
 }
 
 /// Checks everything airlock needs on this machine, with a fix for each miss.
+/// Days since the running kernel was built (`uname -v` ends with its date,
+/// e.g. "#1 SMP PREEMPT_DYNAMIC Sat, 11 Oct 2026 10:12:13 +0000").
+fn host_kernel_age_days() -> Option<u64> {
+    let v = std::fs::read_to_string("/proc/sys/kernel/version").ok()?;
+    let words: Vec<&str> = v.split_whitespace().collect();
+    let year: i64 = words.iter().rev().find_map(|w| w.parse().ok().filter(|y| (2000..2200).contains(y)))?;
+    let yi = words.iter().rposition(|w| w.parse::<i64>().ok() == Some(year))?;
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    // "... 11 Oct 2026 ..." or "... Oct 11 10:12:13 UTC 2026"
+    let (day, month) = words[..yi].iter().rev().take(4).fold((None, None), |(d, m), w| {
+        let w = w.trim_end_matches(',');
+        (d.or(w.parse::<i64>().ok().filter(|n| (1..=31).contains(n))), m.or(months.iter().position(|x| *x == w).map(|i| i as i64 + 1)))
+    });
+    let (day, month) = (day?, month?);
+    // Days since 1970 (civil-from-days inverse, proleptic Gregorian).
+    let days = |y: i64, m: i64, d: i64| {
+        let y = if m <= 2 { y - 1 } else { y };
+        let era = y.div_euclid(400);
+        let yoe = y - era * 400;
+        let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+        era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy - 719468
+    };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs() as i64 / 86400;
+    u64::try_from(now - days(year, month, day)).ok()
+}
+
 fn doctor() -> Result<()> {
     use std::process::{Command, Stdio};
     let quiet = |c: &mut Command| c.stdout(Stdio::null()).stderr(Stdio::null()).status().is_ok_and(|s| s.success());
@@ -244,14 +365,26 @@ fn doctor() -> Result<()> {
     check(rw("/dev/net/tun"), "read/write access to /dev/net/tun (analysis mode)", "load the tun module (modprobe tun)");
     if vm::uid_shift() {
         eprintln!("  ok    VMs run as a spare uid from /etc/subuid (rootless jail)");
+    } else if std::env::var_os("AIRLOCK_NO_UIDSHIFT").is_some() {
+        eprintln!("  warn  VMs run as your own uid (AIRLOCK_NO_UIDSHIFT is set: less isolation)");
     } else {
-        eprintln!(
-            "  warn  VMs run as your own uid (no spare-uid isolation)\n        fix: give your user a range in /etc/subuid and /etc/subgid \
+        check(
+            false,
+            "VMs run as a spare uid (required)",
+            "give your user a range in /etc/subuid and /etc/subgid \
              (sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $USER) and make sure \
-             /dev/kvm and /dev/net/tun are mode 0666 (systemd's default)"
+             /dev/kvm and /dev/net/tun are mode 0666 (systemd's default)",
         );
     }
-    for (cmd, pkg) in [("ip", "iproute2"), ("nft", "nftables"), ("setpriv", "util-linux"), ("mke2fs", "e2fsprogs")] {
+    // KVM in the host kernel is the wall around every VM: keep it patched.
+    match host_kernel_age_days() {
+        Some(d) if d > 120 => eprintln!(
+            "  warn  your Linux kernel was built {d} days ago; the VM wall (KVM) is part of it\n        fix: install your distribution's kernel updates and reboot"
+        ),
+        Some(d) => eprintln!("  ok    Linux kernel is recent (built {d} days ago)"),
+        None => {}
+    }
+    for (cmd, pkg) in [("ip", "iproute2"), ("nft", "nftables"), ("setpriv", "util-linux"), ("prlimit", "util-linux"), ("unshare", "util-linux"), ("mke2fs", "e2fsprogs")] {
         check(has(cmd), &format!("{cmd}"), &format!("install {pkg}"));
     }
     if has("xdg-dbus-proxy") {

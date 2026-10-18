@@ -1,0 +1,24 @@
+{
+  "bundle": {
+    "active": true,
+    "targets": [
+      "appimage"
+    ],
+    "category": "Productivity",
+    "shortDescription": "Open untrusted documents inside disposable microVMs",
+    "longDescription": "airlock opens PDF and Office files inside throwaway Firecracker microVMs with no network, shows only pixels, and checks every file for malware.",
+    "resources": {
+      "bundle-stage/kit/": "kit/",
+      "bundle-stage/bin/": "bin/"
+    },
+    "linux": {
+      "appimage": {
+        "bundleMediaFramework": false,
+        "files": {
+          "/usr/bin/bwrap": "/usr/bin/bwrap",
+          "/usr/bin/xdg-dbus-proxy": "/usr/bin/xdg-dbus-proxy"
+        }
+      }
+    }
+  }
+}

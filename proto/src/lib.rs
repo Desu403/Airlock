@@ -64,6 +64,9 @@ pub enum Cmd {
     Quit = 103,
     /// a = page. Reply: PageLines, then PageText (one text line per box).
     GetLayout = 104,
+    /// a = page. Reply: PageText holding only counts, "key=number" pairs
+    /// (characters that the text sanitiser removes: for the AI-text hints).
+    TextStats = 105,
 }
 
 pub const MAX_QUERY: u32 = 256;
@@ -84,6 +87,7 @@ impl Header {
             102 if h.a < MAX_PAGES && h.len == 0 => Cmd::GetText,
             103 if h.len == 0 => Cmd::Quit,
             104 if h.a < MAX_PAGES && h.len == 0 => Cmd::GetLayout,
+            105 if h.a < MAX_PAGES && h.len == 0 => Cmd::TextStats,
             _ => return None,
         };
         Some((cmd, h))
@@ -200,6 +204,15 @@ pub enum Ind {
     PdfJsClick = 64,
     /// PDF: structure could not be read (password, damage, deliberate malformation).
     PdfUnreadable = 65,
+    /// PDF: a web link covering a large part of a page (phishing lure).
+    PdfLure = 66,
+    /// Data hidden after a document's end, or a file that is two formats at once.
+    HiddenData = 67,
+    /// A QR code on a page, and where it leads.
+    QrLink = 68,
+    /// Phishing wording on the first pages (brand + request + elsewhere link,
+    /// or a callback scam).
+    PhishText = 69,
 }
 
 impl Ind {
@@ -244,6 +257,10 @@ impl Ind {
             63 => PdfJsForm,
             64 => PdfJsClick,
             65 => PdfUnreadable,
+            66 => PdfLure,
+            67 => HiddenData,
+            68 => QrLink,
+            69 => PhishText,
             _ => return None,
         })
     }
@@ -447,7 +464,7 @@ mod fuzz {
                 match cmd {
                     Cmd::Search => assert!(h.len >= 1 && h.len <= MAX_QUERY),
                     Cmd::Render => assert!(h.len == 0 && h.a < MAX_PAGES && (MIN_DPI..=MAX_DPI).contains(&h.b)),
-                    Cmd::GetText | Cmd::GetLayout => assert!(h.len == 0 && h.a < MAX_PAGES),
+                    Cmd::GetText | Cmd::GetLayout | Cmd::TextStats => assert!(h.len == 0 && h.a < MAX_PAGES),
                     Cmd::Quit => assert_eq!(h.len, 0),
                 }
             }

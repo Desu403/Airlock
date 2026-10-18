@@ -86,6 +86,18 @@
           <li><strong>Watched.</strong> <em>Analyze</em> shows what the file tries to do: contact servers, run programs, drop files.</li>
         </ul>
       </div>
+      <div class="empty setup" id="setup" hidden>
+        <div class="porthole" aria-hidden="true"></div>
+        <h1>Set up airlock on this computer</h1>
+        <p>airlock opens documents inside tiny throwaway virtual machines. This computer needs a few things for that, once.</p>
+        <ul class="setup-list" id="setup-list"></ul>
+        <div class="setup-actions">
+          <button id="setup-fix" class="primary" hidden>Fix this (asks for your password once)</button>
+          <button id="setup-build" class="primary" hidden>Build the secure viewer</button>
+          <button id="setup-recheck">Check again</button>
+        </div>
+        <pre class="setup-log" id="setup-log" hidden></pre>
+      </div>
       <div class="pages" id="pages"></div>
       <div class="busy" id="busy" hidden><div class="spinner"></div><span id="busy-text"></span></div>
     </section>

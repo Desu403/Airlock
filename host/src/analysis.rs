@@ -40,7 +40,13 @@ pub fn run(doc: &[u8], mode: &'static str, verbose: bool, progress: &dyn Fn(&str
     let a = session::run(&assets, &run2, &spec2, verbose, false)?;
 
     let mut indicators = s.indicators.clone();
+    if let Some(h) = &s.vm_hung {
+        indicators.push((airlock_proto::Ind::RendererAbnormal, h.clone()));
+    }
     indicators.extend(a.indicators);
-    let report = report::Report::build(&indicators, Some(&events), &s.abnormal());
+    let mut report = report::Report::build(&indicators, Some(&events), &s.abnormal());
+    if matches!(s.guest_error, Some(airlock_proto::Error::UnsupportedType)) {
+        report.unreadable();
+    }
     Ok(Analysis { report, session: s })
 }

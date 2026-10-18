@@ -26,7 +26,7 @@ fakeroot_sh $B/guestroot '
     # Security fixes for the base system too, not only for what we add.
     apk upgrade --no-progress -q
     apk add --no-progress -q mupdf-tools quickjs \
-        python3 py3-oletools yara \
+        python3 py3-oletools yara zbar imagemagick \
         libreoffice-writer libreoffice-calc libreoffice-impress \
         font-liberation font-dejavu
     install -D -m 0644 -o 0 -g 0 /src/guest/office_triage.py /usr/lib/airlock/office_triage.py

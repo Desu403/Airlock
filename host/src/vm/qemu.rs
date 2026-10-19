@@ -31,8 +31,8 @@ pub struct Assets {
 }
 
 impl Assets {
-    /// `%AIRLOCK_LIB%`, then the folder of the airlock program, then
-    /// `%LOCALAPPDATA%\airlock` (where the installer puts the viewer).
+    /// `%AIRLOCK_LIB%`, then `vm\` next to the airlock program (where the
+    /// installer puts the viewer), then the program's own folder.
     pub fn locate() -> Result<Self> {
         let exe_dir = std::env::current_exe()?.parent().map(Path::to_path_buf).unwrap_or_default();
         let at = |lib: PathBuf| Assets {
@@ -45,10 +45,8 @@ impl Assets {
         if let Some(lib) = std::env::var_os("AIRLOCK_LIB") {
             candidates.push(at(PathBuf::from(lib)));
         } else {
+            candidates.push(at(exe_dir.join("vm")));
             candidates.push(at(exe_dir));
-            if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-                candidates.push(at(PathBuf::from(local).join("airlock")));
-            }
         }
         let n = candidates.len();
         for (i, a) in candidates.into_iter().enumerate() {
@@ -146,7 +144,41 @@ pub fn make_scratch_disk(dir: &Path) -> Result<PathBuf> {
 /// out (init_on_alloc stays on), and it all dies with the VM.
 const WINDOWS_ARGS: &str = "airlock.link=serial init_on_free=0";
 
+/// Whether Windows can run VMs for airlock: the Windows Hypervisor Platform
+/// (an optional Windows feature) is turned on and its hypervisor is running.
+pub fn hypervisor_ready() -> std::result::Result<(), String> {
+    use windows_sys::Win32::System::LibraryLoader::{GetProcAddress, LoadLibraryExW, LOAD_LIBRARY_SEARCH_SYSTEM32};
+    const OFF: &str = "Windows Hypervisor Platform is turned off. airlock needs it to run its virtual machines: \
+        open \"Turn Windows features on or off\", tick \"Windows Hypervisor Platform\", then restart your computer \
+        (or run airlock's installer again and accept the offer to turn it on).";
+    let dll: Vec<u16> = "WinHvPlatform.dll\0".encode_utf16().collect();
+    unsafe {
+        let lib = LoadLibraryExW(dll.as_ptr(), std::ptr::null_mut(), LOAD_LIBRARY_SEARCH_SYSTEM32);
+        if lib.is_null() {
+            return Err(OFF.into());
+        }
+        // WHvGetCapability(WHvCapabilityCodeHypervisorPresent = 0, ...)
+        let Some(f) = GetProcAddress(lib, c"WHvGetCapability".as_ptr().cast()) else { return Err(OFF.into()) };
+        type GetCap = unsafe extern "system" fn(u32, *mut core::ffi::c_void, u32, *mut u32) -> i32;
+        let get: GetCap = std::mem::transmute(f);
+        let mut present: i32 = 0;
+        let mut written = 0u32;
+        let hr = get(0, &mut present as *mut _ as *mut _, 4, &mut written);
+        if hr < 0 || present == 0 {
+            return Err("Windows Hypervisor Platform is turned on, but its hypervisor is not running: restart your computer. \
+                If it still does not run, virtualisation (Intel VT-x or AMD-V/SVM) may be off in your computer's firmware settings."
+                .into());
+        }
+    }
+    Ok(())
+}
+
 pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<Child> {
+    if std::env::var("AIRLOCK_QEMU_ACCEL").as_deref() != Ok("tcg") {
+        if let Err(e) = hypervisor_ready() {
+            bail!("{e}");
+        }
+    }
     let mut boot_args = format!("console=ttyS0 reboot=k panic=-1 pci=off ro root=/dev/vda quiet init=/sbin/airlock-agent ipv6.disable=1 airlock.mode={} {WINDOWS_ARGS}", spec.mode);
     // Test hooks, as on Linux: the guest's PID 1 dies mid-session; the
     // viewing VM turns hostile (`airlock containment`).
@@ -188,7 +220,7 @@ pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<C
     let mut drives = vec![("rootfs", assets.rootfs.clone(), true)];
     drives.extend(spec.drives.iter().map(|d| (d.id, d.path.clone(), d.read_only)));
     for (id, p, ro) in &drives {
-        cmd.arg("-drive").arg(format!("id={id},file={},format=raw,if=none,readonly={},cache=none", opt(p)?, if *ro { "on" } else { "off" }));
+        cmd.arg("-drive").arg(format!("id={id},file={},format=raw,if=none,readonly={}", opt(p)?, if *ro { "on" } else { "off" }));
         cmd.arg("-device").arg(format!("virtio-blk-device,drive={id}"));
     }
     cmd.args(["-device", "virtio-serial-device"])

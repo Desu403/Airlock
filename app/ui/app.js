@@ -1951,6 +1951,10 @@ async function showAbout() {
   if (info.image_built) row(version, "Viewer built", new Date(info.image_built * 1000).toLocaleString());
   if (info.rules) { const [n, c] = info.rules.split(" "); row(protection, "Malware rules", `${Number(c).toLocaleString()} signatures (${n})`); }
   row(protection, "Known malware", info.known ? `${info.known.count.toLocaleString()} fingerprints (MalwareBazaar, ${new Date(info.known.updated * 1000).toLocaleDateString()}), checked offline` : "list not downloaded yet: the next update check fetches it");
+  const c = info.clamav;
+  row(protection, "ClamAV", !c ? "not set up yet: the next update check fetches its database"
+    : `database ${c.version ? c.version.toLocaleString() : "?"} (${c.date || "date unknown"})`
+      + (c.state === "refused" ? ` · the last refresh was refused by ClamAV's server (busy); airlock keeps using this database and retries later` : c.checked ? ` · checked ${new Date(c.checked * 1000).toLocaleString()}` : ""));
   row(protection, "Malware sites", info.urlhaus ? `${info.urlhaus.toLocaleString()} active addresses (URLhaus), links checked offline` : "list not downloaded yet");
   row(protection, "Isolation", "a fresh Firecracker microVM per document, no network, a spare user id, tripwire on any attack");
   row(readers, "VM kernel", info.kernel && info.kernel.replace(/^Linux version (\S+).*/, "Linux $1 (hardened)"));

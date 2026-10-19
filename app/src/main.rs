@@ -942,6 +942,23 @@ async fn about_info() -> R<serde_json::Value> {
                     j["image_built"] = t.trim().parse::<u64>().unwrap_or(0).into();
                 } else if let Some(r) = l.strip_prefix("rules ") {
                     j["rules"] = r.into();
+                    // ClamAV: the daily database's header ("ClamAV-VDB:<date>:<version>:...")
+                    // and how the last refresh went (scripts/clamav-db.sh).
+                    let dir = a.rootfs.parent().map(PathBuf::from).unwrap_or_default();
+                    if dir.join("clamav.ext4").is_file() {
+                        let mut head = [0u8; 160];
+                        let n = std::fs::File::open(dir.join("clamav/daily.cvd")).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
+                        let h = String::from_utf8_lossy(&head[..n]).into_owned();
+                        let f: Vec<&str> = h.split(':').collect();
+                        let status = std::fs::read_to_string(dir.join("clamav.status")).unwrap_or_default();
+                        let mut st = status.split_whitespace();
+                        j["clamav"] = serde_json::json!({
+                            "version": f.get(2).and_then(|v| v.trim().parse::<u64>().ok()),
+                            "date": f.get(1).map(|d| text::sanitize_line(d.as_bytes())),
+                            "checked": st.next().and_then(|t| t.parse::<u64>().ok()),
+                            "state": st.next().map(|s| text::sanitize_line(s.as_bytes())),
+                        });
+                    }
                     if let Ok(list) = std::fs::read_to_string(a.rootfs.with_file_name("urlhaus.txt")) {
                         j["urlhaus"] = list.lines().count().into();
                     }

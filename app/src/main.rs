@@ -998,7 +998,7 @@ async fn about_info() -> R<serde_json::Value> {
                     j["kernel"] = text::sanitize_line(&k[i..i + end]).into();
                 }
             }
-            if let Ok(o) = std::process::Command::new(&a.firecracker).arg("--version").output() {
+            if let Ok(o) = std::process::Command::new(&a.vmm).arg("--version").output() {
                 j["firecracker"] = text::sanitize_line(String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").as_bytes()).into();
             }
         }

@@ -1,4 +1,4 @@
-//! Boots one disposable Firecracker microVM.
+//! Linux: boots one disposable Firecracker microVM.
 //!
 //! Isolation layers, outermost first:
 //!  * spare uid: Firecracker runs as one of the user's subordinate uids
@@ -17,7 +17,6 @@ use anyhow::{bail, Context, Result};
 use std::fs;
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
-use std::os::unix::net::UnixListener;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -136,7 +135,7 @@ fn grant(dir: &Path, uid: u32) -> std::io::Result<()> {
 }
 
 pub struct Assets {
-    pub firecracker: PathBuf,
+    pub vmm: PathBuf,
     pub kernel: PathBuf,
     pub rootfs: PathBuf,
     pub sinkhole: PathBuf,
@@ -150,7 +149,7 @@ impl Assets {
     pub fn locate() -> Result<Self> {
         let exe_dir = std::env::current_exe()?.parent().map(Path::to_path_buf).unwrap_or_default();
         let source_tree = |base: PathBuf| Assets {
-            firecracker: base.join("vendor/bin/firecracker"),
+            vmm: base.join("vendor/bin/firecracker"),
             // Prefer the hardened kernel (guest/build-kernel.sh); fall back to stock.
             kernel: [base.join("vendor/bin/vmlinux-airlock"), base.join("vendor/bin/vmlinux")]
                 .into_iter()
@@ -166,7 +165,7 @@ impl Assets {
                 .unwrap_or_else(|| exe_dir.join("sinkhole")),
         };
         let installed = |lib: PathBuf| Assets {
-            firecracker: lib.join("firecracker"),
+            vmm: lib.join("firecracker"),
             kernel: lib.join("vmlinux"),
             rootfs: lib.join("rootfs.ext4"),
             sinkhole: lib.join("sinkhole"),
@@ -192,11 +191,11 @@ impl Assets {
                 c
             }
         };
-        let complete = |a: &Assets| [&a.firecracker, &a.kernel, &a.rootfs, &a.sinkhole].iter().all(|p| p.exists());
+        let complete = |a: &Assets| [&a.vmm, &a.kernel, &a.rootfs, &a.sinkhole].iter().all(|p| p.exists());
         let n = candidates.len();
         for (i, a) in candidates.into_iter().enumerate() {
             if complete(&a) || i + 1 == n {
-                for p in [&a.firecracker, &a.kernel, &a.rootfs, &a.sinkhole] {
+                for p in [&a.vmm, &a.kernel, &a.rootfs, &a.sinkhole] {
                     if !p.exists() {
                         bail!("missing {} (run scripts/bootstrap.sh, or scripts/install.sh for an installed copy)", p.display());
                     }
@@ -247,9 +246,9 @@ impl RunDir {
         self.path.join("v.sock")
     }
     /// Listens where the guest's vsock connections arrive (as the spare uid).
-    pub fn listen(&self) -> Result<UnixListener> {
+    pub fn listen(&self) -> Result<crate::link::Listener> {
         let p = format!("{}_{}", self.vsock().display(), airlock_proto::FRAME_PORT);
-        let l = UnixListener::bind(&p)?;
+        let l = crate::link::Listener::bind(&p)?;
         fs::set_permissions(&p, fs::Permissions::from_mode(0o666))?;
         l.set_nonblocking(true)?;
         Ok(l)
@@ -275,19 +274,6 @@ impl Drop for RunDir {
     }
 }
 
-/// Packs the untrusted bytes into a raw disk: header + bytes + padding.
-/// The host never interprets the document itself.
-pub fn write_doc_disk(dir: &Path, doc: &[u8]) -> Result<PathBuf> {
-    let mut img = Vec::with_capacity(doc.len() + 1024);
-    img.extend_from_slice(&airlock_proto::DOC_MAGIC);
-    img.extend_from_slice(&(doc.len() as u64).to_le_bytes());
-    img.extend_from_slice(doc);
-    img.resize(img.len().div_ceil(512) * 512, 0);
-    let p = dir.join("doc.img");
-    fs::write(&p, img)?;
-    Ok(p)
-}
-
 /// Fresh, empty ext4 scratch disk made by the host (no guest data involved).
 pub fn make_scratch_disk(dir: &Path) -> Result<PathBuf> {
     let p = dir.join("scratch.img");
@@ -304,36 +290,9 @@ pub fn make_scratch_disk(dir: &Path) -> Result<PathBuf> {
     Ok(p)
 }
 
-pub struct Drive {
-    pub id: &'static str,
-    pub path: PathBuf,
-    pub read_only: bool,
-}
-
-pub struct Spec {
-    pub mode: &'static str,
-    /// Extra drives after the root filesystem (vdb, vdc, ...).
-    pub drives: Vec<Drive>,
-    /// Wire a NIC to the sinkhole; events are written to this file.
-    pub sinkhole_events: Option<PathBuf>,
-    /// Extra kernel command line options for the agent (fixed strings only).
-    pub options: &'static [&'static str],
-    /// The file's extension ("cpp", "jpg"): which language to colour, as the
-    /// document disk carries no name. Only [a-z0-9]{1,8} reaches the VM.
-    pub ext: Option<String>,
-    /// A file inside an archive to open (its index among the files): that VM
-    /// unpacks it from the archive by itself.
-    pub entry: Option<u32>,
-}
-
-/// "Report.CPP" -> Some("cpp"); anything else (no dot, odd characters) -> None.
-pub fn ext_hint(name: &str) -> Option<String> {
-    let (_, ext) = name.rsplit_once('.')?;
-    let ext = ext.to_ascii_lowercase();
-    (1..=8).contains(&ext.len()).then_some(()).filter(|_| ext.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())).map(|_| ext)
-}
-
 const SANDBOX_PATH: &str = "/usr/bin";
+
+use super::{Spec, ext_hint};
 
 pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<Child> {
     let mut boot_args = format!("console=ttyS0 reboot=k panic=-1 pci=off ro quiet init=/sbin/airlock-agent ipv6.disable=1 airlock.mode={}", spec.mode);
@@ -369,7 +328,7 @@ pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<C
     // mounted at all: they are inherited as descriptors and opened through
     // /proc/self/fd inside, which checks only the files' own permissions.
     let mut fds: Vec<fs::File> = Vec::new();
-    let firecracker = pass_fd(&mut fds, &assets.firecracker)?;
+    let firecracker = pass_fd(&mut fds, &assets.vmm)?;
     let kernel = pass_fd(&mut fds, &assets.kernel)?;
     let rootfs = pass_fd(&mut fds, &assets.rootfs)?;
     let mut drives = vec![serde_json::json!({ "drive_id": "rootfs", "path_on_host": rootfs, "is_root_device": true, "is_read_only": true })];
@@ -533,15 +492,3 @@ fn bind_fd(cmd: &mut Command, fds: &mut Vec<fs::File>, flag: &str, src: &Path, d
     Ok(())
 }
 
-/// Guest console output is attacker-controlled text: strip anything that
-/// could drive a terminal before a human ever sees it.
-pub fn sanitized_log(log: &Path) -> String {
-    let raw = fs::read(log).unwrap_or_default();
-    raw.iter()
-        .map(|&b| match b {
-            b'\n' => '\n',
-            0x20..=0x7e => b as char,
-            _ => '?',
-        })
-        .collect()
-}

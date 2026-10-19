@@ -35,7 +35,8 @@ check() { # file, expected verdict, [required substring... | @norender]
     for need in "$@"; do
         # Nothing visible to render (e.g. an Excel add-in is code only).
         [ "$need" = @norender ] && { render=0; continue; }
-        if ! grep -qF -- "$need" "$OUT/$name/report.json"; then
+        # Searched in the decoded report (the file escapes code characters).
+        if ! python3 -I -c 'import json,sys; sys.exit(sys.argv[2] not in json.dumps(json.load(open(sys.argv[1])), ensure_ascii=False))' "$OUT/$name/report.json" "$need"; then
             echo "FAIL $name: missing finding '$need'"; fail=$((fail+1)); return
         fi
     done

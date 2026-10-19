@@ -137,7 +137,7 @@ fn analyze(doc: &[u8], out_dir: &Path, verbose: bool, mode: &'static str, pages:
     let (rep, s) = (a.report, a.session);
     rep.print();
     std::fs::create_dir_all(out_dir)?;
-    std::fs::write(out_dir.join("report.json"), serde_json::to_vec_pretty(&rep.to_json())?)?;
+    std::fs::write(out_dir.join("report.json"), report::json_for_disk(&rep.to_json()))?;
     if s.protocol_violation.is_none() && pages {
         save_pages(&s.pages, out_dir)?;
     }

@@ -573,7 +573,9 @@ async fn save_report(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Opt
             return Ok(None);
         };
         let json = dest.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
-        let body = if json { serde_json::to_string_pretty(&j).map_err(err)? + "\n" } else { report_text(&j) };
+        // Written so that antivirus programs do not take the report for the
+        // malware it quotes (see report::json_for_disk).
+        let body = if json { report::json_for_disk(&j) + "\n" } else { report::defang_text(&report_text(&j)) };
         write_atomic(&dest, |mut f| std::io::Write::write_all(&mut f, body.as_bytes()))?;
         Ok(Some(dest.display().to_string()))
     })

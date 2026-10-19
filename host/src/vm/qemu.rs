@@ -148,6 +148,17 @@ const WINDOWS_ARGS: &str = "airlock.link=serial init_on_free=0";
 
 pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<Child> {
     let mut boot_args = format!("console=ttyS0 reboot=k panic=-1 pci=off ro root=/dev/vda quiet init=/sbin/airlock-agent ipv6.disable=1 airlock.mode={} {WINDOWS_ARGS}", spec.mode);
+    // Test hooks, as on Linux: the guest's PID 1 dies mid-session; the
+    // viewing VM turns hostile (`airlock containment`).
+    if std::env::var_os("AIRLOCK_CRASHTEST").is_some() && spec.mode != "autopsy" {
+        boot_args.push_str(" airlock.crashtest");
+    }
+    if spec.mode == "live" {
+        if let Ok(t @ ("attack" | "garbage" | "stress")) = std::env::var("AIRLOCK_GUEST_TEST").as_deref() {
+            boot_args.push_str(" airlock.test=");
+            boot_args.push_str(t);
+        }
+    }
     for o in spec.options {
         boot_args.push(' ');
         boot_args.push_str(o);

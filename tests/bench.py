@@ -242,15 +242,21 @@ def analyze(path, out):
     # Every malicious sample here comes from MalwareBazaar, so its fingerprint
     # list would match them all: the bench measures airlock's own detection.
     env = dict(os.environ, AIRLOCK_NO_KNOWN_LIST="1")
-    p = subprocess.run([AIRLOCK, "analyze", path, "--out", out, "--report-only"], capture_output=True, text=True, timeout=600, env=env)
+    # --verbose: the VMs' (sanitized) console, kept when a VM crashed so a
+    # rare guest kernel panic can be traced afterwards.
+    p = subprocess.run([AIRLOCK, "analyze", path, "--out", out, "--report-only", "--verbose"], capture_output=True, text=True, timeout=600, env=env)
     rep = None
     try:
         with open(os.path.join(out, "report.json")) as f:
             rep = json.load(f)
     except Exception:
         pass
+    if "kernel panicked" in json.dumps(rep) or "died unexpectedly" in json.dumps(rep):
+        with open(os.path.join(out, "console.txt"), "w") as f:
+            f.write(p.stderr[-200000:])
     verdict = rep.get("verdict") if isinstance(rep, dict) and rep.get("verdict") in VERDICTS else None
-    return verdict, round(time.time() - t, 1), rep, (p.stderr or "")[-400:]
+    err = "\n".join(l for l in (p.stderr or "").splitlines() if not l.startswith(("[", "---", "airlock-agent:")))
+    return verdict, round(time.time() - t, 1), rep, err[-400:]
 
 
 def run_one(r, ram, out_root):

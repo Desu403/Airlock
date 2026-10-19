@@ -58,6 +58,15 @@ const ACTION: &[&str] = &[
     "débloquer", "desbloquear", "entsperren", "sbloccare", "feloldás", "temporarily disabled", "temporarily locked", "unusual activity",
 ];
 
+/// What a lure is about: something to open, sign in to, pay or collect.
+/// A short page that names a brand without any of these (an author's bio,
+/// a product sheet) is not one.
+const LURE_TOPIC: &[&str] = &[
+    "document", "file", "invoice", "account", "password", "sign in", "sign-in", "log in", "login", "secure", "shared", "payment", "voicemail",
+    "fax", "delivery", "parcel", "package", "verify", "click", "attachment", "mailbox", "storage", "expire", "unlock",
+    "documento", "fichier", "datei", "fattura", "factura", "rechnung", "facture", "compte", "konto", "cuenta", "conta", "fiók", "dokumentum",
+];
+
 /// Names callback scams borrow: security software, tech support, payments.
 const CALLBACK_BRANDS: &[&str] = &[
     "Norton", "McAfee", "Avast", "Geek Squad", "PayPal", "Microsoft", "Windows Defender", "Apple", "Amazon", "Coinbase", "Malwarebytes", "Kaspersky", "Bitdefender",
@@ -145,7 +154,7 @@ pub fn check(pdf: &str, work: &str, links: &[String], pages: u32) -> Vec<(Ind, S
     let text = text.split_whitespace().collect::<Vec<_>>().join(" ");
     // "a Microsoft Word document" names software, not a login page.
     let mut branded = text.clone();
-    for product in ["microsoft word", "microsoft excel", "microsoft powerpoint", "microsoft office word", "adobe acrobat reader dc is", "adobe reader is"] {
+    for product in ["microsoft word", "microsoft excel", "microsoft powerpoint", "microsoft office word", "microsoft windows", "microsoft press", "adobe acrobat reader dc is", "adobe reader is"] {
         branded = branded.replace(product, " ");
     }
     let brands: Vec<&(&str, &[&str])> = BRANDS.iter().filter(|(b, _)| contains_word(&branded, b)).collect();
@@ -165,8 +174,9 @@ pub fn check(pdf: &str, work: &str, links: &[String], pages: u32) -> Vec<(Ind, S
     // A short document that borrows a brand and asks for a click, while
     // its links (or QR codes) all go somewhere that brand does not own.
     let web: Vec<String> = links.iter().chain(&qr_links).filter(|l| l.to_ascii_lowercase().starts_with("http")).cloned().collect();
-    // A page of a few lines is all lure: the brand and an off-brand link suffice.
-    let asks = ACTION.iter().any(|a| text.contains(a)) || words < 250;
+    // A page of a few lines about a document or account is all lure: the
+    // brand and an off-brand link suffice.
+    let asks = ACTION.iter().any(|a| text.contains(a)) || (words < 250 && LURE_TOPIC.iter().any(|t| contains_word(&text, t)));
     if asks && pages <= 3 && !web.is_empty() && web.len() <= 10 {
         for (b, domains) in &brands {
             if web.iter().all(|u| !domains.iter().any(|d| on(&host(u), d))) {

@@ -1,0 +1,53 @@
+%PDF-1.7
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R /F2 6 0 R >> >> /Annots [7 0 R 8 0 R] >>
+endobj
+4 0 obj
+<< /Length 758 >>
+stream
+BT /F1 9 Tf 72 760 Td (O'REILLY) Tj ET
+BT /F2 16 Tf 72 700 Td (About the Author) Tj ET
+BT /F1 11 Tf 72 674 Td (Charles Petzold is also the author of The Annotated Turing: A Guided Tour) Tj ET
+BT /F1 11 Tf 72 658 Td (through Alan Turing's Historic Paper on Computability and the Turing) Tj ET
+BT /F1 11 Tf 72 642 Td (Machine \(Wiley, 2008\). He wrote a bunch of other books too, but they're) Tj ET
+BT /F1 11 Tf 72 626 Td (mostly about programming applications for Microsoft Windows, and) Tj ET
+BT /F1 11 Tf 72 610 Td (they're all obsolete now. He lives in New York City with his wife, the) Tj ET
+BT /F1 11 Tf 72 594 Td (novelist Deirdre Sinnott, and two cats named Honey and Heidi. His) Tj ET
+BT /F1 11 Tf 72 578 Td (website is www.charlespetzold.com.) Tj ET
+
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Roman >>
+endobj
+6 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Times-Bold >>
+endobj
+7 0 obj
+<< /Type /Annot /Subtype /Link /Rect [130 570 260 584] /A << /S /URI /URI (http://www.charlespetzold.com/) >> >>
+endobj
+8 0 obj
+<< /Type /Annot /Subtype /Link /Rect [72 755 140 770] /A << /S /URI /URI (https://learning.oreilly.com/home/) >> >>
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000273 00000 n 
+0000001082 00000 n 
+0000001154 00000 n 
+0000001225 00000 n 
+0000001353 00000 n 
+trailer
+<< /Size 9 /Root 1 0 R >>
+startxref
+1484
+%%EOF

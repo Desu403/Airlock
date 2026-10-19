@@ -865,3 +865,8 @@ button.check.failed:hover:not(:disabled) { color: var(--med); }
 /* The gaps between selected lines take the container's colour: none. */
 .page .text::selection { background: transparent; }
 .page .text span::selection { background: rgba(var(--seal-rgb), 0.3); color: transparent; }
+
+/* About: the supported file types */
+.about.supported dd { display: flex; flex-direction: column; gap: 2px; }
+.about .exts { font: 11.5px/1.6 var(--mono); color: var(--text); word-spacing: 2px; }
+.about .ext-note { font-size: 11.5px; color: var(--muted); }

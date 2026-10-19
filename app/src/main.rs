@@ -206,6 +206,29 @@ fn open_many(doc: Arc<Mutex<Option<Doc>>>, chosen: Arc<Mutex<Option<(String, Arc
     Ok(OpenResult { info: Some(open_impl(doc, chosen, first.clone())?), elsewhere })
 }
 
+/// Everything airlock opens: the Open dialog's filters and the "Supported
+/// files" list in About airlock come from here. The type is always decided
+/// by content inside the VM; extensions only help people find their files.
+const SUPPORTED: &[(&str, &[&str], &str)] = &[
+    ("Documents", &["pdf", "doc", "docx", "docm", "dot", "dotx", "dotm", "rtf", "odt", "xls", "xlsx", "xlsm", "xlsb", "xlam", "xltx", "xltm", "ods", "csv",
+        "ppt", "pptx", "pptm", "pps", "ppsx", "ppsm", "potx", "potm", "odp"], "PDF, Word, Excel, PowerPoint, OpenDocument, RTF"),
+    ("E-mails", &["eml", "msg"], "e-mail messages and Outlook messages; attachments open in their own VM"),
+    ("Archives", &["zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "cab", "iso"], "each file inside opens in its own VM"),
+    ("Pictures", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg", "heic", "avif", "ico", "jp2", "psd"], "shown as plain pixels"),
+    ("Text and code", &["txt", "md", "log", "json", "xml", "yaml", "yml", "ini", "toml", "html", "htm", "css", "js", "ts", "py", "c", "h", "cpp", "hpp", "cc",
+        "java", "rs", "go", "sh", "ps1", "vbs", "bat", "cmd", "hta", "php", "rb", "sql"], "colour-coded; any other plain-text file opens too"),
+];
+
+fn all_supported() -> Vec<&'static str> {
+    SUPPORTED.iter().flat_map(|(_, exts, _)| exts.iter().copied()).collect()
+}
+
+/// For About airlock: (category, extensions, note).
+#[tauri::command]
+fn supported_files() -> Vec<(String, Vec<String>, String)> {
+    SUPPORTED.iter().map(|(l, e, n)| (l.to_string(), e.iter().map(|x| x.to_string()).collect(), n.to_string())).collect()
+}
+
 #[tauri::command]
 async fn pick_and_open(app: tauri::AppHandle, state: State<'_, AppState>) -> R<OpenResult> {
     let (doc, chosen) = (state.doc.clone(), state.chosen.clone());
@@ -214,11 +237,8 @@ async fn pick_and_open(app: tauri::AppHandle, state: State<'_, AppState>) -> R<O
             .dialog()
             .file()
             .set_title("Open documents in airlock")
-            .add_filter("Documents", &["pdf", "doc", "docx", "docm", "xls", "xlsx", "xlsm", "ppt", "pptx", "pptm", "odt", "ods", "odp", "rtf", "dotm", "dotx", "xlam", "xltm", "xltx", "potm", "ppsm", "ppsx"])
-            .add_filter("E-mails", &["eml", "msg"])
-            .add_filter("Archives", &["zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "iso", "cab"])
-            .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg", "avif", "heic", "ico"])
-            .add_filter("Text and code", &["txt", "md", "csv", "log", "json", "xml", "yaml", "yml", "html", "htm", "css", "js", "ts", "py", "c", "h", "cpp", "hpp", "cc", "java", "rs", "go", "sh", "ps1", "vbs", "bat", "cmd", "php", "rb", "sql", "ini", "toml"])
+            .add_filter("All supported files", &all_supported());
+        let picked = SUPPORTED.iter().fold(picked, |d, (label, exts, _)| d.add_filter(*label, exts))
             .add_filter("All files", &["*"])
             .blocking_pick_files()
             .unwrap_or_default();
@@ -1365,6 +1385,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             uninstall_info,
             uninstall,
+            supported_files,
             archive_entries,
             open_entry,
             ui_settings,

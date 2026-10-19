@@ -1940,8 +1940,17 @@ async function showAbout() {
   const group = () => el("dl", "about");
   const version = group(), protection = group(), readers = group();
   const logBox = el("div", "console-log tall", "Loading…");
-  body.replaceChildren(sec("airlock"), version, sec("Protection"), protection, sec("Inside the VM"), readers, sec("App log"),
+  const supported = el("dl", "about supported");
+  body.replaceChildren(sec("airlock"), version, sec("Supported files"), supported, sec("Protection"), protection, sec("Inside the VM"), readers, sec("App log"),
     el("p", "note", "Everything airlock did on this computer: VMs that stopped, attacks the tripwire blocked, updates, errors. Documents' contents are never logged."), logBox);
+  // What airlock opens (the same list as the Open dialog's filters).
+  try {
+    for (const [label, exts, note] of await invoke("supported_files")) {
+      const dd = el("dd", "");
+      dd.append(el("span", "exts", exts.map((e) => "." + e).join("  ")), el("span", "ext-note", note));
+      supported.append(el("dt", "", label), dd);
+    }
+  } catch {}
   let info = {};
   try { info = await invoke("about_info"); } catch (e) { version.append(el("dd", "", String(e))); }
   const row = (dl, k, v) => { if (v) dl.append(el("dt", "", k), el("dd", "", String(v))); };
@@ -2079,6 +2088,7 @@ function paletteCommands() {
     ["Updates…", "", true, showUpdates],
     ["Settings…", "", true, showSettings],
     ["About airlock (versions, protection, log)…", "", true, showAbout],
+    ["Supported file types…", "", true, showAbout],
     ["Guided tour", "", true, startTour],
     ["New window", "", true, () => invoke("new_window")],
     ["Close this window", "Ctrl+W", true, closeWindow],

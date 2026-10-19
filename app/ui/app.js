@@ -815,8 +815,10 @@ function showCheck() {
   const b = $("check");
   const [cls, label, title] = check.attacked
     ? ["malicious", "Attack blocked", "This document tried to attack your computer while it was shown; its VM was destroyed at once. Click for details."]
+    : check.running && check.report
+    ? [verdictClass(check.report.verdict), `${{ malicious: /LIKELY/.test(check.report.verdict) ? "Likely malicious" : "Malicious", suspicious: "Suspicious", clean: "No threats found" }[verdictClass(check.report.verdict)]} · ClamAV…`, `${check.report.headline || check.report.verdict}. ClamAV is still checking; the result updates by itself. Click for the report.`]
     : check.running
-    ? ["checking", "Checking…", "Checking this file for malware in two separate microVMs (one wired to a fake internet). Keep reading meanwhile. Click to watch."]
+    ? ["checking", "Checking…", "Checking this file for malware in separate microVMs (one wired to a fake internet). Keep reading meanwhile. Click to watch."]
     : check.report
       ? [verdictClass(check.report.verdict), { malicious: /LIKELY/.test(check.report.verdict) ? "Likely malicious" : "Malicious", suspicious: "Suspicious", clean: "No threats found" }[verdictClass(check.report.verdict)], `${check.report.headline || check.report.verdict}. Click for the full report.`]
       : check.error
@@ -839,7 +841,7 @@ function clearCheck() {
 function startCheck() {
   const gen = ++check.gen;
   Object.assign(check, { report: null, error: null });
-  const p = invoke("analyze").then(
+  const p = invoke("analyze", { id: gen }).then(
     (r) => {
       if (gen !== check.gen) return r;
       check.report = r;
@@ -853,6 +855,8 @@ function startCheck() {
     if (gen !== check.gen) return;
     check.running = null;
     showCheck();
+    // The panel showed the early report: show the final one in its place.
+    if (check.report && !$("panel").hidden && $("panel-title").textContent.startsWith("Analysis")) { showAnalysis(check.panelName); return; }
     // Something found: show it without waiting for a click (unless the
     // analysis panel is already open and waiting for this result).
     if (check.report && verdictClass(check.report.verdict) !== "clean" && !(!$("panel").hidden && $("panel-title").textContent.startsWith("Analysis"))) showAnalysis();
@@ -865,9 +869,10 @@ function startCheck() {
 // The report panel: the finished check, or a spinner until it finishes.
 async function showAnalysis(name, again = false) {
   const title = typeof name === "string" ? `Analysis · ${name}` : "Analysis";
+  check.panelName = name;
   const body = openPanel(title);
   if (again || (!check.report && !check.running)) startCheck();
-  if (check.running) {
+  if (check.running && !check.report) {
     const wait = el("div", "row");
     wait.append(el("div", "spinner"), el("span", "note", "Detonating in a separate microVM wired to a fake internet, then examining its disk in a second VM. You can keep reading meanwhile."));
     body.replaceChildren(wait);
@@ -878,6 +883,11 @@ async function showAnalysis(name, again = false) {
   if (check.report) {
     const report = check.report;
     renderReport(body, report, `${report.document} · analyzed in ${report.seconds.toFixed(1)}s`);
+    if (check.running && report.clamav_pending) {
+      const wait = el("div", "row");
+      wait.append(el("div", "spinner"), el("span", "note", "ClamAV is still checking (it loads millions of signatures first). This report updates by itself when it finishes."));
+      body.insertBefore(wait, body.firstChild);
+    }
     const save = el("button", "", "Save report…");
     save.title = "Save as text (or .json for tools)";
     save.onclick = saveReport;
@@ -899,6 +909,16 @@ async function showAnalysis(name, again = false) {
 function analyze(name) {
   return showAnalysis(name);
 }
+
+// airlock's own checks are done: their verdict, while ClamAV finishes.
+window.__TAURI__.event.listen("analysis-early", (e) => {
+  const r = e.payload;
+  if (!check.running || !r || r.id !== check.gen) return;
+  check.report = r;
+  showCheck();
+  if (!$("panel").hidden && $("panel-title").textContent.startsWith("Analysis")) showAnalysis(check.panelName);
+  else if (verdictClass(r.verdict) !== "clean") showAnalysis();
+});
 
 $("check").onclick = () => (check.attacked ? attackBlocked(check.attackMsg) : showAnalysis());
 

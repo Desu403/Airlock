@@ -46,6 +46,9 @@ enum Mode {
     Selftest,
     Autopsy,
     Live,
+    /// ClamAV only, in a VM of its own next to the analysis VM: the document
+    /// (vdb) and the signature disk (vdc), no network, no scratch disk.
+    ClamAv,
 }
 
 fn log(msg: &str) {
@@ -294,6 +297,7 @@ fn mode_from_cmdline() -> Mode {
         Some("selftest") => Mode::Selftest,
         Some("autopsy") => Mode::Autopsy,
         Some("live") => Mode::Live,
+        Some("clamav") => Mode::ClamAv,
         _ => Mode::View,
     }
 }
@@ -370,6 +374,12 @@ fn main() {
             libc::chown(p.as_ptr(), monitor::RENDER_UID, monitor::RENDER_GID);
         }
     }
+    if mode == Mode::ClamAv && mount("tmpfs", "/run", "tmpfs", nosx, "size=16m,mode=0755") {
+        let _ = fs::create_dir_all(clamav::SIGS);
+        if !mount("/dev/vdc", clamav::SIGS, "ext4", libc::MS_RDONLY | nosx, "") {
+            let _ = fs::remove_dir(clamav::SIGS);
+        }
+    }
     let net = if scratch { Net::AllowInet } else { Net::Deny };
 
     let mut doc = load_document().unwrap_or_else(|| fail(&mut out, Error::BadDocDisk));
@@ -428,9 +438,22 @@ fn main() {
         fail(&mut out, Error::Internal);
     }
 
-    if scratch && clamav::available() {
+    // The analysis VM scans too when the host attached the database to it
+    // (older hosts); current hosts run ClamAV in a VM of its own.
+    if (scratch || mode == Mode::ClamAv) && clamav::available() {
         log("scanning with ClamAV");
         send_indicators(&mut out, &clamav::scan(&doc_path, WORK));
+    }
+    if mode == Mode::ClamAv {
+        if !clamav::available() {
+            fail(&mut out, Error::Internal);
+        }
+        let _ = send(&mut out, Kind::Hello, 0, 0, 0, &[]);
+        let _ = send(&mut out, Kind::Done, 0, 0, 0, &[]);
+        match out.try_clone() {
+            Ok(f) => finish(f),
+            Err(_) => power_off(),
+        }
     }
     if mode == Mode::Selftest {
         log("selftest: running simulated exploited renderer");

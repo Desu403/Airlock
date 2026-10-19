@@ -461,18 +461,29 @@ fn viewing_findings(state: State<'_, AppState>) -> serde_json::Value {
 
 /// Full behavioural analysis in separate microVMs; viewing continues meanwhile.
 #[tauri::command]
-async fn analyze(state: State<'_, AppState>) -> R<serde_json::Value> {
+async fn analyze(app: tauri::AppHandle, state: State<'_, AppState>, id: Option<u64>) -> R<serde_json::Value> {
     let (name, bytes) = state.chosen.lock().unwrap().clone().ok_or("no document chosen")?;
     let (report, chosen) = (state.report.clone(), state.chosen.clone());
     blocking(move || {
         let started = std::time::Instant::now();
         let entry = ENTRY.get();
         let hint = entry.map(|(_, n)| n.clone()).unwrap_or_else(|| name.clone());
-        let a = analysis::run(&bytes, Some(&hint), entry.map(|(i, _)| *i), "analyze", false, &|_| {}).map_err(err)?;
-        let mut j = a.report.to_json();
-        j["document"] = name.into();
-        j["seconds"] = (started.elapsed().as_secs_f32() as f64).into();
-        j["log"] = a.log.iter().map(|(t, l)| serde_json::json!([t, l])).collect::<Vec<_>>().into();
+        let to_json = |a: &analysis::Analysis| {
+            let mut j = a.report.to_json();
+            j["document"] = name.clone().into();
+            j["seconds"] = (started.elapsed().as_secs_f32() as f64).into();
+            j["log"] = a.log.iter().map(|(t, l)| serde_json::json!([t, l])).collect::<Vec<_>>().into();
+            j["clamav_pending"] = a.clamav_pending.into();
+            // Which check this is (the window may have started another since).
+            j["id"] = id.unwrap_or(0).into();
+            j
+        };
+        // The verdict from airlock's own checks, shown while ClamAV finishes.
+        let early = |a: &analysis::Analysis| {
+            let _ = app.emit("analysis-early", to_json(a));
+        };
+        let a = analysis::run_staged(&bytes, Some(&hint), entry.map(|(i, _)| *i), "analyze", false, &|_| {}, &early).map_err(err)?;
+        let j = to_json(&a);
         // Kept for "Save report" only if that file is still the one open
         // (an automatic check can finish after another file was opened).
         if chosen.lock().unwrap().as_ref().is_some_and(|(_, b)| Arc::ptr_eq(b, &bytes)) {

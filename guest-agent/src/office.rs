@@ -19,6 +19,8 @@ pub enum Kind {
     Text,
     /// An archive (archive.rs); its format.
     Archive(&'static str),
+    /// An e-mail message (email.rs).
+    Email,
 }
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
@@ -81,7 +83,7 @@ pub fn detect(doc: &[u8]) -> Option<Kind> {
         return Some(Kind::Image(ext));
     }
     if crate::media::is_text(doc) {
-        return Some(Kind::Text);
+        return Some(if crate::email::is_email(doc) { Kind::Email } else { Kind::Text });
     }
     None
 }

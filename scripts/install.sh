@@ -57,6 +57,7 @@ application/vnd.ms-word.template.macroEnabled.12
 application/vnd.ms-excel.addin.macroEnabled.12
 application/vnd.ms-excel.template.macroEnabled.12
 application/vnd.ms-powerpoint.slideshow.macroEnabled.12
+message/rfc822
 application/zip
 application/x-7z-compressed
 application/vnd.rar
@@ -178,7 +179,8 @@ put 0644 vendor/bin/vmlinux-airlock "$LIB/vmlinux"
 # Known-malware fingerprints (scripts/known-malware.sh): fetched now if the
 # source tree has none; the daily update check keeps them fresh.
 [ -f build/known-malware.bin ] || sh scripts/known-malware.sh build full || true
-for f in known-malware.bin known-malware.info urlhaus.txt; do [ ! -f "build/$f" ] || put 0644 "build/$f" "$LIB/$f"; done
+[ -f build/clamav.ext4 ] || sh scripts/clamav-db.sh build || true
+for f in known-malware.bin known-malware.info urlhaus.txt clamav.ext4; do [ ! -f "build/$f" ] || put 0644 "build/$f" "$LIB/$f"; done
 # Copy then rename: VMs already running keep their old image.
 cp --reflink=auto --sparse=always build/rootfs.ext4 "$LIB/rootfs.ext4.new"
 chmod 0644 "$LIB/rootfs.ext4.new"

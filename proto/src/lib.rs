@@ -221,6 +221,8 @@ pub enum Ind {
     /// its kind: "download-run", "hidden-powershell", "smuggling", "shell",
     /// "obfuscated".
     Script = 70,
+    /// ClamAV named the file (or something inside it): the signature name.
+    ClamAv = 71,
 }
 
 impl Ind {
@@ -270,6 +272,7 @@ impl Ind {
             68 => QrLink,
             69 => PhishText,
             70 => Script,
+            71 => ClamAv,
             _ => return None,
         })
     }

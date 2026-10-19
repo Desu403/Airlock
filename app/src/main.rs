@@ -35,8 +35,10 @@ struct AppState {
 #[derive(Serialize)]
 struct OpenInfo {
     name: String,
-    /// An archive: its files are listed in the side panel (archive_entries).
+    /// An archive or e-mail: its files are listed in the side panel (archive_entries).
     archive: bool,
+    /// An e-mail (the panel says "Attachments").
+    email: bool,
     /// Offers the spreadsheet layout choice.
     spreadsheet: bool,
     /// [width, height] in points.
@@ -142,7 +144,8 @@ fn open_bytes(doc: Arc<Mutex<Option<Doc>>>, name: String, bytes: &[u8]) -> R<Ope
     let entry = ENTRY.get();
     let hint = entry.map(|(_, n)| n.as_str()).unwrap_or(&name);
     let session = LiveSession::open_with(bytes, layout, Some(hint), entry.map(|(i, _)| *i)).map_err(open_error)?;
-    let archive = entry.is_none() && airlock_core::live::is_archive(bytes);
+    let archive = entry.is_none() && airlock_core::live::has_files(bytes);
+    let email = archive && airlock_core::live::is_email(bytes);
     let name = match entry {
         Some((_, inner)) => format!("{name} › {}", inner.rsplit(['/', '\\']).next().unwrap_or(inner)),
         None => name,
@@ -150,6 +153,7 @@ fn open_bytes(doc: Arc<Mutex<Option<Doc>>>, name: String, bytes: &[u8]) -> R<Ope
     let info = OpenInfo {
         name,
         archive,
+        email,
         spreadsheet: is_spreadsheet(bytes),
         pages: session.pages.iter().map(|p| [p.width, p.height]).collect(),
         ready_ms: session.boot_time.as_millis() as u64,
@@ -211,6 +215,7 @@ async fn pick_and_open(app: tauri::AppHandle, state: State<'_, AppState>) -> R<O
             .file()
             .set_title("Open documents in airlock")
             .add_filter("Documents", &["pdf", "doc", "docx", "docm", "xls", "xlsx", "xlsm", "ppt", "pptx", "pptm", "odt", "ods", "odp", "rtf", "dotm", "dotx", "xlam", "xltm", "xltx", "potm", "ppsm", "ppsx"])
+            .add_filter("E-mails", &["eml"])
             .add_filter("Archives", &["zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "iso", "cab"])
             .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg", "avif", "heic", "ico"])
             .add_filter("Text and code", &["txt", "md", "csv", "log", "json", "xml", "yaml", "yml", "html", "htm", "css", "js", "ts", "py", "c", "h", "cpp", "hpp", "cc", "java", "rs", "go", "sh", "ps1", "vbs", "bat", "cmd", "php", "rb", "sql", "ini", "toml"])
@@ -272,7 +277,7 @@ struct EntryInfo {
 async fn archive_entries(state: State<'_, AppState>) -> R<Vec<EntryInfo>> {
     let (doc, chosen) = (state.doc.clone(), state.chosen.clone());
     blocking(move || {
-        let is_archive = chosen.lock().unwrap().as_ref().is_some_and(|(_, b)| airlock_core::live::is_archive(b)) && ENTRY.get().is_none();
+        let is_archive = chosen.lock().unwrap().as_ref().is_some_and(|(_, b)| airlock_core::live::has_files(b)) && ENTRY.get().is_none();
         if !is_archive {
             return Ok(Vec::new());
         }
@@ -590,6 +595,8 @@ const MIME_TYPES: &[&str] = &[
     "application/vnd.ms-excel.addin.macroEnabled.12",
     "application/vnd.ms-excel.template.macroEnabled.12",
     "application/vnd.ms-powerpoint.slideshow.macroEnabled.12",
+    // E-mail messages (attachments open like an archive's files).
+    "message/rfc822",
     // Archives (listed inside the VM; each file opens in a VM of its own).
     "application/zip",
     "application/x-7z-compressed",

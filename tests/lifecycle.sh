@@ -4,7 +4,7 @@
 # update check, disk use after each step, uninstall. Uses the AppImage's own
 # bundled kit and CLI (dist/), never the source tree.
 #
-#   tests/lifecycle.sh [AppImage]      (about 10 minutes; needs a built AppImage)
+#   tests/lifecycle.sh [AppImage]      (about 20 minutes; needs a built AppImage)
 set -eu
 cd "$(dirname "$0")/.."
 IMG=$(realpath "${1:-dist/airlock-0.1.0-x86_64.AppImage}")
@@ -31,7 +31,7 @@ if AIRLOCK_LIB=$LIB AIRLOCK_SINKHOLE=$APP/usr/lib/airlock/bin/sinkhole sh "$KIT/
 else
     bad "setup failed: $(tail -3 "$H/setup.log")"
 fi
-for f in rootfs.ext4 vmlinux firecracker sinkhole known-malware.bin urlhaus.txt; do [ -f "$LIB/$f" ] || bad "missing $f after setup"; done
+for f in rootfs.ext4 vmlinux firecracker sinkhole known-malware.bin urlhaus.txt clamav.ext4; do [ -f "$LIB/$f" ] || bad "missing $f after setup"; done
 mb=$(size "$H/.local/lib/airlock")
 echo "     disk after setup: ${mb} MB (viewer $(size "$LIB/rootfs.ext4") MB, kit $(size "$LIB/kit") MB)"
 [ "$mb" -lt 3000 ] && ok "setup leaves under 3 GB" || bad "setup leaves ${mb} MB"
@@ -50,6 +50,19 @@ echo "== the daily update check (status) =="
 if ( cd "$LIB/kit" && AIRLOCK_CLI=$CLI sh scripts/update.sh --status > "$H/status.log" 2>&1 ); then ok "update check runs: $(grep -E '^available' "$H/status.log")"; else bad "update check failed: $(tail -2 "$H/status.log")"; fi
 mb2=$(size "$H/.local/lib/airlock")
 echo "     disk after the update check: ${mb2} MB"
+
+echo "== a full update (what Update now does: rebuild, every test, install) =="
+start=$(date +%s)
+if ( cd "$LIB/kit" && AIRLOCK_CLI=$CLI sh scripts/update.sh > "$H/update.log" 2>&1 ); then
+    ok "update ran and passed its tests in $(( $(date +%s) - start ))s"
+else
+    bad "update failed: $(tail -3 "$H/update.log")"
+fi
+if AIRLOCK_LIB=$LIB timeout 120 "$CLI" view "$T/doc.pdf" --out "$T/after-update" > "$T/after.log" 2>&1 && [ -f "$T/after-update/page-0001.png" ]; then ok "documents open after the update"; else bad "cannot open after the update: $(tail -1 "$T/after.log")"; fi
+[ -d "$LIB/kit/build/previous" ] && ok "a rollback copy is kept" || bad "no rollback copy after the update"
+for left in build/guestroot build/guestroot.tar build/rootfs.ext4 build/kernel; do [ ! -e "$LIB/kit/$left" ] || bad "the update left kit/$left behind"; done
+mb3=$(size "$H/.local/lib/airlock")
+echo "     disk after the update: ${mb3} MB (rollback copy $(size "$LIB/kit/build/previous") MB, kept a week)"
 
 echo "== uninstall leftovers =="
 rm -rf "$LIB" "$H/.local/share/applications/airlock.desktop"

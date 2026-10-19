@@ -2062,7 +2062,7 @@ function paletteCommands() {
     ["Fit to width", "", doc, fitWidth],
     ["Show page thumbnails", "Ctrl+B", doc && $("thumbs").hidden, () => setThumbs(true)],
     ["Hide page thumbnails", "Ctrl+B", doc && !$("thumbs").hidden, () => setThumbs(false)],
-    ["Files inside the archive", "", doc && state.archive, showFiles],
+    [state.email ? "The e-mail's attachments" : "Files inside the archive", "", doc && state.archive, showFiles],
     ["Show the document's text", "", doc && !state.pixelsOnly, showText],
     ["Save a safe PDF copy…", "Ctrl+S", doc, saveSafeCopy],
     ["Print…", "Ctrl+P", doc, printDocument],
@@ -2321,10 +2321,15 @@ setupDocument = function (info) {
   thumbs.current = -1;
   $("thumbbtn").hidden = false;
   state.archive = !!info.archive;
+  state.email = !!info.email;
   // For an archive the toolbar's Text button lists its files instead.
-  $("textbtn").textContent = info.archive ? "Files" : "Text";
+  $("textbtn").textContent = info.email ? "Attachments" : info.archive ? "Files" : "Text";
   $("textbtn").title = info.archive ? "The files inside this archive" : "Show the document's text";
-  if (info.archive) { $("textbtn").hidden = false; showFiles(); }
+  if (info.archive) {
+    $("textbtn").hidden = false;
+    // The panel narrows the pages (fit width): start again at the top.
+    showFiles().then(() => requestAnimationFrame(() => { $("viewer").scrollTop = 0; }));
+  }
   if (pref("airlock.thumbs", "0") === "1" && !info.archive) setThumbs(true);
   else $("thumbs").hidden = true;
   const v = $("viewer");
@@ -2350,8 +2355,8 @@ setInterval(() => {
 const fmtSize = (n) => (n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GB` : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
 const FLAG_TEXT = { disguised: ["bad", "disguised program"], program: ["warn", "program"], locked: ["warn", "locked"] };
 async function showFiles() {
-  const body = openPanel("Files inside");
-  body.replaceChildren(el("p", "note", "Reading the archive inside its VM…"));
+  const body = openPanel(state.email ? "Attachments" : "Files inside");
+  body.replaceChildren(el("p", "note", state.email ? "Reading the e-mail inside its VM…" : "Reading the archive inside its VM…"));
   let files = [];
   try { files = await invoke("archive_entries"); } catch (e) { body.replaceChildren(el("p", "note", `Could not list the files: ${e}`)); return; }
   const intro = el("p", "note", `${files.length} file(s). Each opens in a new window with a VM of its own, which unpacks just that file: nothing is unpacked on your computer.`);

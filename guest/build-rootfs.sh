@@ -30,13 +30,14 @@ fakeroot_sh $B/guestroot '
     apk upgrade --no-progress '"$QUIET"'
     '"$NOTE"' "@@sub packages"
     apk add --no-progress '"$QUIET"' mupdf-tools quickjs \
-        python3 py3-oletools py3-pygments yara zbar imagemagick 7zip \
+        python3 py3-oletools py3-pygments yara zbar imagemagick imagemagick-heic libheif-libde265 libheif-dav1d 7zip clamav-scanner clamav-libunrar \
         libreoffice-writer libreoffice-calc libreoffice-impress \
         font-liberation font-dejavu
     install -D -m 0644 -o 0 -g 0 /src/guest/office_triage.py /usr/lib/airlock/office_triage.py
     install -D -m 0644 -o 0 -g 0 /src/guest/pdf_walk.js /usr/lib/airlock/pdf_walk.js
     install -D -m 0644 -o 0 -g 0 /src/guest/unpack.py /usr/lib/airlock/unpack.py
     install -D -m 0644 -o 0 -g 0 /src/guest/code_render.py /usr/lib/airlock/code_render.py
+    install -D -m 0644 -o 0 -g 0 /src/guest/email_render.py /usr/lib/airlock/email_render.py
     # Known-malware signatures (YARA-Forge rule package), compiled once here.
     '"$NOTE"' "@@sub rules"
     mkdir /tmp/rules && unzip -q /src/'"$RULES_ZIP"' -d /tmp/rules

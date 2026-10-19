@@ -74,8 +74,9 @@ pub fn convert_image(path: &str, ext: &str, work: &str, net: Net) -> (Vec<(Ind, 
     let mut src = path.to_string();
     if !mupdf_reads(ext) {
         // First frame only ([0]); ImageMagick never delegates to other programs here.
+        // HEIF containers (HEIC and AVIF share one): ImageMagick reads which it is.
         let png = format!("{work}/image-conv.png");
-        let input = format!("{ext}:{path}[0]");
+        let input = if matches!(ext, "heic" | "avif") { format!("{path}[0]") } else { format!("{ext}:{path}[0]") };
         let r = monitor::run(&["/usr/bin/magick", &input, &png], work, &Opts::new(net, CONVERT_TIMEOUT));
         events.extend(r.events);
         if !std::path::Path::new(&png).exists() {

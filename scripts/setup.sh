@@ -200,6 +200,8 @@ case $MODE in
         (cd "$KIT" && rm -rf build/guestroot build/guestroot.tar build/rootfs.ext4 build/kernel build/tests vendor/dl/kernel/linux-*.tar.xz)
         printf '\n==> Fetching the list of known malware fingerprints\n'
         sh scripts/known-malware.sh "$LIB" full || echo "   (not fetched now; the next update check tries again)"
+        printf '\n==> Fetching ClamAV'"'"'s malware database\n'
+        sh scripts/clamav-db.sh "$LIB" || echo "   (not fetched now; the next update check tries again)"
         echo "@@ok	vm	The secure viewer is built and installed"
         ;;
     unfix)

@@ -70,6 +70,23 @@ pub fn is_archive(doc: &[u8]) -> bool {
         || at(0, b"MSCF") || at(0x8001, b"CD001") || at(0x8801, b"CD001") || at(0x9001, b"CD001") || (at(0, b"BZh") && doc.len() > 4 && (b'1'..=b'9').contains(&doc[3]))
 }
 
+/// Whether `doc` is an e-mail message (its first lines are headers, as the
+/// guest checks): its attachments are listed like an archive's files.
+pub fn is_email(doc: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(&doc[..doc.len().min(16384)]);
+    let block = head.replace("\r\n", "\n");
+    let block = block.split("\n\n").next().unwrap_or("").to_ascii_lowercase();
+    let lines: Vec<&str> = block.lines().collect();
+    let known = ["from:", "to:", "subject:", "date:", "received:", "message-id:", "mime-version:", "return-path:"];
+    let first_ok = lines.first().is_some_and(|l| l.contains(':') && !l.starts_with(' ') && l.split(':').next().is_some_and(|k| !k.contains(' ')));
+    !doc[..doc.len().min(16384)].contains(&0) && first_ok && known.iter().filter(|k| lines.iter().any(|l| l.starts_with(*k))).count() >= 2
+}
+
+/// Archives and e-mails: the VM can list their files (Cmd::Entries).
+pub fn has_files(doc: &[u8]) -> bool {
+    is_archive(doc) || is_email(doc)
+}
+
 pub struct PageSize {
     /// Points.
     pub width: f32,

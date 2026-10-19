@@ -151,6 +151,18 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
             };
             finding(Static, sev, att, title, why, text.splitn(2, ':').nth(1).unwrap_or(text).trim().to_string())
         }
+        Ind::ClamAv => {
+            // Heuristic and "potentially unwanted" names are hints, not verdicts.
+            let soft = text.starts_with("Heuristics.") || text.starts_with("PUA.");
+            finding(
+                Signature,
+                if soft { Medium } else { High },
+                "-",
+                if soft { "ClamAV flags something unusual" } else { "Detected by ClamAV" },
+                if soft { "ClamAV's general rules (not a specific malware) found something often seen in harmful files. Worth caution, not proof." } else { "ClamAV, the open-source antivirus engine by Cisco Talos, recognises this as a known malware family. Its signatures are updated several times a day." },
+                format!("ClamAV: {text}"),
+            )
+        }
         Ind::PdfLure => finding(Static, Medium, "T1566.002 Spearphishing Link", "The page is one big link", "Phishing PDFs show a picture of a document or a \"View\" button, and clicking almost anywhere opens a website, usually a fake login page. Real documents rarely do this.", text.to_string()),
         Ind::HiddenData if text.contains("program") || text.contains("archive") || text.contains("Office/OLE") || text.contains("web page") => finding(Static, High, "T1027.009 Embedded Payloads", "Hides a program or archive inside the file", "The file is built to be two things at once: a document you can open and a hidden program or archive. Only done to smuggle malware past scanners.", text.to_string()),
         Ind::HiddenData if text.starts_with("an OLE container whose contents cannot be read") => finding(Static, Medium, "T1027 Obfuscated Files", "Its contents could not be checked", "The file is damaged or deliberately broken, so airlock could not look inside it. Treat it as unknown, not as safe.", text.to_string()),

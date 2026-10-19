@@ -163,6 +163,7 @@ fi
 # check, next to the VM image; a failed download keeps the current list.
 if [ "$MODE" = status ] || [ "$MODE" = update ]; then
     sh scripts/known-malware.sh "$(dirname "$ROOTFS")" auto >/dev/null 2>&1 || true
+    sh scripts/clamav-db.sh "$(dirname "$ROOTFS")" >/dev/null 2>&1 || true
 fi
 
 if [ "$MODE" = status ]; then

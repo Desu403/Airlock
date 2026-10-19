@@ -17,7 +17,9 @@ const EXPECTED: &[&str] = &[
     "/work/source.txt", "/work/code.xhtml", "/work/code.pdf",
     // archive.rs: the archive as written for 7-Zip, and its contents page.
     "/work/archive.zip", "/work/archive.7z", "/work/archive.rar", "/work/archive.tar", "/work/archive.gz", "/work/archive.bz2", "/work/archive.xz",
-    "/work/archive.cab", "/work/archive.iso", "/work/archive.xhtml", "/work/archive.pdf",
+    "/work/archive.cab", "/work/archive.iso", "/work/archive.xhtml", "/work/archive.pdf", "/work/clamscan.log",
+    // email.rs: the message as written for the reader, and its page.
+    "/work/email.eml", "/work/email.xhtml", "/work/email.pdf",
 ];
 
 fn sha256_hex(path: &Path) -> String {

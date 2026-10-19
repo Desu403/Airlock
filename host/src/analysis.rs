@@ -29,10 +29,14 @@ pub fn run(doc: &[u8], name: Option<&str>, entry: Option<u32>, mode: &'static st
     note(format!("Analysis VM 1 started: the document is opened by its own program, cut off from your computer; its only network is a fake internet ({} KB document)", doc.len().div_ceil(1024)));
     let spec = vm::Spec {
         mode,
-        drives: vec![
-            vm::Drive { id: "doc", path: doc_disk, read_only: true },
-            vm::Drive { id: "scratch", path: scratch.clone(), read_only: false },
-        ],
+        drives: {
+            let mut d = vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }, vm::Drive { id: "scratch", path: scratch.clone(), read_only: false }];
+            // ClamAV's database (scripts/clamav-db.sh) as vdd, when present.
+            if let Some(sigs) = assets.rootfs.parent().map(|p| p.join("clamav.ext4")).filter(|p| p.is_file() && std::env::var_os("AIRLOCK_NO_CLAMAV").is_none()) {
+                d.push(vm::Drive { id: "sigs", path: sigs, read_only: true });
+            }
+            d
+        },
         sinkhole_events: Some(events.clone()),
         options: &[],
         ext: name.and_then(vm::ext_hint),

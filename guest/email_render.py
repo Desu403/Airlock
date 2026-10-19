@@ -1,4 +1,5 @@
-"""E-mail messages (.eml) inside the VM, read with Python's standard library.
+"""E-mail messages inside the VM: .eml (Python's standard library) and
+Outlook .msg (olefile, already in the VM for Office files).
 
     python3 -I email_render.py page IN OUT.xhtml     the readable page
     python3 -I email_render.py extract IN N OUT      attachment N, as a file
@@ -64,24 +65,77 @@ def body(msg):
     return content.strip(), []
 
 
-def page(src, out):
+OLE = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+
+
+def msg_string(ole, stream):
+    """A string property of an Outlook message: Unicode (001F) or 8-bit (001E)."""
+    for suffix, enc in (("001F", "utf-16-le"), ("001E", "cp1252")):
+        name = f"{stream}{suffix}"
+        if ole.exists(name):
+            return ole.openstream(name).read().decode(enc, "replace").rstrip("\0")
+    return ""
+
+
+def load_msg(src):
+    """Outlook .msg (an OLE file): headers, text, links, attachments."""
+    import olefile
+    ole = olefile.OleFileIO(src)
+    p = "__substg1.0_"
+    sender = msg_string(ole, p + "0C1A")
+    addr = msg_string(ole, p + "0C1F") or msg_string(ole, p + "5D01")
+    headers = {
+        "From": f"{sender} <{addr}>" if sender and addr else sender or addr,
+        "To": msg_string(ole, p + "0E04"),
+        "Cc": msg_string(ole, p + "0E03"),
+        "Subject": msg_string(ole, p + "0037"),
+    }
+    text = msg_string(ole, p + "1000")
+    links = []
+    if not text.strip() and ole.exists(p + "10130102"):
+        v = Visible()
+        v.feed(ole.openstream(p + "10130102").read().decode("utf-8", "replace"))
+        text, links = re.sub(r"\n\s*\n+", "\n\n", "".join(v.text)).strip(), v.links
+    atts = []
+    for d in sorted({e[0] for e in ole.listdir() if e and e[0].startswith("__attach_version1.0_#")}):
+        name = msg_string(ole, f"{d}/{p}3707") or msg_string(ole, f"{d}/{p}3704") or f"attachment-{len(atts) + 1}"
+        data_stream = f"{d}/{p}37010102"
+        if ole.exists(data_stream):
+            atts.append((name, ole.get_size(data_stream), lambda s=data_stream: ole.openstream(s).read()))
+    return headers, text, links, atts
+
+
+def load_eml(src):
+    """A MIME e-mail: headers, text, links, attachments."""
     msg = parse(src)
     text, links = body(msg)
-    links += re.findall(r"https?://[^\s<>\"')]+", text)
+    headers = {k: str(msg.get(k, "")) for k in ("From", "To", "Cc", "Reply-To", "Date", "Subject")}
+    atts = []
+    for i, a in enumerate(attachments(msg)):
+        data = a.get_payload(decode=True) or b""
+        atts.append((a.get_filename() or f"attachment-{i + 1}", len(data), lambda d=data: d))
+    return headers, text, links, atts
+
+
+def load(src):
+    with open(src, "rb") as f:
+        is_msg = f.read(8) == OLE
+    return load_msg(src) if is_msg else load_eml(src)
+
+
+def page(src, out):
+    headers, text, links, atts = load(src)
+    links = links + re.findall(r"https?://[^\s<>\"')]+", text)
     seen = []
     for u in links:
         if u not in seen:
             seen.append(u)
             print(f"@@LINK {u[:500]}")
     rows = []
-    for i, a in enumerate(attachments(msg)):
-        name = a.get_filename() or f"attachment-{i + 1}"
-        size = len(a.get_payload(decode=True) or b"")
+    for i, (name, size, _) in enumerate(atts):
         print(f"@@ATT {i} {size} {name}")
         rows.append(f"<tr><td>{html.escape(name)}</td><td class='s'>{size:,} bytes</td></tr>")
-    head = "".join(
-        f"<tr><th>{k}</th><td>{html.escape(str(msg.get(k, '')))}</td></tr>"
-        for k in ("From", "To", "Cc", "Reply-To", "Date", "Subject") if msg.get(k))
+    head = "".join(f"<tr><th>{k}</th><td>{html.escape(v)}</td></tr>" for k, v in headers.items() if v)
     files = f"<h2>Attachments</h2><table>{''.join(rows)}</table>" if rows else ""
     paras = "".join(f"<p>{html.escape(p)}</p>" for p in text[:200000].split("\n"))
     css = """html, body { background: #0b1114; } body { margin: 0; color: #d8e2e4; font-family: "DejaVu Sans", sans-serif; font-size: 9.5pt; }
@@ -94,9 +148,9 @@ p { margin: 0 0 4pt; } .rule { border-top: 1px solid #1a2a2e; margin: 6pt 0 12pt
 
 
 def extract(src, n, out):
-    part = attachments(parse(src))[int(n)]
+    _, _, _, atts = load(src)
     with open(out, "wb") as f:
-        f.write(part.get_payload(decode=True) or b"")
+        f.write(atts[int(n)][2]())
 
 
 if __name__ == "__main__":

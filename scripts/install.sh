@@ -58,6 +58,7 @@ application/vnd.ms-excel.addin.macroEnabled.12
 application/vnd.ms-excel.template.macroEnabled.12
 application/vnd.ms-powerpoint.slideshow.macroEnabled.12
 message/rfc822
+application/vnd.ms-outlook
 application/zip
 application/x-7z-compressed
 application/vnd.rar

@@ -48,6 +48,9 @@ pub fn detect(doc: &[u8]) -> Option<Kind> {
             Kind::Office("xls")
         } else if contains(doc, &utf16("PowerPoint Document")) {
             Kind::Office("ppt")
+        } else if contains(doc, &utf16("__substg1.0_")) && contains(doc, &utf16("__properties_version1.0")) {
+            // An Outlook message (.msg): read like an e-mail (email.rs).
+            Kind::Email
         } else if contains(doc, &utf16("_VBA_PROJECT")) || contains(doc, &utf16("PROJECT")) {
             // A bare macro project (PowerPoint .ppa add-ins are delivered
             // like this): nothing to show, but everything to check.

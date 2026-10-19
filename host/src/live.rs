@@ -82,9 +82,18 @@ pub fn is_email(doc: &[u8]) -> bool {
     !doc[..doc.len().min(16384)].contains(&0) && first_ok && known.iter().filter(|k| lines.iter().any(|l| l.starts_with(*k))).count() >= 2
 }
 
+/// An Outlook message (.msg): an OLE file with message property streams.
+pub fn is_outlook(doc: &[u8]) -> bool {
+    let utf16 = |s: &str| s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect::<Vec<u8>>();
+    let has = |n: &[u8]| doc.windows(n.len()).any(|w| w == n);
+    doc.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1])
+        && !has(&utf16("WordDocument")) && !has(&utf16("Workbook")) && !has(&utf16("PowerPoint Document"))
+        && has(&utf16("__substg1.0_")) && has(&utf16("__properties_version1.0"))
+}
+
 /// Archives and e-mails: the VM can list their files (Cmd::Entries).
 pub fn has_files(doc: &[u8]) -> bool {
-    is_archive(doc) || is_email(doc)
+    is_archive(doc) || is_email(doc) || is_outlook(doc)
 }
 
 pub struct PageSize {

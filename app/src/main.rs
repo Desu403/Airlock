@@ -145,7 +145,7 @@ fn open_bytes(doc: Arc<Mutex<Option<Doc>>>, name: String, bytes: &[u8]) -> R<Ope
     let hint = entry.map(|(_, n)| n.as_str()).unwrap_or(&name);
     let session = LiveSession::open_with(bytes, layout, Some(hint), entry.map(|(i, _)| *i)).map_err(open_error)?;
     let archive = entry.is_none() && airlock_core::live::has_files(bytes);
-    let email = archive && airlock_core::live::is_email(bytes);
+    let email = archive && (airlock_core::live::is_email(bytes) || airlock_core::live::is_outlook(bytes));
     let name = match entry {
         Some((_, inner)) => format!("{name} › {}", inner.rsplit(['/', '\\']).next().unwrap_or(inner)),
         None => name,
@@ -215,7 +215,7 @@ async fn pick_and_open(app: tauri::AppHandle, state: State<'_, AppState>) -> R<O
             .file()
             .set_title("Open documents in airlock")
             .add_filter("Documents", &["pdf", "doc", "docx", "docm", "xls", "xlsx", "xlsm", "ppt", "pptx", "pptm", "odt", "ods", "odp", "rtf", "dotm", "dotx", "xlam", "xltm", "xltx", "potm", "ppsm", "ppsx"])
-            .add_filter("E-mails", &["eml"])
+            .add_filter("E-mails", &["eml", "msg"])
             .add_filter("Archives", &["zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "iso", "cab"])
             .add_filter("Pictures", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg", "avif", "heic", "ico"])
             .add_filter("Text and code", &["txt", "md", "csv", "log", "json", "xml", "yaml", "yml", "html", "htm", "css", "js", "ts", "py", "c", "h", "cpp", "hpp", "cc", "java", "rs", "go", "sh", "ps1", "vbs", "bat", "cmd", "php", "rb", "sql", "ini", "toml"])
@@ -597,6 +597,7 @@ const MIME_TYPES: &[&str] = &[
     "application/vnd.ms-powerpoint.slideshow.macroEnabled.12",
     // E-mail messages (attachments open like an archive's files).
     "message/rfc822",
+    "application/vnd.ms-outlook",
     // Archives (listed inside the VM; each file opens in a VM of its own).
     "application/zip",
     "application/x-7z-compressed",

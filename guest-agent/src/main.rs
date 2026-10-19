@@ -494,6 +494,11 @@ fn main() {
                 // reported as something the document tried.
                 let links: Vec<(Ind, String)> = page.links.iter().map(|u| (Ind::OfficeLink, u.clone())).collect();
                 send_indicators(&mut out, &links);
+                // The phishing checks on the page (lure.rs) compare its wording
+                // with where its links go.
+                if let Ok(mut l) = SENT_LINKS.lock() {
+                    l.extend(page.links.iter().cloned());
+                }
                 send_indicators(&mut out, &archive::findings(&page.entries, "e-mail"));
                 send_indicators(&mut out, &html::check(&doc));
                 log("checking the e-mail's attachments");

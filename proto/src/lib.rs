@@ -67,6 +67,9 @@ pub enum Cmd {
     /// a = page. Reply: PageText holding only counts, "key=number" pairs
     /// (characters that the text sanitiser removes: for the AI-text hints).
     TextStats = 105,
+    /// An archive's files. Reply: PageText (a = 0) with one line per file,
+    /// "index size flags name" (flags: comma-separated words, or "-").
+    Entries = 106,
 }
 
 pub const MAX_QUERY: u32 = 256;
@@ -88,6 +91,7 @@ impl Header {
             103 if h.len == 0 => Cmd::Quit,
             104 if h.a < MAX_PAGES && h.len == 0 => Cmd::GetLayout,
             105 if h.a < MAX_PAGES && h.len == 0 => Cmd::TextStats,
+            106 if h.a == 0 && h.b == 0 && h.len == 0 => Cmd::Entries,
             _ => return None,
         };
         Some((cmd, h))
@@ -213,6 +217,12 @@ pub enum Ind {
     /// Phishing wording on the first pages (brand + request + elsewhere link,
     /// or a callback scam).
     PhishText = 69,
+    /// A script (text file) with a dangerous pattern; the text starts with
+    /// its kind: "download-run", "hidden-powershell", "smuggling", "shell",
+    /// "obfuscated".
+    Script = 70,
+    /// ClamAV named the file (or something inside it): the signature name.
+    ClamAv = 71,
 }
 
 impl Ind {
@@ -261,6 +271,8 @@ impl Ind {
             67 => HiddenData,
             68 => QrLink,
             69 => PhishText,
+            70 => Script,
+            71 => ClamAv,
             _ => return None,
         })
     }
@@ -466,6 +478,7 @@ mod fuzz {
                     Cmd::Render => assert!(h.len == 0 && h.a < MAX_PAGES && (MIN_DPI..=MAX_DPI).contains(&h.b)),
                     Cmd::GetText | Cmd::GetLayout | Cmd::TextStats => assert!(h.len == 0 && h.a < MAX_PAGES),
                     Cmd::Quit => assert_eq!(h.len, 0),
+                    Cmd::Entries => assert!(h.len == 0 && h.a == 0 && h.b == 0),
                 }
             }
         }

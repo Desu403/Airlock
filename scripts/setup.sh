@@ -9,6 +9,9 @@
 #                            (pkexec, or sudo in a terminal)
 #   scripts/setup.sh build   build the VM (kernel, image) in user space and
 #                            install it to ~/.local/lib/airlock; no root
+#   scripts/setup.sh unfix   undo the system settings "fix" made (one password
+#                            prompt); the reserved user-id range stays, as
+#                            other sandboxes (podman, flatpak) may share it
 #
 # Nothing here weakens the system beyond what airlock's design needs:
 # /dev/kvm and /dev/net/tun usable by any user (systemd's default on many
@@ -179,8 +182,10 @@ case $MODE in
                 cp -r "$d" "$KIT/$d"
             done
             touch "$KIT/.airlock-kit"
+            for v in .kit-version .vm-version; do [ ! -f "$v" ] || cp "$v" "$KIT/$v"; done
         fi
         (cd "$KIT" && scripts/bootstrap.sh --vm-only)
+        printf '\n==> Installing the secure viewer\n'
         mkdir -p "$LIB"
         install -m 0755 "$KIT/vendor/bin/firecracker" "$LIB/firecracker.new" && mv -f "$LIB/firecracker.new" "$LIB/firecracker"
         install -m 0644 "$KIT/vendor/bin/vmlinux-airlock" "$LIB/vmlinux.new" && mv -f "$LIB/vmlinux.new" "$LIB/vmlinux"
@@ -189,10 +194,42 @@ case $MODE in
         # The fake-internet helper ships prebuilt (in the AppImage) or from host/.
         SINKHOLE=${AIRLOCK_SINKHOLE:-host/target/release/sinkhole}
         [ -f "$SINKHOLE" ] && install -m 0755 "$SINKHOLE" "$LIB/sinkhole.new" && mv -f "$LIB/sinkhole.new" "$LIB/sinkhole"
+        # The build's leftovers (kernel objects, the unpacked image, a second
+        # copy of it): several GB that updates rebuild when needed. The Alpine
+        # build root stays as a cache for faster updates.
+        (cd "$KIT" && rm -rf build/guestroot build/guestroot.tar build/rootfs.ext4 build/kernel build/tests vendor/dl/kernel/linux-*.tar.xz)
+        printf '\n==> Fetching the list of known malware fingerprints\n'
+        sh scripts/known-malware.sh "$LIB" full || echo "   (not fetched now; the next update check tries again)"
+        printf '\n==> Fetching ClamAV'"'"'s malware database\n'
+        sh scripts/clamav-db.sh "$LIB" || echo "   (not fetched now; the next update check tries again)"
         echo "@@ok	vm	The secure viewer is built and installed"
         ;;
+    unfix)
+        script=$(mktemp)
+        cat > "$script" <<'EOS'
+rm -f /etc/udev/rules.d/65-airlock.rules /etc/sysctl.d/60-airlock-userns.conf /etc/modules-load.d/airlock.conf
+command -v udevadm >/dev/null && udevadm control --reload 2>/dev/null || true
+command -v sysctl >/dev/null && sysctl -q --system >/dev/null 2>&1 || true
+EOS
+        chmod 0644 "$script"
+        found=0
+        for f in /etc/udev/rules.d/65-airlock.rules /etc/sysctl.d/60-airlock-userns.conf /etc/modules-load.d/airlock.conf; do [ -e "$f" ] && found=1; done
+        [ "$found" = 1 ] || { echo "no system settings to undo"; rm -f "$script"; exit 0; }
+        echo "airlock needs administrator rights once, to run:"
+        sed 's/^/    /' "$script"
+        if have pkexec && [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+            pkexec /bin/sh "$script"
+        elif have sudo; then
+            sudo /bin/sh "$script"
+        else
+            echo "run it as root: sh $script" >&2
+            exit 1
+        fi
+        rm -f "$script"
+        echo "done"
+        ;;
     *)
-        echo "usage: $0 check|plan|fix|build" >&2
+        echo "usage: $0 check|plan|fix|build|unfix" >&2
         exit 2
         ;;
 esac

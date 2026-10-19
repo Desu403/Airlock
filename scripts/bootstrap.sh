@@ -14,8 +14,8 @@ KERNEL_SHA256=8aa50daca0412a3d0a61a87af3744f39773d40b3132635fb7bc9be652cdb7b0c
 # Firecracker's microvm guest config, from the same Firecracker release tag.
 FC_CONFIG_SHA256=153ca1b40f3312bfb40b7587b471ea548a915f98f480f0d0892a1537957a2147
 # Known-malware signatures: YARA-Forge's quality-tested "core" rule package.
-YARA_RULES_VERSION=20261011
-YARA_RULES_SHA256=bf0cc68e60df44bee4e9906713160889e7c2142b14621394860a45e629035147
+YARA_RULES_VERSION=20261018
+YARA_RULES_SHA256=d5b5f0006a0c58684459c3967b6aaae94f1e128597ed23ea5d4e8f16965a74ba
 
 set -eu
 cd "$(dirname "$0")/.."
@@ -45,9 +45,11 @@ fetch() {
         return
     fi
     echo "   fetching $(basename "$2")"
-    curl -fL --progress-bar -o "$2.part" "$1"
+    # The app's setup screen reads curl's full meter (size, speed, time left).
+    if [ "${AIRLOCK_PROGRESS:-}" = 1 ]; then curl -fL -o "$2.part" "$1"; else curl -fL --progress-bar -o "$2.part" "$1"; fi
     echo "$3  $2.part" | sha256sum -c --quiet || { rm -f "$2.part"; die "checksum mismatch for $1"; }
     mv "$2.part" "$2"
+    echo "   verified $(basename "$2")"
 }
 
 step "Checking host prerequisites"

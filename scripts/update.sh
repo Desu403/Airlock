@@ -54,6 +54,8 @@ else
     ROOTFS=build/rootfs.ext4
     INFO=build/rootfs.info
 fi
+# The AppImage carries its own CLI (not in <prefix>/bin).
+[ -n "${AIRLOCK_CLI:-}" ] && AIRLOCK=$AIRLOCK_CLI
 [ -x "$AIRLOCK" ] || die "airlock binary not found at $AIRLOCK"
 
 # Kit: the new VM goes live only now, after it passed the regression suite.
@@ -138,10 +140,35 @@ PKGS=$(outdated_packages) || die "could not read Alpine's package index"
 NPKG=$(printf '%s' "$PKGS" | grep -c . || true)
 BUILT=$(sed -n 's/^built //p' "$INFO" 2>/dev/null || echo 0)
 AGE=$(( ($(date +%s) - ${BUILT:-0}) / 86400 ))
+# A newer airlock (AppImage) brings new viewer features: its kit differs
+# from the one the installed image was built from.
+KITV=$(cat .vm-version 2>/dev/null || true)
+BUILT_KIT=$(sed -n 's/^kit //p' "$INFO" 2>/dev/null | head -1)
+VIEWER_NEW=0
+[ -z "$KITV" ] || [ "$KITV" = "$BUILT_KIT" ] || VIEWER_NEW=1
+
+# Leftovers of a first-time setup by an older airlock (several GB): cleared
+# when no update is running (an update holds this lock while it builds).
+if [ "$KIT" = 1 ] && [ "$MODE" = status ] && command -v flock >/dev/null && flock -n build/.update.lock true 2>/dev/null; then
+    tidy
+fi
+
+# The previous version is kept for a week after an update (rollback), then
+# deleted: it is a whole second VM image (about 1.2 GB).
+if [ "$KIT" = 1 ] && [ -d "$PREV" ] && [ -n "$(find "$PREV" -maxdepth 0 -mtime +7 2>/dev/null)" ]; then
+    rm -rf "$PREV"
+fi
+
+# Known-malware fingerprints (MalwareBazaar): refreshed with every daily
+# check, next to the VM image; a failed download keeps the current list.
+if [ "$MODE" = status ] || [ "$MODE" = update ]; then
+    sh scripts/known-malware.sh "$(dirname "$ROOTFS")" auto >/dev/null 2>&1 || true
+    sh scripts/clamav-db.sh "$(dirname "$ROOTFS")" >/dev/null 2>&1 || true
+fi
 
 if [ "$MODE" = status ]; then
     avail=0
-    [ "$KV" = "$(pin KERNEL_VERSION)" ] && [ "$FCV" = "$(pin FC_VERSION)" ] && [ "$AV" = "$(pin ALPINE_VERSION)" ] && [ "$YV" = "$(pin YARA_RULES_VERSION)" ] && [ "$NPKG" = 0 ] || avail=1
+    [ "$KV" = "$(pin KERNEL_VERSION)" ] && [ "$FCV" = "$(pin FC_VERSION)" ] && [ "$AV" = "$(pin ALPINE_VERSION)" ] && [ "$YV" = "$(pin YARA_RULES_VERSION)" ] && [ "$NPKG" = 0 ] && [ "$VIEWER_NEW" = 0 ] || avail=1
     {
         echo "checked=$(date +%s)"
         echo "available=$avail"
@@ -151,6 +178,7 @@ if [ "$MODE" = status ]; then
         echo "rules=$(pin YARA_RULES_VERSION) $YV"
         echo "image_age_days=$AGE"
         echo "packages=$NPKG"
+        [ "$VIEWER_NEW" = 0 ] || echo "viewer=${BUILT_KIT:-old} $KITV"
         # The renderers first: they are what a document attacks.
         printf '%s\n' "$PKGS" | grep . | sort -k1,1 | awk '{k = ($1 ~ /^(mupdf|libreoffice|quickjs|python3|py3-oletools|musl)/) ? 0 : 1; print k, $0}' |
             sort -s -k1,1n | head -30 | cut -d' ' -f2- | sed 's/^/pkg=/'
@@ -167,6 +195,7 @@ show "guest kernel (6.1 LTS)" "$(pin KERNEL_VERSION)" "$KV"
 show "Firecracker" "$(pin FC_VERSION)" "$FCV"
 show "Alpine base" "$(pin ALPINE_VERSION)" "$AV"
 show "malware signatures (YARA-Forge)" "$(pin YARA_RULES_VERSION)" "$YV"
+[ "$VIEWER_NEW" = 0 ] || show "airlock viewer (new features from the app)" "${BUILT_KIT:-old}" "$KITV"
 if [ "$NPKG" = 0 ]; then
     echo "   guest packages: all current"
 else
@@ -225,7 +254,17 @@ if [ "$KIT" = 1 ]; then
 else
     build() { scripts/bootstrap.sh --tests; }
 fi
-if ! build >"$LOG" 2>&1; then
+# The app's progress view reads the build as it happens (AIRLOCK_PROGRESS).
+rc=0
+if [ "${AIRLOCK_PROGRESS:-}" = 1 ]; then
+    export AIRLOCK_PROGRESS
+    rm -f build/.build-rc
+    { build 2>&1 || echo $? > build/.build-rc; } | tee "$LOG"
+    [ ! -f build/.build-rc ] || { rc=$(cat build/.build-rc); rm -f build/.build-rc; }
+else
+    build >"$LOG" 2>&1 || rc=$?
+fi
+if [ "$rc" != 0 ]; then
     restore
     tail -15 "$LOG" >&2
     die "the new version failed its checks; the previous version is back in place (full log: $LOG)"

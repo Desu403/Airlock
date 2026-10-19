@@ -157,7 +157,10 @@ impl Assets {
                 .find(|p| p.exists())
                 .unwrap_or_else(|| base.join("vendor/bin/vmlinux")),
             rootfs: base.join("build/rootfs.ext4"),
-            sinkhole: [exe_dir.join("sinkhole"), exe_dir.join("../lib/airlock/sinkhole"), base.join("host/target/release/sinkhole")]
+            // An update kit (<lib>/kit) first uses the installed one next to
+            // it: an AppImage's own copy sits in a FUSE mount that the VM's
+            // spare uid cannot read.
+            sinkhole: [base.join("../sinkhole"), exe_dir.join("sinkhole"), exe_dir.join("../lib/airlock/sinkhole"), base.join("host/target/release/sinkhole")]
                 .into_iter()
                 .find(|p| p.exists())
                 .unwrap_or_else(|| exe_dir.join("sinkhole")),
@@ -168,14 +171,21 @@ impl Assets {
             rootfs: lib.join("rootfs.ext4"),
             sinkhole: lib.join("sinkhole"),
         };
-        let candidates = match std::env::var_os("AIRLOCK_HOME") {
-            Some(home) => vec![source_tree(PathBuf::from(home))],
+        let candidates = match (std::env::var_os("AIRLOCK_HOME"), std::env::var_os("AIRLOCK_LIB")) {
+            (Some(home), _) => vec![source_tree(PathBuf::from(home))],
+            // An installed layout chosen explicitly (as scripts/setup.sh's AIRLOCK_LIB).
+            (None, Some(lib)) => vec![installed(PathBuf::from(lib))],
             // Next to the binary (scripts/install.sh), then the source tree
             // it was built from (development), then the per-user install
             // the AppImage's setup creates (on other computers the source
             // tree does not exist).
-            None => {
-                let mut c = vec![installed(exe_dir.join("../lib/airlock")), source_tree(Path::new(env!("CARGO_MANIFEST_DIR")).join(".."))];
+            (None, None) => {
+                let mut c = vec![installed(exe_dir.join("../lib/airlock"))];
+                // An AppImage uses only what its own setup installed, also on
+                // the computer that built it.
+                if std::env::var_os("APPIMAGE").is_none() {
+                    c.push(source_tree(Path::new(env!("CARGO_MANIFEST_DIR")).join("..")));
+                }
                 if let Some(home) = std::env::var_os("HOME") {
                     c.push(installed(PathBuf::from(home).join(".local/lib/airlock")));
                 }
@@ -308,6 +318,19 @@ pub struct Spec {
     pub sinkhole_events: Option<PathBuf>,
     /// Extra kernel command line options for the agent (fixed strings only).
     pub options: &'static [&'static str],
+    /// The file's extension ("cpp", "jpg"): which language to colour, as the
+    /// document disk carries no name. Only [a-z0-9]{1,8} reaches the VM.
+    pub ext: Option<String>,
+    /// A file inside an archive to open (its index among the files): that VM
+    /// unpacks it from the archive by itself.
+    pub entry: Option<u32>,
+}
+
+/// "Report.CPP" -> Some("cpp"); anything else (no dot, odd characters) -> None.
+pub fn ext_hint(name: &str) -> Option<String> {
+    let (_, ext) = name.rsplit_once('.')?;
+    let ext = ext.to_ascii_lowercase();
+    (1..=8).contains(&ext.len()).then_some(()).filter(|_| ext.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())).map(|_| ext)
 }
 
 const SANDBOX_PATH: &str = "/usr/bin";
@@ -328,6 +351,13 @@ pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<C
     for o in spec.options {
         boot_args.push(' ');
         boot_args.push_str(o);
+    }
+    if let Some(n) = spec.entry.filter(|n| *n < 100_000) {
+        boot_args.push_str(&format!(" airlock.entry={n}"));
+    }
+    if let Some(e) = spec.ext.as_deref().filter(|e| ext_hint(&format!(".{e}")).as_deref() == Some(*e)) {
+        boot_args.push_str(" airlock.ext=");
+        boot_args.push_str(e);
     }
     let mut net_ifaces = vec![];
     if spec.sinkhole_events.is_some() {

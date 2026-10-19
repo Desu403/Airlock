@@ -57,6 +57,45 @@ pub fn is_spreadsheet(doc: &[u8]) -> bool {
     false
 }
 
+/// Whether `doc` is an archive (content sniffing, as the guest does): only
+/// then is the VM asked for its file list.
+pub fn is_archive(doc: &[u8]) -> bool {
+    let has = |n: &[u8]| doc.windows(n.len()).any(|w| w == n);
+    let at = |off: usize, m: &[u8]| doc.len() >= off + m.len() && &doc[off..off + m.len()] == m;
+    if at(0, b"PK\x03\x04") || at(0, b"PK\x05\x06") {
+        let head = &doc[..doc.len().min(256)];
+        return !(has(b"word/") || has(b"xl/") || has(b"ppt/") || head.windows(31).any(|w| w == b"mimetypeapplication/vnd.oasis."));
+    }
+    at(0, b"7z\xBC\xAF\x27\x1C") || at(0, b"Rar!\x1A\x07") || at(257, b"ustar") || at(0, &[0x1F, 0x8B]) || at(0, &[0xFD, b'7', b'z', b'X', b'Z', 0])
+        || at(0, b"MSCF") || at(0x8001, b"CD001") || at(0x8801, b"CD001") || at(0x9001, b"CD001") || (at(0, b"BZh") && doc.len() > 4 && (b'1'..=b'9').contains(&doc[3]))
+}
+
+/// Whether `doc` is an e-mail message (its first lines are headers, as the
+/// guest checks): its attachments are listed like an archive's files.
+pub fn is_email(doc: &[u8]) -> bool {
+    let head = String::from_utf8_lossy(&doc[..doc.len().min(16384)]);
+    let block = head.replace("\r\n", "\n");
+    let block = block.split("\n\n").next().unwrap_or("").to_ascii_lowercase();
+    let lines: Vec<&str> = block.lines().collect();
+    let known = ["from:", "to:", "subject:", "date:", "received:", "message-id:", "mime-version:", "return-path:"];
+    let first_ok = lines.first().is_some_and(|l| l.contains(':') && !l.starts_with(' ') && l.split(':').next().is_some_and(|k| !k.contains(' ')));
+    !doc[..doc.len().min(16384)].contains(&0) && first_ok && known.iter().filter(|k| lines.iter().any(|l| l.starts_with(*k))).count() >= 2
+}
+
+/// An Outlook message (.msg): an OLE file with message property streams.
+pub fn is_outlook(doc: &[u8]) -> bool {
+    let utf16 = |s: &str| s.encode_utf16().flat_map(|u| u.to_le_bytes()).collect::<Vec<u8>>();
+    let has = |n: &[u8]| doc.windows(n.len()).any(|w| w == n);
+    doc.starts_with(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1])
+        && !has(&utf16("WordDocument")) && !has(&utf16("Workbook")) && !has(&utf16("PowerPoint Document"))
+        && has(&utf16("__substg1.0_")) && has(&utf16("__properties_version1.0"))
+}
+
+/// Archives and e-mails: the VM can list their files (Cmd::Entries).
+pub fn has_files(doc: &[u8]) -> bool {
+    is_archive(doc) || is_email(doc) || is_outlook(doc)
+}
+
 pub struct PageSize {
     /// Points.
     pub width: f32,
@@ -100,16 +139,18 @@ pub struct LiveSession {
 impl LiveSession {
     /// Boots a live VM for `doc` (PDF or Office). The VM has no network device.
     pub fn open(doc: &[u8]) -> Result<Self> {
-        Self::open_with(doc, Layout::Pages)
+        Self::open_with(doc, Layout::Pages, None, None)
     }
 
-    pub fn open_with(doc: &[u8], layout: Layout) -> Result<Self> {
+    /// `name`: the file's name, for its extension (which language to colour).
+    /// `entry`: open that file of an archive (unpacked inside the VM).
+    pub fn open_with(doc: &[u8], layout: Layout, name: Option<&str>, entry: Option<u32>) -> Result<Self> {
         let started = Instant::now();
         let assets = vm::Assets::locate()?;
         let run = vm::RunDir::create("live")?;
         let doc_disk = vm::write_doc_disk(&run.path, doc)?;
         let listener = run.listen()?;
-        let spec = vm::Spec { mode: "live", drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }], sinkhole_events: None, options: layout.options() };
+        let spec = vm::Spec { mode: "live", drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }], sinkhole_events: None, options: layout.options(), ext: name.and_then(vm::ext_hint), entry };
         let mut child = vm::spawn(&assets, &run, &spec, &run.path.join("console.log"))?;
 
         let deadline = Instant::now() + BOOT_TIMEOUT;
@@ -261,6 +302,28 @@ impl LiveSession {
             Msg::Text(p, t) if p == page => Ok(t),
             _ => Err(self.hostile("expected page text")),
         }
+    }
+
+    /// An archive's files: (index, size, flags, name), names sanitised like
+    /// page text. Empty for other documents.
+    pub fn entries(&mut self) -> Result<Vec<(u32, u64, Vec<String>, String)>> {
+        self.send(Cmd::Entries, 0, 0, &[])?;
+        let raw = match self.next()? {
+            Msg::Text(0, t) => t,
+            _ => return Err(self.hostile("expected the archive's file list")),
+        };
+        let mut out = Vec::new();
+        for line in raw.lines().filter(|l| !l.is_empty()) {
+            let mut f = line.splitn(4, ' ');
+            let (Some(i), Some(size), Some(flags), Some(name)) = (f.next(), f.next(), f.next(), f.next()) else { return Err(self.hostile("malformed file list")) };
+            let (Ok(i), Ok(size)) = (i.trim().parse::<u32>(), size.trim().parse::<u64>()) else { return Err(self.hostile("malformed file list")) };
+            let flags: Vec<String> = flags.split(',').map(str::trim).filter(|w| !w.is_empty() && *w != "-").map(String::from).collect();
+            if flags.iter().any(|w| w.len() > 16 || !w.bytes().all(|b| b.is_ascii_lowercase())) {
+                return Err(self.hostile("malformed file list"));
+            }
+            out.push((i, size, flags, name.to_string()));
+        }
+        Ok(out)
     }
 
     /// Character counts for the AI-text hints (numbers only, see Cmd::TextStats).

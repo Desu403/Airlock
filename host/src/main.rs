@@ -77,7 +77,11 @@ fn run() -> Result<()> {
     }
 }
 
+/// The document's file name (CLI: one document per run), for its extension.
+static DOC_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
 fn read_doc(input: &Path) -> Result<Vec<u8>> {
+    let _ = DOC_NAME.set(input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
     let meta = std::fs::metadata(input).with_context(|| format!("reading {}", input.display()))?;
     if meta.len() > MAX_DOC_BYTES {
         bail!("document larger than {} MiB", MAX_DOC_BYTES >> 20);
@@ -109,6 +113,8 @@ fn view(doc: &[u8], out_dir: &Path, verbose: bool) -> Result<()> {
         drives: vec![vm::Drive { id: "doc", path: doc_disk, read_only: true }],
         sinkhole_events: None,
         options: &[],
+        ext: DOC_NAME.get().and_then(|n| vm::ext_hint(n)),
+        entry: None,
     };
     let s = session::run(&assets, &run, &spec, verbose, true)?;
     if let Some(e) = s.guest_error {
@@ -127,7 +133,7 @@ fn view(doc: &[u8], out_dir: &Path, verbose: bool) -> Result<()> {
 }
 
 fn analyze(doc: &[u8], out_dir: &Path, verbose: bool, mode: &'static str, pages: bool) -> Result<report::Report> {
-    let a = analysis::run(doc, mode, verbose, &|line| eprintln!("airlock: {line}"))?;
+    let a = analysis::run(doc, DOC_NAME.get().map(String::as_str), None, mode, verbose, &|line| eprintln!("airlock: {line}"))?;
     let (rep, s) = (a.report, a.session);
     rep.print();
     std::fs::create_dir_all(out_dir)?;

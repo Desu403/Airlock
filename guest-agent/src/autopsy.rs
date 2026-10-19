@@ -9,7 +9,18 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::path::Path;
 
 /// Files the analysis VM itself writes.
-const EXPECTED: &[&str] = &["/work", "/work/doc.pdf", "/work/clean.pdf", "/work/emulate.js", "/lost+found"];
+const EXPECTED: &[&str] = &[
+    "/work", "/work/doc.pdf", "/work/clean.pdf", "/work/emulate.js", "/lost+found",
+    // media.rs: the picture or text as written for the converters, and their output.
+    "/work/image.png", "/work/image.jpg", "/work/image.gif", "/work/image.webp", "/work/image.tif", "/work/image.bmp", "/work/image.jp2",
+    "/work/image.psd", "/work/image.avif", "/work/image.heic", "/work/image.ico", "/work/image.svg", "/work/image-conv.png", "/work/image.pdf",
+    "/work/source.txt", "/work/code.xhtml", "/work/code.pdf",
+    // archive.rs: the archive as written for 7-Zip, and its contents page.
+    "/work/archive.zip", "/work/archive.7z", "/work/archive.rar", "/work/archive.tar", "/work/archive.gz", "/work/archive.bz2", "/work/archive.xz",
+    "/work/archive.cab", "/work/archive.iso", "/work/archive.xhtml", "/work/archive.pdf", "/work/clamscan.log",
+    // email.rs: the message as written for the reader, and its page.
+    "/work/email.eml", "/work/email.xhtml", "/work/email.pdf",
+];
 
 fn sha256_hex(path: &Path) -> String {
     use sha2::{Digest, Sha256};

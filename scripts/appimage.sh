@@ -18,6 +18,12 @@ rm -rf "$STAGE"
 mkdir -p "$STAGE/kit" "$STAGE/bin"
 git ls-files guest guest-agent proto scripts tests | while read -r f; do install -D -m "$(stat -c %a "$f")" "$f" "$STAGE/kit/$f"; done
 touch "$STAGE/kit/.airlock-kit"
+# Two fingerprints: .vm-version covers what goes into the VM (guest, agent,
+# protocol, pinned versions): a newer AppImage offers a viewer rebuild only
+# when it changed. .kit-version covers every kit file: the installed kit is
+# refreshed when it changed (new update scripts reach existing installs).
+git ls-files guest guest-agent proto scripts/bootstrap.sh | sort | xargs sha256sum | sha256sum | cut -c1-12 > "$STAGE/kit/.vm-version"
+(cd "$STAGE/kit" && find . -type f ! -name .kit-version | sort | xargs sha256sum | sha256sum | cut -c1-12) > "$STAGE/kit/.kit-version"
 install -m 0755 host/target/release/airlock host/target/release/sinkhole "$STAGE/bin/"
 
 (cd app && cargo tauri build --bundles appimage --config tauri.appimage.json)

@@ -16,7 +16,7 @@
     <hr data-doc>
     <button role="menuitem" id="c-safe" data-doc>Save safe PDF copy <kbd>Ctrl+S</kbd></button>
     <button role="menuitem" id="c-print" data-doc>Print <kbd>Ctrl+P</kbd></button>
-    <button role="menuitem" id="c-analyze" data-doc>Analyze for malware</button>
+    <button role="menuitem" id="c-analyze" data-doc>Malware report</button>
     <hr data-doc>
     <button role="menuitem" id="c-new">New window</button>
     <button role="menuitem" id="c-close">Close this window <kbd>Ctrl+W</kbd></button>
@@ -24,22 +24,33 @@
   </div>
   <header class="bar">
     <div class="menu-wrap" id="appwrap">
-      <button class="brand" id="appbtn" aria-haspopup="menu" aria-expanded="false" title="airlock menu"><span class="logo" aria-hidden="true"></span>airlock</button>
+      <button class="brand" id="appbtn" aria-haspopup="menu" aria-expanded="false" title="airlock menu"><span class="logo" aria-hidden="true"></span>airlock<span class="badge" id="updates-dot" hidden></span></button>
       <div class="menu left" id="appmenu" role="menu" hidden>
-        <button role="menuitem" id="m-new">New window</button>
+        <div class="menu-label">Safety</div>
         <button role="menuitem" id="m-auto" aria-checked="true" title="Check every file you open for malware, in the background">Check files automatically <span class="tick">✓</span></button>
+        <button role="menuitem" id="m-pixels" aria-checked="false" title="No document text leaves the VM (no text selection or Text panel). Search still works.">Pixels only <span class="tick">✓</span></button>
+        <hr>
+        <div class="menu-label">airlock</div>
+        <button role="menuitem" id="m-palette">All commands… <kbd>Ctrl+K</kbd></button>
+        <button role="menuitem" id="m-updates" title="Updates for airlock's VM (renderers, kernel, Firecracker, malware signatures)">Updates… <span class="menu-dot" id="m-updates-dot" hidden>new</span></button>
+        <button role="menuitem" id="m-settings">Settings…</button>
+        <button role="menuitem" id="m-about">About airlock…</button>
         <button role="menuitem" id="m-tour">Guided tour</button>
+        <hr>
+        <div class="menu-label">Window</div>
+        <button role="menuitem" id="m-new">New window</button>
         <button role="menuitem" id="m-close">Close this window <kbd>Ctrl+W</kbd></button>
         <button role="menuitem" id="m-quit">Exit airlock (all windows) <kbd>Ctrl+Q</kbd></button>
       </div>
     </div>
     <button id="open" title="Open a document (Ctrl+O)">Open…</button>
+    <button id="thumbbtn" class="icon" hidden aria-pressed="false" title="Page thumbnails (Ctrl+B)" aria-label="Page thumbnails"><span class="ico-thumbs" aria-hidden="true"></span></button>
     <div class="doc" id="doc" hidden>
       <span class="doc-name" id="docname"></span>
       <span class="seal" id="seal" title="The document is open inside a disposable Firecracker microVM with no network device. Only pixels, page sizes, search positions and cleaned text come out. The VM is destroyed when you close the document.">
         <span class="dot"></span><span class="label">Sealed · microVM · no network</span>
       </span>
-      <button class="check" id="check" hidden><span class="dot"></span><span class="label"></span></button>
+      <button class="check" id="check" hidden><span class="dot"></span><span class="label"></span><span class="chev" aria-hidden="true">›</span></button>
     </div>
     <div class="spacer"></div>
     <div class="group search" id="searchbox" hidden>
@@ -63,10 +74,6 @@
         <button role="menuitem" id="print" title="Prints the pixels the VM drew">Print… <kbd>Ctrl+P</kbd></button>
       </div>
     </div>
-    <button id="pixels" hidden aria-pressed="false" title="Pixels only: no document text leaves the VM (no text selection or Text panel). Search still works.">Pixels only</button>
-    <button id="updates" title="Updates for airlock's VM (renderers, kernel, Firecracker)">Updates<span class="badge" id="updates-dot" hidden></span></button>
-    <button id="tourbtn" class="icon" title="Show the guided tour of airlock" aria-label="Guided tour">?</button>
-    <button id="analyze" class="primary" hidden title="Detonate in a separate microVM wired to a fake internet and report what the document tries to do">Analyze</button>
   </header>
 
   <div class="banner" id="banner" hidden>
@@ -75,11 +82,12 @@
   </div>
 
   <main>
+    <nav class="thumbs" id="thumbs" hidden aria-label="Pages"></nav>
     <section class="viewer" id="viewer">
       <div class="empty" id="empty">
-        <div class="porthole" aria-hidden="true"></div>
+        <div class="porthole" aria-hidden="true"><span class="iris"></span></div>
         <h1>Open documents you don't trust.</h1>
-        <p>Drop a PDF or Office file here, or press <kbd>Ctrl</kbd>+<kbd>O</kbd>.</p>
+        <p>Drop a document, e-mail, archive, picture or code file here, or press <kbd>Ctrl</kbd>+<kbd>O</kbd>. Every supported type is listed in About airlock.</p>
         <ul class="promises">
           <li><strong>Sealed.</strong> The file is opened inside a throwaway microVM with no network card.</li>
           <li><strong>Pixels only.</strong> Your computer never parses the document — it only receives validated images.</li>
@@ -96,12 +104,37 @@
           <button id="setup-build" class="primary" hidden>Build the secure viewer</button>
           <button id="setup-recheck">Check again</button>
         </div>
-        <pre class="setup-log" id="setup-log" hidden></pre>
+        <section class="forge" id="forge" hidden aria-live="polite">
+          <header class="forge-head">
+            <span class="forge-dot" aria-hidden="true"></span>
+            <span class="forge-title" id="forge-title">Building the secure viewer</span>
+            <span class="forge-clock"><span id="forge-elapsed">0:00</span><span id="forge-eta"></span></span>
+          </header>
+          <div class="forge-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" id="forge-bar">
+            <div class="forge-fill" id="forge-fill"></div>
+            <span class="forge-pct" id="forge-pct">0%</span>
+          </div>
+          <ol class="forge-stages" id="forge-stages"></ol>
+          <div class="forge-now">
+            <div class="forge-what" id="forge-what">Starting…</div>
+            <div class="forge-why" id="forge-why"></div>
+            <div class="forge-sub" id="forge-subrow" hidden>
+              <div class="forge-subbar"><div id="forge-subfill"></div></div>
+              <span id="forge-meter"></span>
+            </div>
+          </div>
+          <details class="forge-term" id="forge-term" open>
+            <summary><span>Live output</span><span class="forge-lines" id="forge-lines"></span></summary>
+            <div class="forge-screen" id="setup-log"></div>
+          </details>
+          <p class="forge-note"><strong>Why does this take a while?</strong> airlock builds its viewer on your own computer from official, fingerprint-checked sources, instead of shipping a ready-made black box. It happens once; after that every document opens in a second.</p>
+        </section>
       </div>
       <div class="pages" id="pages"></div>
       <div class="busy" id="busy" hidden><div class="spinner"></div><span id="busy-text"></span></div>
     </section>
     <aside class="panel" id="panel" hidden>
+      <div class="panel-resize" id="panel-resize" role="separator" aria-orientation="vertical" aria-label="Resize panel" title="Drag to resize · double-click to reset"></div>
       <div class="panel-head">
         <h2 id="panel-title"></h2>
         <button id="panel-close" class="icon" aria-label="Close panel" title="Close (Esc)">×</button>
@@ -134,6 +167,13 @@
     </div>
   </div>
   <div id="printout" aria-hidden="true"></div>
-  <footer class="status" id="status">Ready</footer>
+  <footer class="statusbar"><span class="status-text" id="status">Ready</span><span class="telemetry" id="telemetry" hidden></span><button class="kbd-hint" id="palbtn" title="Every command, by name (Ctrl+K)"><kbd>Ctrl</kbd><kbd>K</kbd> commands</button></footer>
+  <div class="palette-wrap" id="palette" hidden>
+    <div class="palette" role="dialog" aria-label="Commands">
+      <input id="pal-q" type="text" placeholder="Type a command, a page number, or a colour…" autocomplete="off" spellcheck="false">
+      <ul id="pal-list" role="listbox"></ul>
+    </div>
+  </div>
+  <div class="peek" id="peek" aria-hidden="true"></div>
 </body>
 </html>

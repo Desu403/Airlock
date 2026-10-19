@@ -56,7 +56,54 @@ application/vnd.openxmlformats-officedocument.wordprocessingml.template
 application/vnd.ms-word.template.macroEnabled.12
 application/vnd.ms-excel.addin.macroEnabled.12
 application/vnd.ms-excel.template.macroEnabled.12
-application/vnd.ms-powerpoint.slideshow.macroEnabled.12"
+application/vnd.ms-powerpoint.slideshow.macroEnabled.12
+message/rfc822
+application/vnd.ms-outlook
+application/zip
+application/x-7z-compressed
+application/vnd.rar
+application/x-rar
+application/x-rar-compressed
+application/x-tar
+application/gzip
+application/x-bzip2
+application/x-xz
+application/x-iso9660-image
+application/vnd.ms-cab-compressed
+image/png
+image/jpeg
+image/gif
+image/webp
+image/bmp
+image/tiff
+image/svg+xml
+image/avif
+image/heic
+image/vnd.microsoft.icon
+text/plain
+text/markdown
+text/csv
+text/html
+text/css
+text/xml
+application/xml
+application/json
+application/x-yaml
+text/x-csrc
+text/x-chdr
+text/x-c++src
+text/x-c++hdr
+text/x-python
+text/x-script.python
+text/x-java
+text/x-rust
+text/x-go
+application/javascript
+text/javascript
+application/x-shellscript
+text/x-shellscript
+application/x-powershell
+text/x-log"
 
 die() { echo "error: $*" >&2; exit 1; }
 # put MODE SRC DEST: replace atomically, so a running airlock keeps its copy.
@@ -130,6 +177,11 @@ put 0755 host/target/release/airlock "$BIN/airlock"
 put 0755 host/target/release/sinkhole "$LIB/sinkhole"
 put 0755 vendor/bin/firecracker "$LIB/firecracker"
 put 0644 vendor/bin/vmlinux-airlock "$LIB/vmlinux"
+# Known-malware fingerprints (scripts/known-malware.sh): fetched now if the
+# source tree has none; the daily update check keeps them fresh.
+[ -f build/known-malware.bin ] || sh scripts/known-malware.sh build full || true
+[ -f build/clamav.ext4 ] || sh scripts/clamav-db.sh build || true
+for f in known-malware.bin known-malware.info urlhaus.txt clamav.ext4; do [ ! -f "build/$f" ] || put 0644 "build/$f" "$LIB/$f"; done
 # Copy then rename: VMs already running keep their old image.
 cp --reflink=auto --sparse=always build/rootfs.ext4 "$LIB/rootfs.ext4.new"
 chmod 0644 "$LIB/rootfs.ext4.new"

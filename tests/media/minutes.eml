@@ -1,0 +1,50 @@
+From: Anna Example <anna@example.org>
+To: you@example.net
+Subject: Minutes of Tuesday's meeting
+Date: Sun, 18 Oct 2026 10:00:00 +0200
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="===============1281750801901991624=="
+
+--===============1281750801901991624==
+Content-Type: multipart/alternative;
+ boundary="===============1153262373927501378=="
+
+--===============1153262373927501378==
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 7bit
+
+Hi,
+
+the minutes are attached. The agenda is at https://example.org/agenda
+
+Anna
+
+--===============1153262373927501378==
+Content-Type: text/html; charset="utf-8"
+Content-Transfer-Encoding: quoted-printable
+MIME-Version: 1.0
+
+<html><body><p>Hi,</p><p>the minutes are attached. <a href=3D'https://example=
+.org/agenda'>Agenda</a></p><p>Anna</p></body></html>
+
+--===============1153262373927501378==--
+
+--===============1281750801901991624==
+Content-Type: application/pdf
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="minutes.pdf"
+MIME-Version: 1.0
+
+JVBERi0xLjcKMSAwIG9iago8PCAvVHlwZSAvQ2F0YWxvZyAvUGFnZXMgMiAwIFIgPj4KZW5kb2Jq
+CjIgMCBvYmoKPDwgL1R5cGUgL1BhZ2VzIC9LaWRzIFszIDAgUl0gL0NvdW50IDEgPj4KZW5kb2Jq
+CjMgMCBvYmoKPDwgL1R5cGUgL1BhZ2UgL1BhcmVudCAyIDAgUiAvTWVkaWFCb3ggWzAgMCA2MTIg
+NzkyXSAvQ29udGVudHMgNCAwIFIgL1Jlc291cmNlcyA8PCAvRm9udCA8PCAvRjEgNSAwIFIgPj4g
+Pj4gPj4KZW5kb2JqCjQgMCBvYmoKPDwgL0xlbmd0aCA2NCA+PgpzdHJlYW0KQlQgL0YxIDI0IFRm
+IDcyIDcwMCBUZCAoUXVhcnRlcmx5IGludm9pY2UgLSBwbGVhc2UgcmV2aWV3KSBUaiBFVAplbmRz
+dHJlYW0KZW5kb2JqCjUgMCBvYmoKPDwgL1R5cGUgL0ZvbnQgL1N1YnR5cGUgL1R5cGUxIC9CYXNl
+Rm9udCAvSGVsdmV0aWNhID4+CmVuZG9iagp4cmVmCjAgNgowMDAwMDAwMDAwIDY1NTM1IGYgCjAw
+MDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1OCAwMDAwMCBuIAowMDAwMDAwMTE1IDAwMDAwIG4g
+CjAwMDAwMDAyNDEgMDAwMDAgbiAKMDAwMDAwMDM1NSAwMDAwMCBuIAp0cmFpbGVyCjw8IC9TaXpl
+IDYgL1Jvb3QgMSAwIFIgPj4Kc3RhcnR4cmVmCjQyNQolJUVPRgo=
+
+--===============1281750801901991624==--

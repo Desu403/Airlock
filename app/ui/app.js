@@ -103,7 +103,7 @@ function resetDocument() {
   Object.assign(state, { pages: [], hits: [], hitIndex: -1, queue: [], findings: null, docOpen: false });
   $("pages").replaceChildren();
   clearCheck();
-  for (const id of ["doc", "searchbox", "zoombox", "textbtn", "sheetbtn", "savewrap", "pixels", "analyze", "banner"]) $(id).hidden = true;
+  for (const id of ["doc", "searchbox", "zoombox", "textbtn", "sheetbtn", "savewrap", "banner", "thumbbtn", "thumbs", "telemetry"]) $(id).hidden = true;
   $("empty").hidden = false;
   closePanel();
 }
@@ -202,6 +202,7 @@ function setupDocument(info) {
   state.queue = [];
   state.findings = null;
   state.aiHints = null;
+  state.textCache = [];
   state.docOpen = true;
   $("banner").hidden = true;
   $("qcount").textContent = "";
@@ -211,10 +212,9 @@ function setupDocument(info) {
   $("sheetbtn").hidden = !info.spreadsheet;
   $("seal").classList.remove("stopped");
   $("seal").querySelector(".label").textContent = "Sealed · microVM · no network";
-  for (const id of ["doc", "searchbox", "zoombox", "savewrap", "pixels", "analyze"]) $(id).hidden = false;
+  for (const id of ["doc", "searchbox", "zoombox", "savewrap"]) $(id).hidden = false;
   $("textbtn").hidden = state.pixelsOnly;
   $("empty").hidden = true;
-  $("analyze").disabled = false;
 
   const container = $("pages");
   container.replaceChildren();
@@ -336,9 +336,9 @@ async function loadTextLayer(p, i) {
 async function setPixelsOnly(on, remember = true) {
   await invoke("set_pixels_only", { on });
   state.pixelsOnly = on;
-  if (remember) try { localStorage.setItem("airlock.pixelsOnly", on ? "1" : "0"); } catch {}
-  $("pixels").setAttribute("aria-pressed", String(on));
-  $("textbtn").hidden = on || !state.docOpen;
+  if (remember) setPref("airlock.pixelsOnly", on ? "1" : "0");
+  $("m-pixels").setAttribute("aria-checked", String(on));
+  $("textbtn").hidden = (on && !state.archive) || !state.docOpen;
   if (on) {
     getSelection()?.removeAllRanges();
     for (const p of state.pages) { p.text.replaceChildren(); p.textState = null; }
@@ -378,6 +378,27 @@ function setZoom(z, anchorPage) {
   const p = state.pages[keep];
   if (p) $("viewer").scrollTop = p.el.offsetTop - 12;
 }
+
+// Ctrl + scroll wheel (or touchpad pinch, which arrives as Ctrl+wheel):
+// zoom around the pointer, smoothly for small touchpad steps.
+$("viewer").addEventListener("wheel", (e) => {
+  if (!e.ctrlKey) return;
+  e.preventDefault(); // not the web view's own page zoom
+  if (!state.docOpen || !state.pages.length) return;
+  const viewer = $("viewer"), box = viewer.getBoundingClientRect();
+  const mx = e.clientX - box.left, my = e.clientY - box.top;
+  const delta = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaY;
+  const old = state.zoom;
+  const next = Math.min(3, Math.max(0.25, old * Math.exp(-delta * 0.0025)));
+  if (Math.abs(next - old) < 0.001) return;
+  state.fitMode = false;
+  const ratio = next / old;
+  const x = viewer.scrollLeft + mx, y = viewer.scrollTop + my;
+  state.zoom = next;
+  layout();
+  viewer.scrollLeft = x * ratio - mx;
+  viewer.scrollTop = y * ratio - my;
+}, { passive: false });
 
 function stepZoom(dir) {
   state.fitMode = false;
@@ -511,47 +532,172 @@ function stepHit(dir) {
 // ---------------------------------------------------------------- panels
 
 function openPanel(title) {
+  textSync.open = false;
   $("panel-title").textContent = title;
   $("panel").hidden = false;
   if (state.fitMode) fitWidth();
   return $("panel-body");
 }
 
+// The side panel's left edge can be dragged; the width is remembered and a
+// double-click goes back to the default (CSS: min(440px, 45vw)).
+function applyPanelWidth() {
+  const w = Number(pref("airlock.panelWidth", "0"));
+  const max = Math.max(320, window.innerWidth * 0.75);
+  // Narrow windows: the panel covers the pages (CSS), no custom width.
+  $("panel").style.width = w && window.innerWidth > 860 ? `${Math.min(max, Math.max(280, w))}px` : "";
+}
+{
+  const grip = $("panel-resize");
+  let drag = null;
+  grip.addEventListener("pointerdown", (e) => {
+    drag = { x: e.clientX, w: $("panel").getBoundingClientRect().width };
+    grip.setPointerCapture(e.pointerId);
+    document.body.classList.add("resizing");
+    e.preventDefault();
+  });
+  grip.addEventListener("pointermove", (e) => {
+    if (!drag) return;
+    const max = Math.max(320, window.innerWidth * 0.75);
+    $("panel").style.width = `${Math.min(max, Math.max(280, drag.w + drag.x - e.clientX))}px`;
+  });
+  const end = () => {
+    if (!drag) return;
+    drag = null;
+    document.body.classList.remove("resizing");
+    setPref("airlock.panelWidth", String(Math.round($("panel").getBoundingClientRect().width)));
+    if (state.fitMode && state.docOpen) fitWidth();
+  };
+  grip.addEventListener("pointerup", end);
+  grip.addEventListener("pointercancel", end);
+  grip.addEventListener("dblclick", () => {
+    setPref("airlock.panelWidth", "0");
+    applyPanelWidth();
+    if (state.fitMode && state.docOpen) fitWidth();
+  });
+  window.addEventListener("resize", applyPanelWidth);
+  applyPanelWidth();
+}
+
 function closePanel() {
+  textSync.open = false;
   $("panel").hidden = true;
   $("panel-body").replaceChildren();
   if (state.fitMode && state.docOpen) fitWidth();
 }
 
-async function showText() {
-  const page = currentPage();
-  const body = openPanel(`Text · page ${page + 1}`);
-  body.replaceChildren(el("p", "note", "Extracting inside the VM…"));
-  try {
-    const text = await invoke("page_text", { page });
-    const copy = el("button", "", "Copy");
-    const row = el("div", "row");
-    row.append(copy, el("span", "note", "Extracted inside the VM; control and bidi-override characters removed."));
-    const pre = el("pre", "", text || "(no text on this page — it may be a scanned image)");
-    copy.onclick = async () => {
-      try { await navigator.clipboard.writeText(text); copy.textContent = "Copied"; }
-      catch { const r = document.createRange(); r.selectNodeContents(pre); getSelection().removeAllRanges(); getSelection().addRange(r); copy.textContent = "Selected — press Ctrl+C"; }
-    };
-    // Optional: hints that the text came from an AI chat tool (off by default).
-    const ai = el("label", "check");
-    const box = el("input");
-    box.type = "checkbox";
-    box.checked = pref("airlock.aiHints", "0") === "1";
-    ai.append(box, el("span", "", "Check for AI-written text"));
-    ai.title = "Looks for characters and leftovers that AI chat tools put into pasted text, and stock phrasing. Hints, not proof.";
-    const aiOut = el("div", "ai-hints");
-    box.onchange = () => { setPref("airlock.aiHints", box.checked ? "1" : "0"); showAiHints(aiOut, box.checked); };
-    body.replaceChildren(row, ai, aiOut, pre);
-    showAiHints(aiOut, box.checked);
-  } catch (e) {
-    body.replaceChildren(el("p", "note", `Could not extract text: ${e}`));
-  }
+// The whole document's text, page by page, scrolling together with the
+// pages: scrolling either side moves the other to the same place (by the
+// same fraction through the page). Pages are extracted in the VM as they
+// come into view, and cached per document.
+const textSync = { open: false, driver: null, until: 0, observer: null };
+function pageText(i) {
+  state.textCache ||= [];
+  state.textCache[i] ||= invoke("page_text", { page: i }).catch((e) => { state.textCache[i] = null; throw e; });
+  return state.textCache[i];
 }
+async function showText() {
+  const body = openPanel("Text");
+  textSync.open = true;
+  const copy = el("button", "", "Copy all");
+  const row = el("div", "row");
+  row.append(copy, el("span", "note", "Extracted inside the VM; control and bidi-override characters removed."));
+  // Optional: hints that the text came from an AI chat tool (off by default).
+  const ai = el("label", "check");
+  const box = el("input");
+  box.type = "checkbox";
+  box.checked = pref("airlock.aiHints", "0") === "1";
+  ai.append(box, el("span", "", "Check for AI-written text"));
+  ai.title = "Looks for characters and leftovers that AI chat tools put into pasted text, and stock phrasing. Hints, not proof.";
+  const aiOut = el("div", "ai-hints");
+  box.onchange = () => { setPref("airlock.aiHints", box.checked ? "1" : "0"); showAiHints(aiOut, box.checked); };
+  const doc = el("div", "text-doc");
+  const sections = state.pages.map((_, i) => {
+    const sec = el("section", "tpage");
+    sec.dataset.index = String(i);
+    const pre = el("pre", "pending", "…");
+    sec.append(el("h3", "", `Page ${i + 1}`), pre);
+    doc.append(sec);
+    return sec;
+  });
+  body.replaceChildren(row, ai, aiOut, doc);
+  showAiHints(aiOut, box.checked);
+
+  const fill = async (i) => {
+    const sec = sections[i];
+    if (!sec || sec.dataset.loaded) return;
+    sec.dataset.loaded = "1";
+    const pre = sec.querySelector("pre");
+    try {
+      const text = await pageText(i);
+      pre.textContent = text || "(no text on this page — it may be a scanned image)";
+      pre.className = text ? "" : "empty";
+    } catch (e) {
+      pre.textContent = `Could not extract text: ${e}`;
+      pre.className = "empty";
+      delete sec.dataset.loaded;
+    }
+    // Heights changed: keep the panel aligned with the pages.
+    if (textSync.driver !== "panel") syncPanelToViewer();
+  };
+  if (textSync.observer) textSync.observer.disconnect();
+  textSync.observer = new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) fill(Number(e.target.dataset.index));
+  }, { root: body, rootMargin: "400px 0px" });
+  sections.forEach((sec) => textSync.observer.observe(sec));
+  const here = currentPage();
+  await fill(here);
+  syncPanelToViewer(true);
+
+  copy.onclick = async () => {
+    copy.disabled = true;
+    const parts = [];
+    for (let i = 0; i < state.pages.length; i++) {
+      copy.textContent = `Reading page ${i + 1} of ${state.pages.length}…`;
+      try { parts.push(`--- Page ${i + 1} ---\n${await pageText(i)}`); } catch { parts.push(`--- Page ${i + 1} ---\n(could not extract)`); }
+    }
+    const all = parts.join("\n\n");
+    try { await navigator.clipboard.writeText(all); copy.textContent = "Copied"; }
+    catch { const r = document.createRange(); r.selectNodeContents(doc); getSelection().removeAllRanges(); getSelection().addRange(r); copy.textContent = "Selected — press Ctrl+C"; }
+    copy.disabled = false;
+  };
+}
+
+// Position of a section/page inside its scroll container.
+const offsetIn = (node, box) => node.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+function syncPanelToViewer(force = false) {
+  if (!textSync.open || (!force && textSync.driver === "panel" && Date.now() < textSync.until)) return;
+  const viewer = $("viewer"), body = $("panel-body");
+  const i = currentPage(), page = state.pages[i];
+  const sec = body.querySelector(`.tpage[data-index="${i}"]`);
+  if (!page || !sec) return;
+  // Both sides line up at a reading line a third of the way down.
+  const f = Math.min(1, Math.max(0, (viewer.scrollTop + viewer.clientHeight / 3 - page.el.offsetTop) / page.el.offsetHeight));
+  textSync.driver = "viewer";
+  textSync.until = Date.now() + 250;
+  body.scrollTop = offsetIn(sec, body) + f * sec.offsetHeight - body.clientHeight / 3;
+  for (const s of body.querySelectorAll(".tpage.current")) s.classList.remove("current");
+  sec.classList.add("current");
+}
+function syncViewerToPanel() {
+  if (!textSync.open || (textSync.driver === "viewer" && Date.now() < textSync.until)) return;
+  const viewer = $("viewer"), body = $("panel-body");
+  const line = body.scrollTop + body.clientHeight / 3;
+  let sec = null;
+  for (const s of body.querySelectorAll(".tpage")) {
+    if (offsetIn(s, body) <= line) sec = s; else break;
+  }
+  if (!sec) return;
+  const page = state.pages[Number(sec.dataset.index)];
+  const f = Math.min(1, Math.max(0, (line - offsetIn(sec, body)) / sec.offsetHeight));
+  textSync.driver = "panel";
+  textSync.until = Date.now() + 250;
+  viewer.scrollTop = page.el.offsetTop + f * page.el.offsetHeight - viewer.clientHeight / 3;
+  for (const s of body.querySelectorAll(".tpage.current")) s.classList.remove("current");
+  sec.classList.add("current");
+}
+$("viewer").addEventListener("scroll", () => syncPanelToViewer(), { passive: true });
+$("panel-body").addEventListener("scroll", () => syncViewerToPanel(), { passive: true });
 
 // One check per opened document, cached; shown in the Text panel.
 async function showAiHints(out, on) {
@@ -638,11 +784,25 @@ function renderReport(body, report, title) {
     nodes.push(d);
   }
   if (!report.findings.length) nodes.push(el("p", "note", "No findings."));
+  // Step by step, with timings: proof that each VM ran and was destroyed.
+  if (report.log && report.log.length) {
+    const d = el("details", "runlog");
+    d.append(el("summary", "", `Analysis log · ${report.log.length} steps · nothing ran on your computer`));
+    const screen = el("div", "console-log");
+    for (const [t, line] of report.log) {
+      const row = el("div", "ln");
+      row.append(el("span", "t", `${Number(t).toFixed(1).padStart(5)}s`), document.createTextNode(` ${line}`));
+      if (/crash|killed|broke|stopped answering/i.test(line)) row.classList.add("warn");
+      screen.append(row);
+    }
+    d.append(screen);
+    nodes.push(d);
+  }
   body.replaceChildren(...nodes);
 }
 
-// The malware check (the same one whether automatic or from Analyze): one
-// run per opened file, shared by the badge, the Analyze button and the panel.
+// The malware check (automatic, or from the badge next to the seal): one run
+// per opened file, shared by the badge and the report panel.
 const check = { gen: 0, running: null, report: null, error: null, attacked: false };
 
 function autoCheckOn() { return pref("airlock.autoCheck", "1") === "1"; }
@@ -661,12 +821,13 @@ function showCheck() {
       ? [verdictClass(check.report.verdict), { malicious: /LIKELY/.test(check.report.verdict) ? "Likely malicious" : "Malicious", suspicious: "Suspicious", clean: "No threats found" }[verdictClass(check.report.verdict)], `${check.report.headline || check.report.verdict}. Click for the full report.`]
       : check.error
         ? ["failed", "Check failed", `The malware check could not finish: ${check.error}. Click to try again.`]
-        : [null];
+        : ["idle", "Check for malware", "Detonate this file in a separate microVM wired to a fake internet and report what it tries to do."];
   b.hidden = !cls || !state.docOpen;
   if (!cls) return;
   b.className = `check ${cls}`;
   b.querySelector(".label").textContent = label;
-  b.title = title;
+  // With a report, hovering shows the summary card instead of a tooltip.
+  if (check.report && !check.running && !check.attacked) b.removeAttribute("title"); else b.title = title;
   b.setAttribute("aria-label", `Malware check: ${label}`);
 }
 
@@ -747,13 +908,12 @@ $("open").onclick = openDialog;
 $("zin").onclick = () => stepZoom(1);
 $("zout").onclick = () => stepZoom(-1);
 $("zfit").onclick = fitWidth;
-$("textbtn").onclick = showText;
+$("textbtn").onclick = () => (state.archive ? showFiles() : showText());
 $("savebtn").onclick = (e) => { e.stopPropagation(); toggleSaveMenu(); };
 $("safecopy").onclick = saveSafeCopy;
 $("print").onclick = printDocument;
 document.addEventListener("click", (e) => { if (!$("savewrap").contains(e.target)) toggleSaveMenu(false); });
-$("pixels").onclick = () => setPixelsOnly(!state.pixelsOnly);
-$("analyze").onclick = analyze;
+$("m-pixels").onclick = () => { toggleAppMenu(false); setPixelsOnly(!state.pixelsOnly); };
 $("panel-close").onclick = closePanel;
 $("qnext").onclick = () => stepHit(1);
 $("qprev").onclick = () => stepHit(-1);
@@ -807,7 +967,16 @@ function pref(key, fallback) {
 }
 function setPref(key, value) {
   try { localStorage.setItem(key, value); } catch {}
+  // Also on disk, for windows opened later (each is its own process).
+  if (key.startsWith("airlock.")) invoke("ui_setting_set", { key, value: String(value) }).catch(() => {});
 }
+// Settings saved by any window win over this window's web storage. Startup
+// steps that depend on a setting (Pixels only, sheet layout) wait for this.
+const settingsReady = invoke("ui_settings").then((all) => {
+  for (const [k, v] of Object.entries(all || {})) try { localStorage.setItem(k, String(v)); } catch {}
+  if (typeof applyTheme === "function") applyTheme();
+  if (typeof applyPanelWidth === "function") applyPanelWidth();
+}).catch(() => {});
 
 function describeChanges(st, max) {
   const list = st.changes.slice(0, max);
@@ -817,7 +986,9 @@ function describeChanges(st, max) {
 
 function noteStatus(st) {
   updates.status = st;
+  // A dot on the airlock logo and on the menu item; no toolbar button.
   $("updates-dot").hidden = !(st && st.available);
+  $("m-updates-dot").hidden = !(st && st.available);
 }
 
 async function checkUpdates(force) {
@@ -875,8 +1046,9 @@ function renderUpdates(body) {
 
   const row = el("div", "row");
   const check = el("button", "", "Check now");
-  const go = el("button", "primary", updates.running ? "Updating…" : "Update now");
-  go.disabled = updates.running;
+  const upToDate = !st.error && !st.available && !updates.running;
+  const go = el("button", "primary", updates.running ? "Updating…" : upToDate ? "Up to date ✓" : "Update now");
+  go.disabled = updates.running || upToDate;
   check.disabled = updates.running;
   check.onclick = async () => {
     check.disabled = true; check.textContent = "Checking…";
@@ -885,6 +1057,12 @@ function renderUpdates(body) {
   };
   go.onclick = () => runUpdate(body);
   row.append(go, check);
+  if (upToDate) {
+    const again = el("button", "link", "Rebuild anyway");
+    again.title = "Rebuilds the viewer from the newest packages and runs every test again (about 4 minutes). Not needed when everything is up to date.";
+    again.onclick = () => runUpdate(body);
+    row.append(again);
+  }
   nodes.push(row, el("p", "note", "Downloads are verified (kernel.org signatures, published checksums). The full test suite must pass before the new version is used; otherwise the current one stays."));
 
   const toggle = (key, text, onChange) => {
@@ -901,6 +1079,10 @@ function renderUpdates(body) {
   installBox.disabled = pref("airlock.autoUpdateCheck", "1") !== "1";
   nodes.push(checkLabel, installLabel);
 
+  if (updates.forge) {
+    $("forge").hidden = false;
+    nodes.push($("forge"));
+  }
   if (updates.log.length) {
     const ul = el("ul", "progress");
     for (const l of updates.log) ul.append(el("li", "", l));
@@ -912,6 +1094,8 @@ function renderUpdates(body) {
     nodes.push(el("p", "", "airlock itself was updated too. Documents opened from now on already use the new VM; restart to use the new app."), r);
   }
   body.replaceChildren(...nodes);
+  // Moving the console into the panel resets its scroll: back to the end.
+  if (updates.forge) $("setup-log").scrollTop = $("setup-log").scrollHeight;
 }
 
 function showUpdates() {
@@ -926,7 +1110,10 @@ async function runUpdate(body, quiet = false) {
   if (!updates.status) await checkUpdates(false).catch(() => {});
   updates.running = true;
   updates.restart = false;
-  updates.log = ["Starting…"];
+  updates.log = [];
+  forge.reset("update");
+  updates.forge = true;
+  const tick = setInterval(() => forge.render(), 500);
   if (!quiet) {
     if (!body || $("panel-title").textContent !== "Updates") body = openPanel("Updates");
     renderUpdates(body);
@@ -940,15 +1127,16 @@ async function runUpdate(body, quiet = false) {
       const t = l.trim();
       if (t && !t.startsWith("==>") && !t.startsWith("undo:")) updates.log.push(t);
     }
-    updates.log.push(r.ok ? "Done — all checks passed." : "The update failed its checks; the previous version is still in place.");
+    forge.finish(r.ok, "The new version failed its checks; the current one is still in place.");
     updates.restart = r.ok && r.restart;
     ok = r.ok;
     status(r.ok ? "airlock updated" : "Update failed — nothing was changed", !r.ok);
     try { await checkUpdates(true); } catch {}
   } catch (e) {
-    updates.log.push(`Update failed: ${e}`);
+    forge.finish(false, `Update failed: ${e}`);
     status(`Update failed: ${e}`, true);
   } finally {
+    clearInterval(tick);
     updates.running = false;
     if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates($("panel-body"));
   }
@@ -960,15 +1148,11 @@ async function runUpdate(body, quiet = false) {
   }
 }
 
-window.__TAURI__.event.listen("update-progress", (e) => {
-  const line = String(e.payload);
-  // Steps only ("==> Rebuilding…"); the full log is in build/update.log.
-  if (!line.startsWith("==>")) return;
-  updates.log.push(line.slice(4));
-  if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates($("panel-body"));
-});
+// Every line goes to the progress console, also while the panel is closed
+// (an automatic update can be watched by opening Updates).
+window.__TAURI__.event.listen("update-progress", (e) => { if (updates.forge) forge.line(String(e.payload)); });
 
-$("updates").onclick = showUpdates;
+$("m-updates").onclick = () => { toggleAppMenu(false); showUpdates(); };
 
 async function autoCheckUpdates() {
   if (pref("airlock.autoUpdateCheck", "1") !== "1") return;
@@ -978,6 +1162,10 @@ async function autoCheckUpdates() {
     const st = await checkUpdates(false);
     if (!st.available) return;
     if (pref("airlock.autoInstall", "1") === "1") {
+      // Ask again right before installing: another window, or an update in
+      // the meantime, may already have brought everything up to date.
+      const fresh = await checkUpdates(true);
+      if (!fresh.available) return;
       notify("Installing security updates", `${changeSummary(st)}. airlock is updating in the background; you can keep reading.`, [["Details", showUpdates], ["Hide", hideToast]]);
       runUpdate(null, true);
     } else if (Date.now() > Number(pref("airlock.updateSnooze", "0"))) showToast(st);
@@ -1003,6 +1191,26 @@ async function runDemo() {
     if (cmd === "sheets") { setPref("airlock.sheetSingle", arg === "single" ? "1" : "0"); showSheetLayout(); await invoke("set_sheet_layout", { single: arg === "single" }); await reopenDocument(); }
     if (cmd === "tour") { startTour(); tourShow(Number(arg) || 0); }
     if (cmd === "wait") await new Promise((r) => setTimeout(r, Number(arg) || 0));
+    if (cmd === "scroll") $("viewer").scrollTop = Number(arg) || 0;
+    if (cmd === "tscroll") $("panel-body").scrollTop = Number(arg) || 0;
+    if (cmd === "settings") await showSettings();
+    if (cmd === "about") await showAbout();
+    if (cmd === "palette") { openPalette(); $("pal-q").value = arg || ""; renderPalette(); }
+    if (cmd === "thumbs") setThumbs(true);
+    if (cmd === "openentry") { const fs = await invoke("archive_entries"); const f = fs[Number(arg) || 0]; if (f) await invoke("open_entry", { index: f.index, name: f.name }); }
+    if (cmd === "peek") showPeek();
+    if (cmd === "peektrace") {
+      // Test aid: the card's opacity on each drawn frame while it opens.
+      const seen = [];
+      showPeek();
+      seen.push(Number(getComputedStyle($("peek")).opacity).toFixed(2));
+      for (let k = 0; k < 10; k++) { await new Promise((r) => requestAnimationFrame(r)); seen.push(Number(getComputedStyle($("peek")).opacity).toFixed(2)); }
+      status(`peek opacity per frame: ${seen.join(" ")}`);
+    }
+    if (cmd === "czoom") { const b = $("viewer").getBoundingClientRect(); $("viewer").dispatchEvent(new WheelEvent("wheel", { deltaY: Number(arg), ctrlKey: true, clientX: b.left + b.width / 2, clientY: b.top + 200, bubbles: true, cancelable: true })); }
+    if (cmd === "theme") { setPref("airlock.theme", arg); applyTheme(); }
+    if (cmd === "background") { setPref("airlock.background", arg); applyTheme(); }
+    if (cmd === "panelw") { setPref("airlock.panelWidth", arg); applyPanelWidth(); if (state.fitMode) fitWidth(); }
     if (cmd === "text") await showText();
     if (cmd === "aitext") { setPref("airlock.aiHints", "1"); await showText(); await new Promise((r) => setTimeout(r, Number(arg) || 3000)); }
     if (cmd === "reveal") {
@@ -1050,11 +1258,10 @@ $("sheetbtn").onclick = async () => {
   await invoke("set_sheet_layout", { single: sheetSingle() });
   await reopenDocument();
 };
-const sheetsReady = invoke("set_sheet_layout", { single: sheetSingle() }).then(showSheetLayout);
+const sheetsReady = settingsReady.then(() => invoke("set_sheet_layout", { single: sheetSingle() })).then(showSheetLayout);
 
-const pixelsReady = invoke("pixels_only").then(async (on) => {
-  let saved = null;
-  try { saved = localStorage.getItem("airlock.pixelsOnly"); } catch {}
+const pixelsReady = settingsReady.then(() => invoke("pixels_only")).then(async (on) => {
+  const saved = pref("airlock.pixelsOnly", null);
   // Only the user's own toggling is remembered, not the environment's default.
   await setPixelsOnly(on || saved === "1", false);
   status("Ready");
@@ -1093,20 +1300,311 @@ $("setup-fix").onclick = async () => {
   b.disabled = false;
   checkSetup();
 };
+// ---- setup progress view: the build's output turned into stages, one real
+// progress bar and a plain-words line about what is happening right now.
+// Each step has an expected duration (seconds, measured on a mid-range PC);
+// steps with a counter (downloads, packages, kernel files, crates) move by
+// it, the others creep towards their end. The ETA scales the remaining
+// expected time by how fast this computer has been so far.
+// Setup builds the VM once; an update also checks upstream versions first
+// and must pass the regression suite ("Tests") before the new VM is used.
+const forgeStages = (mode) => [
+  ["check", "Check"], ["fetch", "Download"], ["kernel", "Kernel"], ["programs", "Programs"],
+  ["rules", "Signatures"], ["seal", "Seal image"], ...(mode === "update" ? [["tests", "Tests"]] : []), ["install", "Install"],
+];
+const FORGE_STEPS = {
+  "check/upstream": { stage: "check", t: 12, what: "Checking for newer versions", why: "kernel.org, Firecracker's releases, Alpine and YARA-Forge; every download is verified against signed or published checksums." },
+  check: { stage: "check", t: 1, what: "Checking this computer", why: "Virtualisation, sandboxing and the tools the build needs." },
+  fetch: { stage: "fetch", t: 15, what: "Downloading", why: "Pinned versions from the official sources; every file's fingerprint is checked." },
+  "kernel/unpack": { stage: "kernel", t: 10, what: "Unpacking the Linux kernel source", why: "The VM gets its own small kernel, built here with risky features switched off." },
+  "kernel/tools": { stage: "kernel", t: 20, what: "Getting the compiler tools", why: "Used only to build; they never end up inside the viewer." },
+  "kernel/compile": { stage: "kernel", t: 140, what: "Compiling the locked-down kernel", why: "Firecracker's minimal settings plus airlock's hardening: no modules, no debugging hooks, no unneeded drivers." },
+  "programs/tools": { stage: "programs", t: 8, what: "Getting the Rust compiler", why: "To build the airlock agent from source." },
+  "programs/agent": { stage: "programs", t: 8, what: "Building the airlock agent", why: "The tiny program inside the VM that renders pages and reports what the file tries to do." },
+  "programs/base": { stage: "programs", t: 2, what: "Applying security updates", why: "The viewer's base system starts fully patched." },
+  "programs/packages": { stage: "programs", t: 25, what: "Installing the document readers", why: "LibreOffice, MuPDF and the inspectors: they only ever run inside the VM, never on your computer." },
+  "rules/rules": { stage: "rules", t: 5, what: "Compiling the malware signatures", why: "YARA-Forge's tested rule set: thousands of documented malware patterns, checked against every file." },
+  "seal/fonts": { stage: "seal", t: 1, what: "Preparing fonts", why: "So documents look the way their author meant." },
+  "seal/office": { stage: "seal", t: 4, what: "Preparing LibreOffice", why: "A clean, prebuilt profile: documents never get to change it." },
+  "seal/pack": { stage: "seal", t: 4, what: "Packing the viewer", why: "Every file owned by the VM's root, nothing left over from the build." },
+  "seal/image": { stage: "seal", t: 3, what: "Writing the read-only disk image", why: "Each document gets a fresh copy of it; nothing is ever saved back." },
+  "tests/tests": { stage: "tests", t: 150, what: "Testing the new viewer", why: "airlock's full test suite: real exploit samples must be caught, ordinary documents must stay clean, escape attempts must kill the VM. If anything fails, the current version stays." },
+  "install/install": { stage: "install", t: 2, what: "Installing the secure viewer", why: "Into your own folder; nothing outside it is changed." },
+};
+// Expected counts for the counted steps (cap the bar below 100% until the step ends).
+const KERNEL_FILES = 2200, AGENT_CRATES = 12, DL_MB = 145, TEST_CHECKS = 27;
+const DOWNLOADS = [
+  [/^firecracker/, "Firecracker", "the micro-VM engine AWS built for Lambda: each document gets its own tiny computer"],
+  [/^alpine-minirootfs/, "Alpine Linux", "the minimal base system inside the viewer"],
+  [/^yara-forge/, "YARA-Forge malware signatures", "thousands of documented malware patterns"],
+  [/^linux-/, "the Linux kernel source", "compiled here into the VM's own locked-down kernel"],
+  [/microvm.*config/, "Firecracker's kernel settings", "the minimal starting point for the VM's kernel"],
+];
+const KERNEL_DIRS = {
+  arch: "processor support", kernel: "core kernel", mm: "memory management", fs: "file systems", net: "networking",
+  drivers: "device drivers", security: "security modules", crypto: "cryptography", block: "disk access",
+  lib: "kernel library", init: "start-up", ipc: "process communication", virt: "virtualisation", io_uring: "fast disk input/output",
+};
+function packageNote(name) {
+  const rules = [
+    [/^libreoffice-writer/, "LibreOffice Writer: opens Word and text documents"],
+    [/^libreoffice-calc/, "LibreOffice Calc: opens spreadsheets"],
+    [/^libreoffice-impress/, "LibreOffice Impress: opens presentations"],
+    [/^libreoffice/, "LibreOffice core"],
+    [/^mupdf/, "MuPDF: draws PDF pages"],
+    [/^quickjs/, "QuickJS: runs airlock's PDF inspector"],
+    [/^py3-oletools/, "oletools: finds macros and exploits in Office files"],
+    [/^py3-/, "Python library for the inspectors"],
+    [/^python3/, "Python: runs the Office inspector"],
+    [/^yara/, "YARA: matches known malware patterns"],
+    [/^zbar/, "ZBar: reads QR codes on pages"],
+    [/^imagemagick/, "ImageMagick: prepares pages for the QR reader"],
+    [/^font-|^fontconfig|^freetype|^harfbuzz/, "fonts and text shaping"],
+    [/^icu|^hunspell|^hyphen/, "language and text support"],
+    [/^cairo|^pango|^pixman|^libpng|^libjpeg|^tiff|^libwebp|^openjpeg|^lcms/, "graphics drawing"],
+    [/^gcc|^musl-dev|^binutils|^make$|^build-base|^bc$|^flex|^bison|^perl|^openssl-dev|^elfutils-dev|^linux-headers|^g\+\+|^libc-dev|^fortify|^patch$/, "compiler tools (build only)"],
+    [/^cargo|^rust/, "Rust compiler (build only)"],
+    [/^musl$|^busybox|^alpine-|^apk-tools/, "base system"],
+    [/^openssl|^libssl|^libcrypto|^ca-certificates/, "encryption library"],
+  ];
+  for (const [re, note] of rules) if (re.test(name)) return note;
+  return "supporting library";
+}
+const fmtTime = (s) => { s = Math.max(0, Math.round(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`; };
+const fmtLeft = (s) => (s < 50 ? "under a minute left" : s < 90 ? "about a minute left" : `about ${Math.round(s / 60)} min left`);
+const curlSize = (v) => { const m = /^([\d.]+)([kMG]?)$/.exec(v); if (!m) return null; return +m[1] * ({ "": 1 / 1048576, k: 1 / 1024, M: 1, G: 1024 }[m[2]]); };
+const mb = (v) => (v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2)) + " MB";
+
+const forge = {
+  reset(mode = "setup") {
+    const update = mode === "update";
+    Object.assign(this, { mode, t0: Date.now(), step: update ? "check/upstream" : "check", stepT0: Date.now(), done: new Set(),
+      skipped: new Set(update ? [] : ["check/upstream", "tests/tests"]), count: 0, total: 0,
+      dl: { mb: 0, cur: 0 }, sub: null, live: null, lines: 0, finished: null, tEnd: 0, frac: 0 });
+    $("forge").querySelector(".forge-note").innerHTML = update
+      ? "<strong>Why does this take a while?</strong> The new viewer is built on your computer from verified sources and must pass the full test suite before it replaces the current one. You can keep reading documents meanwhile."
+      : "<strong>Why does this take a while?</strong> airlock builds its viewer on your own computer from official, fingerprint-checked sources, instead of shipping a ready-made black box. It happens once; after that every document opens in a second.";
+    // An update's package list is for those who want it: folded.
+    $("forge-term").open = !update;
+    $("forge-stages").replaceChildren(...forgeStages(mode).map(([id, label], i) => {
+      const li = el("li", "", label);
+      li.dataset.stage = id;
+      li.dataset.n = String(i + 1).padStart(2, "0");
+      return li;
+    }));
+    $("setup-log").replaceChildren();
+    $("forge").classList.remove("ok", "bad");
+    $("forge-title").textContent = update ? "Updating the secure viewer" : "Building the secure viewer";
+    this.render();
+  },
+  enter(step) {
+    if (!FORGE_STEPS[step] || step === this.step) return;
+    // Everything before the new step is done.
+    const order = Object.keys(FORGE_STEPS);
+    for (const k of order.slice(0, order.indexOf(step))) if (!this.skipped.has(k)) this.done.add(k);
+    Object.assign(this, { step, stepT0: Date.now(), count: 0, total: 0, sub: null });
+  },
+  stepFrac() {
+    const st = FORGE_STEPS[this.step], el_ = (Date.now() - this.stepT0) / 1000;
+    const creep = 1 - Math.exp(-el_ / st.t);
+    if (this.step === "fetch") return Math.min(0.99, (this.dl.mb + this.dl.cur) / DL_MB) || creep * 0.3;
+    if (this.step === "kernel/compile") return Math.min(0.99, this.count / KERNEL_FILES);
+    if (this.step === "programs/agent" && this.count) return Math.min(0.97, this.count / AGENT_CRATES);
+    if (this.total) return Math.min(0.99, this.count / this.total);
+    return Math.min(0.95, creep);
+  },
+  // Expected seconds done and in total, over the steps not skipped.
+  progress() {
+    let all = 0, done = 0;
+    for (const [k, st] of Object.entries(FORGE_STEPS)) {
+      if (this.skipped.has(k)) continue;
+      all += st.t;
+      if (this.done.has(k)) done += st.t;
+      else if (k === this.step) done += st.t * this.stepFrac();
+    }
+    return { all, done };
+  },
+  line(raw) {
+    const line = raw.replace(/\s+$/, "");
+    let m;
+    if ((m = /^==> (.*)/.exec(line))) {
+      const t = m[1];
+      if (/^(Checking upstream|Verifying kernel|Firecracker v|Alpine \d|Keeping the current)/.test(t)) {
+        if (this.step === "check/upstream") this.sub = t;
+      } else if (/^Rebuilding and running|^Done$/.test(t)) {
+        // update.sh / bootstrap.sh bookkeeping
+      } else if (/^Fetching test fixtures/.test(t)) this.enter("tests/tests");
+      else if (/^Updated/.test(t)) this.enter("install/install");
+      else if (/^Checking host/.test(t)) this.enter("check");
+      else if (/^Fetching pinned/.test(t)) this.enter("fetch");
+      else if (/kernel .* is already built/.test(t)) {
+        for (const k of ["kernel/unpack", "kernel/tools", "kernel/compile"]) this.skipped.add(k);
+        $("forge-stages").querySelector('[data-stage="kernel"]').classList.add("skip");
+      } else if (/^Building the hardened guest kernel/.test(t)) this.enter("kernel/unpack");
+      else if (/^Building the guest image/.test(t)) this.enter("programs/tools");
+      else if (/^Installing the secure viewer/.test(t)) this.enter("install/install");
+      if (t !== "Done") this.print(t, "step");
+    } else if ((m = /^@@sub (\w+)/.exec(line))) {
+      const id = m[1];
+      const key = Object.keys(FORGE_STEPS).find((k) => k.endsWith("/" + id) && FORGE_STEPS[k].stage === this.stageOfNext(id));
+      if (key) this.enter(key);
+    } else if ((m = /^@@kernel (\d+) (\S+)/.exec(line))) {
+      this.enter("kernel/compile");
+      this.count = +m[1];
+      this.sub = `${this.count.toLocaleString()} files compiled · now: ${KERNEL_DIRS[m[2]] || m[2]}`;
+      this.print(`  CC  ${m[2]}/…  ${this.count.toLocaleString()} files`, "live", "kernel");
+    } else if ((m = /^@@rules (\d+) (\d+)/.exec(line))) {
+      this.sub = `${(+m[1]).toLocaleString()} signatures`;
+      this.print(`  ${(+m[1]).toLocaleString()} malware signatures loaded`, "ok");
+    } else if (/^@@/.test(line)) {
+      // other markers (setup.sh's own @@ok line) are not shown
+    } else if ((m = /^\s*fetching (\S+)/.exec(line))) {
+      const d = DOWNLOADS.find(([re]) => re.test(m[1]));
+      this.dl.file = m[1];
+      this.dl.what = d ? `Downloading ${d[1]}` : `Downloading ${m[1]}`;
+      this.dl.why = d ? d[2][0].toUpperCase() + d[2].slice(1) + "." : "";
+      this.dl.cur = 0;
+      this.sub = null;
+      this.print(`  ↓ ${m[1]}`, "dl");
+    } else if ((m = /^\s*verified (\S+)/.exec(line))) {
+      this.dl.mb += this.dl.cur;
+      this.dl.cur = 0;
+      this.dl.what = `Checking ${m[1]}`;
+      this.print(`  ✓ ${m[1]}: fingerprint matches the pinned SHA-256`, "ok");
+    } else if ((m = /^\s*have (\S+)/.exec(line))) {
+      this.print(`  ✓ ${m[1]} already downloaded and verified`, "ok");
+    } else if (/^\s*\d+\s+[\d.]+[kMG]?\s+\d+\s+[\d.]+[kMG]?\s+\d+\s/.test(line)) {
+      // curl's meter: % Total % Received % Xferd AvgDload AvgUpload [Total Spent Left] Speed
+      const f = line.trim().split(/\s+/);
+      const total = curlSize(f[1]), got = curlSize(f[3]), speed = curlSize(f[f.length - 1]);
+      if (got != null) this.dl.cur = got;
+      const left = f.length === 12 && /^[\d:]+$/.test(f[10]) ? f[10].split(":").reduce((a, b) => a * 60 + +b, 0) : null;
+      this.dl.frac = total ? got / total : 0;
+      if (total) {
+        this.sub = `${mb(got || 0)} of ${mb(total)}${speed ? ` · ${mb(speed)}/s` : ""}${left != null && got < total ? ` · ${left} s left` : ""}`;
+        this.print(`  ${f[0].padStart(3)}%  ${mb(got || 0)} / ${mb(total)}  ${speed ? mb(speed) + "/s" : ""}`, "live", "meter");
+      }
+    } else if ((m = /^\(\s*(\d+)\/(\d+)\) (Installing|Upgrading) (\S+)(?: \(([^)]*)\))?/.exec(line))) {
+      this.count = +m[1];
+      this.total = +m[2];
+      this.sub = `${m[1]} of ${m[2]} · ${m[4]}: ${packageNote(m[4])}`;
+      this.print(`  [${m[1].padStart(m[2].length)}/${m[2]}] ${m[3] === "Upgrading" ? "upgrade" : "install"} ${m[4]} ${m[5] || ""}`, "pkg");
+    } else if ((m = /^\s*Compiling (\S+) (v\S+)/.exec(line))) {
+      if (this.step !== "programs/agent") this.enter("programs/agent");
+      this.count++;
+      this.sub = `${this.count} components compiled · now: ${m[1]}`;
+      this.print(`  compile ${m[1]} ${m[2]}`, "pkg");
+    } else if (/^\s*#+\s+[\d.]+%$|^\s*% Total|^\s*Dload\s+Upload/.test(line)) {
+      // a plain curl progress bar (terminal runs): skipped
+    } else if ((m = /^(ok|FAIL)\s+(.*)/.exec(line)) && this.step === "tests/tests") {
+      this.count++;
+      this.total = Math.max(TEST_CHECKS, this.count + 1);
+      this.sub = `${this.count} of ${TEST_CHECKS} checks · ${m[2].replace(/\s*\(.*$/, "")}`;
+      this.print(`  ${m[1] === "ok" ? "✓" : "✕"} ${m[2]}`, m[1] === "ok" ? "ok" : "err");
+    } else if (/^WARNING|^\s*\* /.test(line)) {
+      this.print(line, "dim");
+    } else if (/error|fail|mismatch|denied|not found/i.test(line)) {
+      this.print(line, "err");
+    } else {
+      this.print(line, /^\s*(OK:|Executing|Finished|built )/.test(line) ? "dim" : "");
+    }
+    this.render();
+  },
+  stageOfNext(id) {
+    // "tools" is used by both the kernel and the image stage: the next one.
+    const cur = FORGE_STEPS[this.step].stage;
+    if (id === "tools") return this.step === "kernel/unpack" || ["check", "fetch"].includes(cur) ? "kernel" : "programs";
+    const key = Object.keys(FORGE_STEPS).find((k) => k.endsWith("/" + id));
+    return key && FORGE_STEPS[key].stage;
+  },
+  print(text, cls, liveKind) {
+    const screen = $("setup-log");
+    if (liveKind && this.live && this.live.kind === liveKind && this.live.node.isConnected) {
+      this.live.node.textContent = text;
+    } else {
+      const div = el("div", "ln " + (cls || ""), text);
+      screen.append(div);
+      this.lines++;
+      this.live = liveKind ? { kind: liveKind, node: div } : null;
+      while (screen.childElementCount > 400) screen.firstElementChild.remove();
+    }
+    const nearEnd = screen.scrollHeight - screen.scrollTop - screen.clientHeight < 60;
+    if (nearEnd) screen.scrollTop = screen.scrollHeight;
+  },
+  render() {
+    const elapsed = ((this.tEnd || Date.now()) - this.t0) / 1000;
+    const { all, done } = this.progress();
+    // Never move backwards (a skipped step can shrink the total).
+    this.frac = this.finished === null ? Math.max(this.frac, Math.min(0.995, done / all)) : this.frac;
+    const pct = Math.floor(this.frac * 100);
+    $("forge-fill").style.width = `${this.frac * 100}%`;
+    $("forge-pct").textContent = `${pct}%`;
+    $("forge-bar").setAttribute("aria-valuenow", pct);
+    $("forge-elapsed").textContent = fmtTime(elapsed);
+    let eta = "";
+    if (this.finished === null && elapsed > 8 && done > 2) eta = ` · ${fmtLeft((all - done) * (elapsed / done))}`;
+    $("forge-eta").textContent = eta;
+    const st = FORGE_STEPS[this.step];
+    const isDl = this.step === "fetch" && this.dl.what;
+    if (this.finished === null) {
+      $("forge-what").textContent = isDl ? this.dl.what : st.what;
+      $("forge-why").textContent = isDl ? this.dl.why : st.why;
+    }
+    const sf = this.step === "fetch" ? this.dl.frac || 0 : this.stepFrac();
+    $("forge-subrow").hidden = !this.sub || this.finished !== null;
+    $("forge-meter").textContent = this.sub || "";
+    $("forge-subfill").style.width = `${Math.round(sf * 100)}%`;
+    const cur = st.stage;
+    let reached = true;
+    for (const li of $("forge-stages").children) {
+      const id = li.dataset.stage;
+      const stageDone = this.finished === "ok" || reached && id !== cur;
+      li.classList.toggle("done", stageDone && !li.classList.contains("skip"));
+      li.classList.toggle("now", id === cur && this.finished === null);
+      if (id === cur) reached = false;
+    }
+    $("forge-lines").textContent = `${this.lines} lines`;
+  },
+  finish(ok, message) {
+    this.finished = ok ? "ok" : "bad";
+    this.tEnd = Date.now();
+    if (ok) this.frac = 1;
+    $("forge").classList.add(ok ? "ok" : "bad");
+    const update = this.mode === "update";
+    $("forge-title").textContent = ok ? (update ? "Updated · all checks passed" : "The secure viewer is ready") : (update ? "Update stopped" : "The build stopped");
+    $("forge-what").textContent = ok ? `${update ? "Updated" : "Built"} and checked in ${fmtTime((Date.now() - this.t0) / 1000)}` : message;
+    $("forge-why").textContent = ok ? (update ? "Documents you open from now on use the updated viewer." : "You can open documents now.")
+      : (update ? "The current version is still in place and keeps working. The live output below shows what failed." : "Nothing on your computer was changed. Check the live output below, then try again.");
+    this.print(ok ? "✓ done" : `✕ ${message}`, ok ? "ok" : "err");
+    this.render();
+  },
+};
+
 $("setup-build").onclick = async () => {
-  const b = $("setup-build"), log = $("setup-log");
+  const b = $("setup-build");
   b.disabled = true;
-  log.hidden = false;
-  log.textContent = "";
-  status("Building the secure viewer (10-20 minutes; you can leave this open)…");
-  const off = await window.__TAURI__.event.listen("setup-progress", (ev) => {
-    log.textContent = (log.textContent + ev.payload + "\n").split("\n").slice(-200).join("\n");
-    log.scrollTop = log.scrollHeight;
-  });
+  $("setup").append($("forge"));
+  $("forge").hidden = false;
+  $("setup-list").hidden = true;
+  $("setup").classList.add("building");
+  forge.reset();
+  status("Building the secure viewer: you can leave this open");
+  const tick = setInterval(() => forge.render(), 500);
+  const off = await window.__TAURI__.event.listen("setup-progress", (ev) => forge.line(ev.payload));
+  let ok = true;
   try { await invoke("setup_build"); status("airlock is ready"); }
-  catch (e) { status(String(e), true); }
+  catch (e) { ok = false; status(String(e), true); forge.finish(false, String(e)); }
   off();
+  clearInterval(tick);
   b.disabled = false;
+  if (ok) {
+    forge.finish(true);
+    // Let the finished bar be seen before the start page replaces it.
+    await new Promise((r) => setTimeout(r, 2500));
+  }
+  $("setup-list").hidden = false;
+  $("setup").classList.remove("building");
+  if (ok) $("forge").hidden = true;
   checkSetup();
 };
 const setupReady = checkSetup();
@@ -1129,6 +1627,9 @@ const TOUR = [
   { target: null, kicker: "Welcome", title: "Open anything. Risk nothing.",
     text: "airlock opens every PDF and Office file inside its own throwaway virtual machine, a tiny separate computer with no network.",
     how: "Your computer never reads the file itself. It only receives pictures of the pages and cleaned-up text. Close the document and the whole VM is destroyed." },
+  { target: "appbtn", kicker: "Menu", title: "The airlock menu",
+    text: "Click the airlock logo for: New window, Check files automatically (on by default), Pixels only (no text leaves the VM, for files you really distrust), Updates (a dot on the logo means one is ready), Settings, About airlock, the guided tour, and closing.",
+    how: "Settings is where you pick the colours and background (and, for the AppImage, uninstall). About airlock shows what protects you and how fresh it is, every version, and the app log: VMs that stopped, attacks the tripwire blocked, updates, errors." },
   { target: "open", kicker: "Open", title: "Open a document",
     text: "Pick files here, press Ctrl+O, or drag them onto the window.",
     how: "Each document gets a brand-new VM that boots in about a second. Open several at once and each gets its own window and VM, so documents never share anything." },
@@ -1139,26 +1640,20 @@ const TOUR = [
     text: "Type to find words. Enter and Shift+Enter jump between matches.",
     how: "The search runs inside the VM. Only the positions of the matches come back as numbers, and airlock draws the highlights itself." },
   { target: "zoombox", kicker: "View", title: "Zoom",
-    text: "Zoom in and out, or Fit to match the window width. The + and − keys work too.",
+    text: "Zoom in and out, or Fit to match the window width. The + and − keys and Ctrl + scroll wheel work too.",
     how: "The VM redraws each page sharply at the new size: no blurry scaling." },
-  { target: "textbtn", kicker: "Read", title: "Page text",
-    text: "Shows the text of the current page. You can also select and copy text straight from the page.",
+  { target: "textbtn", kicker: "Read", title: "Document text",
+    text: "Shows the document's text, page by page, scrolling together with the pages. You can also select and copy text straight from the page.",
     how: "The text is strictly cleaned before it leaves the VM: only normal visible characters, nothing hidden or invisible." },
   { target: "savewrap", kicker: "Keep", title: "Save a safe copy, or print",
     text: "Safe PDF copy (Ctrl+S) writes a new PDF made only of the page pictures. Print (Ctrl+P) prints them.",
     how: "Nothing from the original survives in the copy (no scripts, links, fonts or attachments), so it is safe to keep, share or open anywhere." },
-  { target: "pixels", kicker: "Lock down", title: "Pixels only",
-    text: "For files you really distrust: no text leaves the VM at all, only pictures.",
-    how: "Text selection and the Text panel turn off. Search still works, because it only needs positions." },
-  { target: "updates", kicker: "Stay patched", title: "Updates",
-    text: "Keeps the VM's document readers, kernel and malware signatures current. It checks daily and installs automatically.",
-    how: "Every update is checked against official signatures and must pass airlock's full test suite before it is used. If anything fails, the old version stays." },
-  { target: "analyze", kicker: "Investigate", title: "Analyze",
-    text: "Finds out what a file tries to do: contact servers, run programs, drop files, exploit the reader. Every file you open is checked automatically; the badge next to Sealed shows the result (turn it off in the airlock logo menu).",
-    how: "It runs the file in a second VM wired to a fake internet, then inspects that VM's disk from a third one. The report explains every finding in plain words, with the technical evidence underneath." },
-  { target: "tourbtn", kicker: "That's it", title: "You're ready",
-    text: "Replay this tour anytime with the ? button. Right-click anywhere (or click the airlock logo) for a new window, Close this window (Ctrl+W) or Exit airlock, which closes every document (Ctrl+Q). The same is in the tray icon and in the launcher's right-click menu.",
-    how: "Tip: when a file looks suspicious, press Analyze before you trust it." },
+  { target: "check", kicker: "Investigate", title: "The malware check",
+    text: "Every file you open is checked automatically; this badge shows the result. Click it for the full report, or to start a check when automatic checks are off.",
+    how: "The file runs in a second VM wired to a fake internet, then that VM's disk is inspected from a third one. The report explains every finding in plain words, with the technical evidence underneath and a log of each step." },
+  { target: "appbtn", kicker: "That's it", title: "You're ready",
+    text: "Replay this tour anytime from the airlock menu. Side panels can be widened by dragging their left edge. Right-click anywhere for a new window, Close this window (Ctrl+W) or Exit airlock, which closes every document (Ctrl+Q).",
+    how: "Tip: when the badge says Suspicious or Likely malicious, read the report before you trust the file." },
 ];
 
 const tour = { i: 0, revealed: [], onKey: null };
@@ -1214,8 +1709,9 @@ function startTour() {
   closePanel();
   toggleSaveMenu(false);
   // Show the whole toolbar, as it looks with a document open; put it back afterwards.
-  tour.revealed = ["doc", "searchbox", "zoombox", "textbtn", "savewrap", "pixels", "analyze"].filter((id) => $(id).hidden);
+  tour.revealed = ["doc", "searchbox", "zoombox", "textbtn", "savewrap", "check"].filter((id) => $(id).hidden);
   for (const id of tour.revealed) $(id).hidden = false;
+  if (tour.revealed.includes("check")) { tour.checkWas = $("check").className; $("check").className = "check clean"; $("check").querySelector(".label").textContent = "No threats found"; }
   if (!$("docname").textContent) { $("docname").textContent = "your-document.pdf"; tour.placeholder = true; }
   document.body.classList.add("touring");
   $("tour").hidden = false;
@@ -1232,18 +1728,18 @@ function startTour() {
 }
 
 function endTour() {
-  try { localStorage.setItem("airlock.tourDone", "1"); } catch {}
+  setPref("airlock.tourDone", "1");
   document.removeEventListener("keydown", tour.onKey, true);
   window.removeEventListener("resize", tourPlace);
   $("tour").classList.remove("on");
   document.body.classList.remove("touring");
   setTimeout(() => { $("tour").hidden = true; }, 350);
   for (const id of tour.revealed) $(id).hidden = true;
+  if (tour.checkWas !== undefined) { tour.checkWas = undefined; showCheck(); }
   if (tour.placeholder) { $("docname").textContent = ""; tour.placeholder = false; }
   if (state.docOpen) fitWidth();
 }
 
-$("tourbtn").onclick = startTour;
 
 // ---------------------------------------------------------------- app menu
 // Works on every desktop (with or without a tray): new window, tour, exit.
@@ -1260,6 +1756,237 @@ $("appbtn").onclick = (e) => { e.stopPropagation(); toggleAppMenu(); };
 $("m-new").onclick = () => { toggleAppMenu(false); invoke("new_window"); };
 $("m-tour").onclick = () => { toggleAppMenu(false); startTour(); };
 $("m-quit").onclick = quitEverything;
+
+// Uninstall (AppImage only): what goes, two choices, one confirmation.
+async function showUninstall() {
+  const body = openPanel("Uninstall airlock");
+  let info;
+  try { info = await invoke("uninstall_info"); } catch (e) { body.replaceChildren(el("p", "note", String(e))); return; }
+  const gb = (b) => (b >= 1e9 ? `${(b / 1e9).toFixed(1)} GB` : `${Math.round(b / 1e6)} MB`);
+  const list = el("ul", "uninstall-list");
+  for (const t of [`The secure viewer and its build files (${gb(info.lib_bytes)}, ${info.lib})`, "The menu entry, icon and \"Open with airlock\"", "airlock's settings and caches"]) list.append(el("li", "", t));
+  const opt = (label, hint, checked) => {
+    const l = el("label", "check");
+    const b = el("input");
+    b.type = "checkbox";
+    b.checked = checked;
+    l.append(b, el("span", "", label));
+    if (hint) l.title = hint;
+    return [l, b];
+  };
+  const [sysL, sysB] = opt("Also undo the system settings from setup (asks for your password)", "Removes airlock's device-permission rule and, on Ubuntu, its user-namespace setting. The reserved user-id range stays: other sandboxes may use it.", info.system);
+  const [imgL, imgB] = opt(`Also delete the AppImage file (${info.appimage})`, "", true);
+  sysL.hidden = !info.system;
+  const go = el("button", "danger", "Uninstall");
+  go.id = "uninstall-go";
+  const cancel = el("button", "", "Cancel");
+  cancel.onclick = closePanel;
+  const row = el("div", "row");
+  row.append(go, cancel);
+  body.replaceChildren(el("p", "", "This removes:"), list, sysL, imgL, el("p", "note", "Documents and files you saved are not touched."), row);
+  go.onclick = async () => {
+    go.disabled = cancel.disabled = true;
+    go.textContent = sysB.checked ? "Waiting for your password…" : "Removing…";
+    try {
+      const done = await invoke("uninstall", { system: sysB.checked, removeAppimage: imgB.checked });
+      const ok = el("ul", "uninstall-list done");
+      for (const d of done) ok.append(el("li", "", d));
+      body.replaceChildren(el("p", "", "airlock was uninstalled:"), ok, el("p", "note", "Closing every airlock window…"));
+      setTimeout(() => invoke("quit_everything"), 4000);
+    } catch (e) {
+      body.append(el("p", "note error", String(e)));
+      go.disabled = cancel.disabled = false;
+      go.textContent = "Uninstall";
+    }
+  };
+}
+
+// ---------------------------------------------------------------- settings & about
+// Accent colours: each sets the theme's light source; status colours (red,
+// amber, green verdicts) never change.
+const THEMES = [
+  ["teal", "Teal", "#2dd4bf", "#22d3ee", "#0f766e"],
+  ["ice", "Ice", "#38bdf8", "#a5f3fc", "#0369a1"],
+  ["violet", "Violet", "#a78bfa", "#f0abfc", "#6d28d9"],
+  ["synth", "Synthwave", "#f472b6", "#c084fc", "#be185d"],
+  ["amber", "Amber", "#fbbf24", "#fb923c", "#b45309"],
+  ["matrix", "Matrix", "#4ade80", "#a3e635", "#15803d"],
+];
+// Backgrounds: every surface, line and text shade is mixed from this and the accent.
+const BACKGROUNDS = [
+  ["abyss", "Abyss", "#070b0e"],
+  ["midnight", "Midnight", "#060914"],
+  ["graphite", "Graphite", "#0e0f11"],
+  ["void", "Void", "#000000"],
+  ["nebula", "Nebula", "#0d0716"],
+  ["ember", "Ember", "#120a07"],
+];
+// Custom colours are tamed so any pick works: a background keeps its hue but
+// becomes a deep tone (text stays readable); an accent stays bright enough to
+// glow, with a neighbouring hue as its second colour.
+function hexToHsl(hex) {
+  const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), l = (max + min) / 2, d = max - min;
+  if (!d) return [0, 0, l];
+  const s = d / (1 - Math.abs(2 * l - 1));
+  const h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [(h * 60 + 360) % 360, s, l];
+}
+function hslToHex(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s, x = c * (1 - Math.abs(((h / 60) % 2) - 1)), m = l - c / 2;
+  const [r, g, b] = h < 60 ? [c, x, 0] : h < 120 ? [x, c, 0] : h < 180 ? [0, c, x] : h < 240 ? [0, x, c] : h < 300 ? [x, 0, c] : [c, 0, x];
+  return "#" + [r, g, b].map((v) => Math.round((v + m) * 255).toString(16).padStart(2, "0")).join("");
+}
+const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+function tameBackground(hex) {
+  const [h, s] = hexToHsl(hex);
+  if (s < 0.08) return "#0d0e10";
+  return hslToHex(h, clamp(s, 0, 0.45), 0.055);
+}
+function tameAccent(hex) {
+  const [h, s, l] = hexToHsl(hex);
+  // White, grey, black: a cool silver, not a guessed hue.
+  if (s < 0.08) return ["#d4dde2", "#eef3f6", "#5b6870"];
+  return [hslToHex(h, clamp(s, 0.55, 1), clamp(l, 0.55, 0.72)), hslToHex((h + 18) % 360, clamp(s, 0.55, 1), clamp(l + 0.06, 0.6, 0.78)), hslToHex(h, clamp(s, 0.5, 1), 0.3)];
+}
+const rgb = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16)).join(", ");
+function applyTheme() {
+  const id = pref("airlock.theme", "teal");
+  let t = THEMES.find((x) => x[0] === id);
+  if (!t && /^#[0-9a-f]{6}$/i.test(id)) t = ["custom", "Custom", ...tameAccent(id)];
+  t ||= THEMES[0];
+  const st = document.documentElement.style;
+  st.setProperty("--seal", t[2]);
+  st.setProperty("--seal-rgb", rgb(t[2]));
+  st.setProperty("--cyan", t[3]);
+  st.setProperty("--cyan-rgb", rgb(t[3]));
+  st.setProperty("--seal-deep", t[4]);
+  const bid = pref("airlock.background", "abyss");
+  const bg = BACKGROUNDS.find((x) => x[0] === bid)?.[2] || (/^#[0-9a-f]{6}$/i.test(bid) ? tameBackground(bid) : BACKGROUNDS[0][2]);
+  st.setProperty("--base", bg);
+}
+applyTheme();
+
+async function showSettings() {
+  const body = openPanel("Settings");
+  const sec = (title) => el("h3", "set-head", title);
+  // Colour
+  const swatches = el("div", "swatches");
+  const current = pref("airlock.theme", "teal");
+  const pick = (id) => { setPref("airlock.theme", id); applyTheme(); for (const b of swatches.children) b.setAttribute("aria-pressed", String(b.dataset.id === id)); };
+  for (const [id, name, a, b] of THEMES) {
+    const sw = el("button", "swatch");
+    sw.dataset.id = id;
+    sw.title = name;
+    sw.style.setProperty("--a", a);
+    sw.style.setProperty("--b", b);
+    sw.append(el("span", "chip"), el("span", "", name));
+    sw.setAttribute("aria-pressed", String(current === id));
+    sw.onclick = () => pick(id);
+    swatches.append(sw);
+  }
+  const custom = el("label", "swatch custom");
+  const input = el("input");
+  input.type = "color";
+  input.value = /^#/.test(current) ? current : "#2dd4bf";
+  custom.dataset.id = "custom";
+  custom.setAttribute("aria-pressed", String(/^#/.test(current)));
+  custom.append(input, el("span", "", "Custom"));
+  input.oninput = () => { setPref("airlock.theme", input.value); applyTheme(); for (const b of swatches.children) b.setAttribute("aria-pressed", String(b === custom)); };
+  custom.title = "Any colour: airlock keeps it bright enough to glow";
+  swatches.append(custom);
+
+  // Background
+  const bgs = el("div", "swatches");
+  const curBg = pref("airlock.background", "abyss");
+  const pickBg = (id, node) => { setPref("airlock.background", id); applyTheme(); for (const b of bgs.children) b.setAttribute("aria-pressed", String(b === node)); };
+  for (const [id, name, c] of BACKGROUNDS) {
+    const sw = el("button", "swatch bg");
+    sw.title = name;
+    sw.style.setProperty("--a", c);
+    sw.append(el("span", "chip"), el("span", "", name));
+    sw.setAttribute("aria-pressed", String(curBg === id));
+    sw.onclick = () => pickBg(id, sw);
+    bgs.append(sw);
+  }
+  const bgCustom = el("label", "swatch custom");
+  const bgInput = el("input");
+  bgInput.type = "color";
+  bgInput.value = /^#/.test(curBg) ? curBg : "#070b0e";
+  bgCustom.setAttribute("aria-pressed", String(/^#/.test(curBg)));
+  bgCustom.title = "Any colour: airlock uses a deep shade of it, so text stays easy to read";
+  bgCustom.append(bgInput, el("span", "", "Custom"));
+  bgInput.oninput = () => pickBg(bgInput.value, bgCustom);
+  bgs.append(bgCustom);
+
+  body.replaceChildren(sec("Accent colour"), swatches, sec("Background"), bgs,
+    el("p", "note", "Lines, panels and text shades follow both choices. A custom background becomes a deep shade of the colour you pick, so text always stays readable."));
+  // Uninstall (AppImage only)
+  try {
+    const u = await invoke("uninstall_info");
+    if (u.available) {
+      const b = el("button", "danger", "Uninstall airlock…");
+      b.onclick = showUninstall;
+      body.append(sec("Uninstall"), el("p", "note", "Removes the secure viewer, the menu entry and airlock's settings from this computer."), b);
+    }
+  } catch {}
+}
+$("m-settings").onclick = () => { toggleAppMenu(false); showSettings(); };
+// About airlock: what protects you (layers and how fresh they are), the
+// versions of everything that touches a document, and the app's own log.
+async function showAbout() {
+  const body = openPanel("About airlock");
+  const sec = (title) => el("h3", "set-head", title);
+  const group = () => el("dl", "about");
+  const version = group(), protection = group(), readers = group();
+  const logBox = el("div", "console-log tall", "Loading…");
+  const supported = el("dl", "about supported");
+  body.replaceChildren(sec("airlock"), version, sec("Supported files"), supported, sec("Protection"), protection, sec("Inside the VM"), readers, sec("App log"),
+    el("p", "note", "Everything airlock did on this computer: VMs that stopped, attacks the tripwire blocked, updates, errors. Documents' contents are never logged."), logBox);
+  // What airlock opens (the same list as the Open dialog's filters).
+  try {
+    for (const [label, exts, note] of await invoke("supported_files")) {
+      const dd = el("dd", "");
+      dd.append(el("span", "exts", exts.map((e) => "." + e).join("  ")), el("span", "ext-note", note));
+      supported.append(el("dt", "", label), dd);
+    }
+  } catch {}
+  let info = {};
+  try { info = await invoke("about_info"); } catch (e) { version.append(el("dd", "", String(e))); }
+  const row = (dl, k, v) => { if (v) dl.append(el("dt", "", k), el("dd", "", String(v))); };
+  row(version, "Version", info.app);
+  row(version, "Running from", info.install);
+  row(version, "Secure viewer", info.vm_dir);
+  if (info.image_built) row(version, "Viewer built", new Date(info.image_built * 1000).toLocaleString());
+  if (info.rules) { const [n, c] = info.rules.split(" "); row(protection, "Malware rules", `${Number(c).toLocaleString()} signatures (${n})`); }
+  row(protection, "Known malware", info.known ? `${info.known.count.toLocaleString()} fingerprints (MalwareBazaar, ${new Date(info.known.updated * 1000).toLocaleDateString()}), checked offline` : "list not downloaded yet: the next update check fetches it");
+  const c = info.clamav;
+  row(protection, "ClamAV", !c ? "not set up yet: the next update check fetches its database"
+    : `database ${c.version ? c.version.toLocaleString() : "?"} (${c.date || "date unknown"})`
+      + (c.state === "refused" ? ` · the last refresh was refused by ClamAV's server (busy); airlock keeps using this database and retries later` : c.checked ? ` · checked ${new Date(c.checked * 1000).toLocaleString()}` : ""));
+  row(protection, "Malware sites", info.urlhaus ? `${info.urlhaus.toLocaleString()} active addresses (URLhaus), links checked offline` : "list not downloaded yet");
+  row(protection, "Isolation", "a fresh Firecracker microVM per document, no network, a spare user id, tripwire on any attack");
+  row(readers, "VM kernel", info.kernel && info.kernel.replace(/^Linux version (\S+).*/, "Linux $1 (hardened)"));
+  row(readers, "VM engine", info.firecracker);
+  if (info.packages?.length) row(readers, "Readers", info.packages.join(", "));
+  const lines = info.log || [];
+  logBox.replaceChildren(...(lines.length ? lines : ["(empty)"]).map((l) => {
+    const m = /^(\d{9,})\s+(pid \d+\s+)?(.*)$/.exec(l);
+    const r = el("div", "ln");
+    if (m) r.append(el("span", "t", new Date(Number(m[1]) * 1000).toLocaleString()), document.createTextNode(` ${m[3]}`));
+    else r.textContent = l;
+    if (/attack|tripwire|crash|could not|error|failed/i.test(l)) r.classList.add("warn");
+    return r;
+  }));
+  logBox.scrollTop = logBox.scrollHeight;
+  const copy = el("button", "", "Copy log");
+  copy.onclick = async () => { try { await navigator.clipboard.writeText(lines.join("\n")); copy.textContent = "Copied"; } catch { copy.textContent = "Could not copy"; } };
+  const rowEl = el("div", "row");
+  rowEl.append(copy);
+  body.append(rowEl);
+}
+$("m-about").onclick = () => { toggleAppMenu(false); showAbout(); };
+
 $("m-close").onclick = closeWindow;
 function showAutoCheck() { $("m-auto").setAttribute("aria-checked", String(autoCheckOn())); }
 $("m-auto").onclick = () => {
@@ -1281,8 +2008,15 @@ document.addEventListener("contextmenu", (e) => {
   if (e.target.closest("input, textarea")) return;
   e.preventDefault();
   toggleAppMenu(false);
+  // airlock's menu belongs to the document area; the side panel only offers
+  // Copy for selected text; the toolbar, menus and status bar have none.
+  const inDoc = !!e.target.closest("#viewer, #thumbs");
+  const inPanel = !!e.target.closest("#panel");
+  const selected = !!String(getSelection() || "").trim();
+  if (!inDoc && !(inPanel && selected)) { hideCtx(); return; }
   const m = $("ctxmenu");
-  m.querySelectorAll("[data-doc]").forEach((b) => (b.hidden = !state.docOpen));
+  m.querySelectorAll("[data-doc]").forEach((b) => (b.hidden = !state.docOpen || !inDoc));
+  m.querySelectorAll("#c-new, #c-close, #c-quit, hr:not([data-doc])").forEach((b) => (b.hidden = !inDoc));
   $("c-copy").hidden = !String(getSelection() || "").trim();
   m.hidden = false;
   const x = Math.min(e.clientX, innerWidth - m.offsetWidth - 4), y = Math.min(e.clientY, innerHeight - m.offsetHeight - 4);
@@ -1318,7 +2052,348 @@ $("tour-skip").onclick = endTour;
 // First start: the tour, unless a test script is driving the app.
 (async () => {
   let done = false;
-  try { done = localStorage.getItem("airlock.tourDone") === "1"; } catch {}
+  // After the shared settings file was read (another window may have finished the tour).
+  await settingsReady;
+  done = pref("airlock.tourDone", "0") === "1";
   const demo = await invoke("demo_script").catch(() => null);
   if (!done && !demo) setTimeout(startTour, 700);
 })();
+
+// ================================================================ pro tools
+// Command palette, page thumbnails, live session status, the result badge's
+// quick summary, and the "sealing" transition when a document opens.
+
+// ---------------------------------------------------------------- command palette
+// Every action by name (Ctrl+K). Typing a number goes to that page.
+function paletteCommands() {
+  const doc = state.docOpen;
+  const c = [
+    ["Open a document…", "Ctrl+O", true, openDialog],
+    ["Search in the document", "Ctrl+F", doc, () => { $("q").focus(); $("q").select(); }],
+    ["Zoom in", "+", doc, () => stepZoom(1)],
+    ["Zoom out", "−", doc, () => stepZoom(-1)],
+    ["Fit to width", "", doc, fitWidth],
+    ["Show page thumbnails", "Ctrl+B", doc && $("thumbs").hidden, () => setThumbs(true)],
+    ["Hide page thumbnails", "Ctrl+B", doc && !$("thumbs").hidden, () => setThumbs(false)],
+    [state.email ? "The e-mail's attachments" : "Files inside the archive", "", doc && state.archive, showFiles],
+    ["Show the document's text", "", doc && !state.pixelsOnly, showText],
+    ["Save a safe PDF copy…", "Ctrl+S", doc, saveSafeCopy],
+    ["Print…", "Ctrl+P", doc, printDocument],
+    ["Malware report", "", doc, () => showAnalysis()],
+    ["Check for malware again", "", doc, () => showAnalysis(undefined, true)],
+    ["Save the malware report…", "", doc && !!check.report, saveReport],
+    [state.pixelsOnly ? "Turn off Pixels only" : "Turn on Pixels only (no text leaves the VM)", "", true, () => setPixelsOnly(!state.pixelsOnly)],
+    [autoCheckOn() ? "Stop checking files automatically" : "Check files automatically", "", true, () => $("m-auto").click()],
+    ["Spreadsheets: one page per sheet / pages", "", doc && !$("sheetbtn").hidden, () => $("sheetbtn").click()],
+    ["Updates…", "", true, showUpdates],
+    ["Settings…", "", true, showSettings],
+    ["About airlock (versions, protection, log)…", "", true, showAbout],
+    ["Supported file types…", "", true, showAbout],
+    ["Guided tour", "", true, startTour],
+    ["New window", "", true, () => invoke("new_window")],
+    ["Close this window", "Ctrl+W", true, closeWindow],
+    ["Exit airlock (all windows)", "Ctrl+Q", true, quitEverything],
+  ];
+  for (const [id, name] of THEMES) c.push([`Accent colour: ${name}`, "", true, () => { setPref("airlock.theme", id); applyTheme(); }]);
+  for (const [id, name] of BACKGROUNDS) c.push([`Background: ${name}`, "", true, () => { setPref("airlock.background", id); applyTheme(); }]);
+  return c.filter((x) => x[2]);
+}
+
+// Letters in order, rewarding word starts and runs: "sv cp" finds "Save a safe PDF copy".
+function fuzzy(q, text) {
+  const t = text.toLowerCase();
+  let score = 0, ti = 0, run = 0;
+  for (const ch of q.toLowerCase().replace(/\s+/g, "")) {
+    const i = t.indexOf(ch, ti);
+    if (i < 0) return -1;
+    run = i === ti ? run + 1 : 0;
+    score += 1 + run * 2 + (i === 0 || /[\s:(/]/.test(t[i - 1]) ? 4 : 0) - (i - ti) * 0.05;
+    ti = i + 1;
+  }
+  return score;
+}
+
+const palette = { items: [], sel: 0 };
+function renderPalette() {
+  const q = $("pal-q").value.trim();
+  let items = [];
+  const n = Number(q.replace(/^(:|page\s*|p\s*)/i, ""));
+  if (state.docOpen && q && Number.isInteger(n) && n >= 1 && n <= state.pages.length) {
+    items.push([`Go to page ${n} of ${state.pages.length}`, "", true, () => gotoPage(n - 1)]);
+  }
+  const cmds = paletteCommands();
+  items.push(...(q ? cmds.map((c) => [c, fuzzy(q, c[0])]).filter(([, s]) => s >= 0).sort((a, b) => b[1] - a[1]).map(([c]) => c) : cmds));
+  palette.items = items.slice(0, 12);
+  palette.sel = Math.min(palette.sel, Math.max(0, palette.items.length - 1));
+  $("pal-list").replaceChildren(...palette.items.map(([label, keys], i) => {
+    const li = el("li", i === palette.sel ? "sel" : "");
+    li.setAttribute("role", "option");
+    li.append(el("span", "", label));
+    if (keys) li.append(el("kbd", "", keys));
+    li.onmouseenter = () => { palette.sel = i; for (const [k, x] of [...$("pal-list").children].entries()) x.classList.toggle("sel", k === i); };
+    li.onclick = () => runPalette(i);
+    return li;
+  }));
+  if (!palette.items.length) $("pal-list").append(el("li", "empty", "No matching command"));
+}
+function openPalette() {
+  toggleAppMenu(false);
+  $("palette").hidden = false;
+  $("pal-q").value = "";
+  palette.sel = 0;
+  renderPalette();
+  $("pal-q").focus();
+}
+function closePalette() { $("palette").hidden = true; }
+function runPalette(i) {
+  const item = palette.items[i];
+  closePalette();
+  if (item) item[3]();
+}
+$("pal-q").addEventListener("input", () => { palette.sel = 0; renderPalette(); });
+$("pal-q").addEventListener("keydown", (e) => {
+  if (e.key === "ArrowDown") { e.preventDefault(); palette.sel = Math.min(palette.items.length - 1, palette.sel + 1); renderPalette(); }
+  else if (e.key === "ArrowUp") { e.preventDefault(); palette.sel = Math.max(0, palette.sel - 1); renderPalette(); }
+  else if (e.key === "Enter") { e.preventDefault(); runPalette(palette.sel); }
+  else if (e.key === "Escape") { e.preventDefault(); closePalette(); }
+  e.stopPropagation();
+});
+$("palette").addEventListener("mousedown", (e) => { if (e.target === $("palette")) closePalette(); });
+$("palbtn").onclick = openPalette;
+document.addEventListener("keydown", (e) => {
+  const mod = e.ctrlKey || e.metaKey;
+  if (mod && (e.key.toLowerCase() === "k" || (e.shiftKey && e.key.toLowerCase() === "p"))) { e.preventDefault(); $("palette").hidden ? openPalette() : closePalette(); }
+  if (mod && e.key.toLowerCase() === "b" && state.docOpen) { e.preventDefault(); setThumbs($("thumbs").hidden); }
+});
+
+function gotoPage(i) {
+  const p = state.pages[i];
+  if (p) $("viewer").scrollTop = p.el.offsetTop - 12;
+}
+
+// ---------------------------------------------------------------- page thumbnails
+// Small renders from the same VM, made only when the main pages are idle.
+const thumbs = { list: [], observer: null, queue: [], busy: false, current: -1 };
+function setThumbs(on) {
+  $("thumbs").hidden = !on;
+  $("thumbbtn").setAttribute("aria-pressed", String(on));
+  setPref("airlock.thumbs", on ? "1" : "0");
+  if (on) buildThumbs();
+  if (state.fitMode && state.docOpen) fitWidth();
+}
+function buildThumbs() {
+  if (thumbs.list.length === state.pages.length && thumbs.list.length) return;
+  if (thumbs.observer) thumbs.observer.disconnect();
+  for (const t of thumbs.list) if (t.url) URL.revokeObjectURL(t.url);
+  thumbs.queue = [];
+  thumbs.observer = new IntersectionObserver((entries) => {
+    for (const e of entries) if (e.isIntersecting) queueThumb(Number(e.target.dataset.index));
+  }, { root: $("thumbs"), rootMargin: "300px 0px" });
+  thumbs.list = state.pages.map((p, i) => {
+    const b = el("button", "thumb");
+    b.dataset.index = String(i);
+    b.title = `Page ${i + 1}`;
+    const box = el("div", "frame");
+    box.style.aspectRatio = `${p.w} / ${p.h}`;
+    const img = el("img");
+    img.alt = "";
+    box.append(img);
+    b.append(box, el("span", "n", String(i + 1)));
+    b.onclick = () => gotoPage(i);
+    thumbs.observer.observe(b);
+    return { el: b, img, url: null, done: false };
+  });
+  $("thumbs").replaceChildren(...thumbs.list.map((t) => t.el));
+  markThumb(true);
+}
+function queueThumb(i) {
+  if (!thumbs.list[i] || thumbs.list[i].done || thumbs.queue.includes(i)) return;
+  thumbs.queue.push(i);
+  pumpThumbs();
+}
+async function pumpThumbs() {
+  if (thumbs.busy) return;
+  thumbs.busy = true;
+  try {
+    while (thumbs.queue.length && state.docOpen) {
+      // The main pages first.
+      while (state.rendering) await new Promise((r) => setTimeout(r, 120));
+      const i = thumbs.queue.shift();
+      const t = thumbs.list[i];
+      if (!t || t.done) continue;
+      try {
+        const buf = await invoke("render_page", { page: i, dpi: 24 });
+        t.url = URL.createObjectURL(new Blob([buf], { type: "image/png" }));
+        t.img.src = t.url;
+        t.done = true;
+        t.el.classList.add("ready");
+      } catch { break; }
+    }
+  } finally {
+    thumbs.busy = false;
+  }
+}
+function markThumb(scrollIntoView = false) {
+  if ($("thumbs").hidden || !thumbs.list.length) return;
+  const cur = currentPage();
+  if (cur === thumbs.current && !scrollIntoView) return;
+  thumbs.list[thumbs.current]?.el.classList.remove("current");
+  thumbs.current = cur;
+  const t = thumbs.list[cur];
+  if (!t) return;
+  t.el.classList.add("current");
+  const box = $("thumbs"), top = t.el.offsetTop, bottom = top + t.el.offsetHeight;
+  if (top < box.scrollTop || bottom > box.scrollTop + box.clientHeight) box.scrollTop = top - box.clientHeight / 3;
+}
+$("viewer").addEventListener("scroll", () => markThumb(), { passive: true });
+$("thumbbtn").onclick = () => setThumbs($("thumbs").hidden);
+
+// ---------------------------------------------------------------- session status
+// Facts about the sealed session, live: how long its VM has run, what it
+// can reach (nothing), what may leave it.
+const session = { t0: 0, stopped: false };
+function fmtUp(ms) {
+  const s = Math.floor(ms / 1000);
+  return s < 3600 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}` : `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`;
+}
+function renderTelemetry() {
+  const t = $("telemetry");
+  t.hidden = !state.docOpen;
+  if (!state.docOpen) return;
+  const stopped = $("seal").classList.contains("stopped");
+  const parts = stopped
+    ? [["VM", "destroyed"], ["pages", String(state.pages.length)]]
+    : [["VM", `up ${fmtUp(Date.now() - session.t0)}`], ["pages", String(state.pages.length)], ["network", "none"], ["leaves the VM", state.pixelsOnly ? "pixels only" : "pixels + cleaned text"]];
+  t.replaceChildren(...parts.map(([k, v], i) => {
+    const s = el("span", i === 0 ? (stopped ? "t-item off" : "t-item live") : "t-item");
+    s.append(el("b", "", k), document.createTextNode(` ${v}`));
+    return s;
+  }));
+}
+setInterval(renderTelemetry, 1000);
+
+// ---------------------------------------------------------------- badge summary
+// Hovering the result badge shows the top findings without opening a panel.
+// The card always exists and is only made transparent: showing it never
+// creates a new layer, so it cannot be painted once before its fade-in.
+let peekTimer = null, peekHide = null;
+const peekIsOpen = () => $("peek").classList.contains("open");
+function closePeek() { $("peek").classList.remove("open"); }
+function showPeek() {
+  const r = check.report;
+  if (!r || check.running || check.attacked) return;
+  if (peekIsOpen()) return; // already open: no rebuild
+  const order = { high: 0, medium: 1, low: 2, info: 3 };
+  const top = (r.findings || []).filter((f) => f.severity !== "info").sort((a, b) => order[a.severity] - order[b.severity]);
+  const seen = new Set();
+  const uniq = top.filter((f) => !seen.has(f.title) && seen.add(f.title)).slice(0, 4);
+  const p = $("peek");
+  const head = el("div", `peek-head ${verdictClass(r.verdict)}`);
+  head.append(el("strong", "", r.headline || r.verdict), el("span", "", `${r.seconds?.toFixed?.(1) ?? "?"} s · 2 VMs`));
+  const list = el("ul", "");
+  for (const f of uniq) {
+    const li = el("li", "");
+    li.append(el("span", `sev ${f.severity}`, f.severity === "medium" ? "med" : f.severity), el("span", "", f.title || f.what));
+    list.append(li);
+  }
+  p.replaceChildren(head, ...(uniq.length ? [list] : [el("p", "note", "Nothing risky found.")]), el("p", "peek-foot", "Click for the full report"));
+  const b = $("check").getBoundingClientRect();
+  p.style.left = `${Math.max(8, Math.min(window.innerWidth - 340, b.left))}px`;
+  p.style.top = `${b.bottom + 8}px`;
+  p.classList.add("open");
+}
+// Open and close by where the pointer is, not by enter/leave events (some
+// systems send those repeatedly while the pointer moves over the badge):
+// over the badge for a moment opens the card; it stays while the pointer is
+// on the badge or the card, and closes shortly after it is elsewhere.
+function overRect(r, x, y, pad) { return x >= r.left - pad && x <= r.right + pad && y >= r.top - pad && y <= r.bottom + pad; }
+document.addEventListener("pointermove", (e) => {
+  const badge = $("check");
+  if (badge.hidden) return;
+  const onBadge = overRect(badge.getBoundingClientRect(), e.clientX, e.clientY, 2);
+  const onCard = peekIsOpen() && overRect($("peek").getBoundingClientRect(), e.clientX, e.clientY, 6);
+  if (onBadge || onCard) {
+    clearTimeout(peekHide);
+    peekHide = null;
+    if (!peekIsOpen() && !peekTimer) peekTimer = setTimeout(() => { peekTimer = null; showPeek(); }, 220);
+  } else {
+    clearTimeout(peekTimer);
+    peekTimer = null;
+    if (peekIsOpen() && !peekHide) peekHide = setTimeout(() => { peekHide = null; closePeek(); }, 160);
+  }
+}, { passive: true });
+document.addEventListener("pointerleave", () => { clearTimeout(peekTimer); peekTimer = null; closePeek(); });
+$("check").addEventListener("click", () => { clearTimeout(peekTimer); peekTimer = null; closePeek(); });
+
+// ---------------------------------------------------------------- opening
+// Hook into document setup: session clock, thumbnails, sealing transition.
+const setupDocumentBase = setupDocument;
+setupDocument = function (info) {
+  setupDocumentBase(info);
+  session.t0 = Date.now();
+  thumbs.list = [];
+  thumbs.current = -1;
+  $("thumbbtn").hidden = false;
+  state.archive = !!info.archive;
+  state.email = !!info.email;
+  // For an archive the toolbar's Text button lists its files instead.
+  $("textbtn").textContent = info.email ? "Attachments" : info.archive ? "Files" : "Text";
+  $("textbtn").title = info.archive ? "The files inside this archive" : "Show the document's text";
+  if (info.archive) {
+    $("textbtn").hidden = false;
+    // The panel narrows the pages (fit width): start again at the top.
+    showFiles().then(() => requestAnimationFrame(() => { $("viewer").scrollTop = 0; }));
+  }
+  if (pref("airlock.thumbs", "0") === "1" && !info.archive) setThumbs(true);
+  else $("thumbs").hidden = true;
+  const v = $("viewer");
+  v.classList.remove("sealing");
+  void v.offsetWidth;
+  v.classList.add("sealing");
+  setTimeout(() => v.classList.remove("sealing"), 900);
+  renderTelemetry();
+};
+
+$("m-palette").onclick = () => { toggleAppMenu(false); openPalette(); };
+
+// The logo comes alive while airlock is working: a check running, an update
+// or the first build. Calm otherwise.
+setInterval(() => {
+  const working = !!check.running || updates.running || !$("forge").hidden && forge.finished === null;
+  $("appbtn").classList.toggle("working", working);
+}, 400);
+
+// ---------------------------------------------------------------- archives
+// The archive's files, as its VM lists them. Each opens in a new window
+// whose VM unpacks just that file from the archive: nothing is unpacked here.
+const fmtSize = (n) => (n >= 1 << 30 ? `${(n / (1 << 30)).toFixed(1)} GB` : n >= 1 << 20 ? `${(n / (1 << 20)).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
+const FLAG_TEXT = { disguised: ["bad", "disguised program"], program: ["warn", "program"], locked: ["warn", "locked"] };
+async function showFiles() {
+  const body = openPanel(state.email ? "Attachments" : "Files inside");
+  body.replaceChildren(el("p", "note", state.email ? "Reading the e-mail inside its VM…" : "Reading the archive inside its VM…"));
+  let files = [];
+  try { files = await invoke("archive_entries"); } catch (e) { body.replaceChildren(el("p", "note", `Could not list the files: ${e}`)); return; }
+  const intro = el("p", "note", `${files.length} file(s). Each opens in a new window with a VM of its own, which unpacks just that file: nothing is unpacked on your computer.`);
+  const list = el("ul", "files");
+  for (const f of files) {
+    const li = el("li", "");
+    const name = el("span", "fname", f.name);
+    name.title = f.name;
+    const meta = el("span", "fmeta", fmtSize(f.size));
+    const tags = el("span", "ftags");
+    const shown = f.flags.includes("disguised") ? ["disguised"] : f.flags;
+    for (const fl of shown) { const [cls, text] = FLAG_TEXT[fl] || ["", fl]; tags.append(el("span", `ftag ${cls}`, text)); }
+    const open = el("button", "", "Open");
+    open.disabled = f.flags.includes("locked");
+    open.title = open.disabled ? "Locked with a password: it cannot be opened or checked" : "Open in a new window with its own VM";
+    open.onclick = async () => {
+      open.disabled = true; open.textContent = "Opening…";
+      try { await invoke("open_entry", { index: f.index, name: f.name }); status(`Opening ${f.name} in a new window`); }
+      catch (e) { status(`Could not open ${f.name}: ${e}`, true); }
+      setTimeout(() => { open.disabled = false; open.textContent = "Open"; }, 2500);
+    };
+    li.append(name, tags, meta, open);
+    list.append(li);
+  }
+  body.replaceChildren(intro, list);
+}

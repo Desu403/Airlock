@@ -135,8 +135,38 @@ fn guest_finding(ind: Ind, text: &str) -> Finding {
             }
         }
         Ind::PhishText => finding(Static, Medium, "T1566 Phishing", if text.starts_with("callback") { "Looks like a callback scam" } else { "Pretends to be a well-known company" }, if text.starts_with("callback") { "It uses a well-known name, claims a charge you did not make and gives a phone number to call. Calling connects you to scammers who ask for payment or remote access." } else { "It uses a well-known company's name and asks you to open or verify something, but its link goes to a site that company does not own: the pattern of phishing pages." }, text.to_string()),
+        Ind::Script => {
+            let (sev, att, title, why) = match text.split(':').next().unwrap_or("") {
+                "download-run" => (High, "T1105 Ingress Tool Transfer", "Downloads and runs a program", "The script fetches something from the internet and starts it: how most malware arrives after you open an attachment. Only run it if it is an installer you were expecting from a source you trust."),
+                "hidden-powershell" => (High, "T1059.001 PowerShell", "Runs hidden or encoded PowerShell", "Its commands are encoded or run in a hidden window, so you cannot see what it does. Legitimate scripts have no reason to hide."),
+                "smuggling" => (High, "T1027.006 HTML Smuggling", "Builds a hidden file when opened", "This web page assembles a file inside your browser and offers it as a download, so the file never crosses e-mail filters. A known way to deliver malware."),
+                "archive-disguised" => (High, "T1036.007 Double File Extension", "A program disguised as a document", "A file inside is a program whose name pretends to be a document (like \"invoice.pdf.exe\"). Windows hides the last part, so it looks harmless; opening it runs the program."),
+                "archive-program" => (Medium, "T1204.002 Malicious File", "Contains a program or script", "A file inside starts a program or script when opened on Windows. Expected in software downloads, never in a document someone sent you."),
+                "archive-locked" => (Medium, "T1027.013 Encrypted/Encoded File", "Locked with a password", "Files inside are password-protected, so nobody (airlock included) could check them. Malware is often sent like this, with the password in the e-mail, to get past scanners."),
+                "credential" => (High, "T1056.003 Web Portal Capture", "Fake sign-in page", "A file that asks for your password and sends it to a server on the internet. Real services never send their sign-in page as an attachment; anything typed here goes to the attacker."),
+                "redirect" => (Medium, "T1566.002 Spearphishing Link", "Opens a website as soon as it is opened", "Opening this file would send your browser straight to a website, usually a fake sign-in or download page. A document sent to you has no reason to do this."),
+                "lure" => (Medium, "T1566.001 Spearphishing Attachment", "A page made to send you to a website", "It is a short page with little more than one link, worded like an invoice, shared document or account notice: the typical phishing attachment. Do not follow the link."),
+                "shell" => (Medium, "T1059.005 Visual Basic", "Can run programs on Windows", "It uses Windows scripting objects that start programs, read and write files or change settings. Normal for some admin scripts, but never in a file sent to you unexpectedly."),
+                _ => (Medium, "T1027 Obfuscated Files", "Scrambled script", "Large parts of the script are encoded or built from character codes, so a reader cannot see what it does: a common way to hide malware from scanners."),
+            };
+            finding(Static, sev, att, title, why, text.splitn(2, ':').nth(1).unwrap_or(text).trim().to_string())
+        }
+        Ind::ClamAv => {
+            // Heuristic and "potentially unwanted" names are hints, not verdicts.
+            let soft = text.starts_with("Heuristics.") || text.starts_with("PUA.");
+            finding(
+                Signature,
+                if soft { Medium } else { High },
+                "-",
+                if soft { "ClamAV flags something unusual" } else { "Detected by ClamAV" },
+                if soft { "ClamAV's general rules (not a specific malware) found something often seen in harmful files. Worth caution, not proof." } else { "ClamAV, the open-source antivirus engine by Cisco Talos, recognises this as a known malware family. Its signatures are updated several times a day." },
+                format!("ClamAV: {text}"),
+            )
+        }
         Ind::PdfLure => finding(Static, Medium, "T1566.002 Spearphishing Link", "The page is one big link", "Phishing PDFs show a picture of a document or a \"View\" button, and clicking almost anywhere opens a website, usually a fake login page. Real documents rarely do this.", text.to_string()),
         Ind::HiddenData if text.contains("program") || text.contains("archive") || text.contains("Office/OLE") || text.contains("web page") => finding(Static, High, "T1027.009 Embedded Payloads", "Hides a program or archive inside the file", "The file is built to be two things at once: a document you can open and a hidden program or archive. Only done to smuggle malware past scanners.", text.to_string()),
+        Ind::HiddenData if text.starts_with("an OLE container whose contents cannot be read") => finding(Static, Medium, "T1027 Obfuscated Files", "Its contents could not be checked", "The file is damaged or deliberately broken, so airlock could not look inside it. Treat it as unknown, not as safe.", text.to_string()),
+        Ind::HiddenData if text.starts_with("an OLE container that is not") => finding(Static, Medium, "T1036 Masquerading", "Not really an Office document", "It is built like an Office file but contains none of the parts Word, Excel or PowerPoint use. Real documents are not like this; it is either damaged or disguised.", text.to_string()),
         Ind::HiddenData if text.starts_with("the RTF header is deliberately malformed") => finding(Static, Medium, "T1027 Obfuscated Files", "Deliberately malformed file", "Its first bytes are written in a way no editor produces, so that other programs read it differently from Word. Only done to slip past scanners.", text.to_string()),
         Ind::HiddenData => finding(Static, Medium, "T1027 Obfuscated Files", "Hides data after the end of the document", "Readers stop at the document's end, so this part is invisible to you; a common place to smuggle a payload.", text.to_string()),
         Ind::PdfFeature => {
@@ -446,6 +476,34 @@ impl Report {
 
     /// The VM could not identify the file: nothing in it was checked, so
     /// it must never come out as "No threats found".
+    /// Its links include web addresses that URLhaus lists as spreading malware.
+    pub fn malware_sites(&mut self, urls: &[String]) {
+        for u in urls {
+            self.findings.push(finding(
+                Source::Signature,
+                Severity::High,
+                "-",
+                "Links to a known malware site",
+                "This web address is listed by URLhaus (abuse.ch) as spreading malware right now. Opening it would download something harmful. airlock compared it with a local copy of that list: nothing was sent anywhere.",
+                format!("{u} is on the URLhaus list of active malware addresses"),
+            ));
+        }
+        self.findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+    }
+
+    /// The file's fingerprint is in the local list of known malware.
+    pub fn known_malware(&mut self, sha256: &str, list_size: u64) {
+        self.findings.push(finding(
+            Source::Signature,
+            Severity::High,
+            "-",
+            "Known malware",
+            "This exact file is catalogued as malware by MalwareBazaar (abuse.ch), a public database security researchers feed with real samples. airlock checked its fingerprint against a local copy of that list: nothing was sent anywhere.",
+            format!("SHA-256 {sha256} is in the local list of {list_size} known-malware fingerprints"),
+        ));
+        self.findings.sort_by(|a, b| b.severity.cmp(&a.severity));
+    }
+
     pub fn unreadable(&mut self) {
         self.findings.push(finding(
             Source::Static,
@@ -464,7 +522,10 @@ impl Report {
         let static_sev = self.findings.iter().filter(|f| matches!(f.source, Source::Static | Source::Signature)).map(|f| f.severity).max();
         let has = |att: &str| self.findings.iter().any(|f| f.source == Source::Static && f.severity == Severity::High && f.attack.starts_with(att));
         // Decisive static evidence: we never run macros, so these stand on their own.
+        // Scripts: hidden/encoded PowerShell and HTML smuggling (bench: never in
+        // harmless code). Download-and-run stays "suspicious": installers do it.
         let decisive = has("T1203") || has("T1564.007") || has("T1221") || (has("T1204.002") && has("T1059")) || has("T1027.009")
+            || has("T1059.001") || has("T1027.006") || has("T1056.003") || has("T1036.007")
             // A PDF that starts a program by itself.
             || self.findings.iter().any(|f| f.source == Source::Static && f.severity == Severity::High && f.what.starts_with("automatic action Launch"))
             // A rule written for a known malware family or exploit.

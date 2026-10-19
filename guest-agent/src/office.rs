@@ -13,6 +13,14 @@ pub enum Kind {
     Pdf,
     /// Office document; the extension LibreOffice should see.
     Office(&'static str),
+    /// A picture (media.rs); the format's usual extension.
+    Image(&'static str),
+    /// Plain text or source code (media.rs): shown syntax-coloured.
+    Text,
+    /// An archive (archive.rs); its format.
+    Archive(&'static str),
+    /// An e-mail message (email.rs).
+    Email,
 }
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
@@ -40,6 +48,9 @@ pub fn detect(doc: &[u8]) -> Option<Kind> {
             Kind::Office("xls")
         } else if contains(doc, &utf16("PowerPoint Document")) {
             Kind::Office("ppt")
+        } else if contains(doc, &utf16("__substg1.0_")) && contains(doc, &utf16("__properties_version1.0")) {
+            // An Outlook message (.msg): read like an e-mail (email.rs).
+            Kind::Email
         } else if contains(doc, &utf16("_VBA_PROJECT")) || contains(doc, &utf16("PROJECT")) {
             // A bare macro project (PowerPoint .ppa add-ins are delivered
             // like this): nothing to show, but everything to check.
@@ -67,6 +78,15 @@ pub fn detect(doc: &[u8]) -> Option<Kind> {
         if contains(&doc[..doc.len().min(256)], b"mimetypeapplication/vnd.oasis.opendocument") {
             return Some(Kind::Office("odt"));
         }
+    }
+    if let Some(ext) = crate::archive::kind(doc) {
+        return Some(Kind::Archive(ext));
+    }
+    if let Some(ext) = crate::media::image_kind(doc) {
+        return Some(Kind::Image(ext));
+    }
+    if crate::media::is_text(doc) {
+        return Some(if crate::email::is_email(doc) { Kind::Email } else { Kind::Text });
     }
     None
 }

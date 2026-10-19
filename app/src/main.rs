@@ -35,6 +35,10 @@ struct AppState {
 #[derive(Serialize)]
 struct OpenInfo {
     name: String,
+    /// An archive or e-mail: its files are listed in the side panel (archive_entries).
+    archive: bool,
+    /// An e-mail (the panel says "Attachments").
+    email: bool,
     /// Offers the spreadsheet layout choice.
     spreadsheet: bool,
     /// [width, height] in points.
@@ -102,7 +106,7 @@ fn open_error(e: impl std::fmt::Display) -> String {
     if s.contains("RenderFailed") {
         "nothing to display: the file has no visible content (an Excel add-in, for example) or is damaged".into()
     } else if s.contains("UnsupportedType") {
-        "not a PDF or Office document".into()
+        "not a document, picture or text file airlock can show".into()
     } else if s.contains("TooManyPages") {
         "too many pages (more than 2000)".into()
     } else {
@@ -110,7 +114,14 @@ fn open_error(e: impl std::fmt::Display) -> String {
     }
 }
 
+/// This window shows one file of an archive ("--entry N --entry-name NAME
+/// archive"): the archive's bytes go to the VM, which unpacks that file.
+static ENTRY: std::sync::OnceLock<(u32, String)> = std::sync::OnceLock::new();
+/// The opened document's path, so a file inside it can open in a new window.
+static OPENED_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+
 fn open_impl(doc: Arc<Mutex<Option<Doc>>>, chosen: Arc<Mutex<Option<(String, Arc<Vec<u8>>)>>>, path: PathBuf) -> R<OpenInfo> {
+    *OPENED_PATH.lock().unwrap() = Some(path.clone());
     let meta = std::fs::metadata(&path).map_err(err)?;
     if !meta.is_file() || meta.len() > MAX_DOC_BYTES {
         return Err("not a file, or larger than 256 MiB".into());
@@ -129,9 +140,20 @@ fn open_bytes(doc: Arc<Mutex<Option<Doc>>>, name: String, bytes: &[u8]) -> R<Ope
         old.session.close();
     }
     let layout = if SHEETS_SINGLE.load(Ordering::SeqCst) { Layout::OnePagePerSheet } else { Layout::Pages };
-    let session = LiveSession::open_with(bytes, layout).map_err(open_error)?;
+    // Inside an archive the file's own name gives its type hint and title.
+    let entry = ENTRY.get();
+    let hint = entry.map(|(_, n)| n.as_str()).unwrap_or(&name);
+    let session = LiveSession::open_with(bytes, layout, Some(hint), entry.map(|(i, _)| *i)).map_err(open_error)?;
+    let archive = entry.is_none() && airlock_core::live::has_files(bytes);
+    let email = archive && (airlock_core::live::is_email(bytes) || airlock_core::live::is_outlook(bytes));
+    let name = match entry {
+        Some((_, inner)) => format!("{name} › {}", inner.rsplit(['/', '\\']).next().unwrap_or(inner)),
+        None => name,
+    };
     let info = OpenInfo {
         name,
+        archive,
+        email,
         spreadsheet: is_spreadsheet(bytes),
         pages: session.pages.iter().map(|p| [p.width, p.height]).collect(),
         ready_ms: session.boot_time.as_millis() as u64,
@@ -184,6 +206,29 @@ fn open_many(doc: Arc<Mutex<Option<Doc>>>, chosen: Arc<Mutex<Option<(String, Arc
     Ok(OpenResult { info: Some(open_impl(doc, chosen, first.clone())?), elsewhere })
 }
 
+/// Everything airlock opens: the Open dialog's filters and the "Supported
+/// files" list in About airlock come from here. The type is always decided
+/// by content inside the VM; extensions only help people find their files.
+const SUPPORTED: &[(&str, &[&str], &str)] = &[
+    ("Documents", &["pdf", "doc", "docx", "docm", "dot", "dotx", "dotm", "rtf", "odt", "xls", "xlsx", "xlsm", "xlsb", "xlam", "xltx", "xltm", "ods", "csv",
+        "ppt", "pptx", "pptm", "pps", "ppsx", "ppsm", "potx", "potm", "odp"], "PDF, Word, Excel, PowerPoint, OpenDocument, RTF"),
+    ("E-mails", &["eml", "msg"], "e-mail messages and Outlook messages; attachments open in their own VM"),
+    ("Archives", &["zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz", "cab", "iso"], "each file inside opens in its own VM"),
+    ("Pictures", &["png", "jpg", "jpeg", "gif", "webp", "bmp", "tif", "tiff", "svg", "heic", "avif", "ico", "jp2", "psd"], "shown as plain pixels"),
+    ("Text and code", &["txt", "md", "log", "json", "xml", "yaml", "yml", "ini", "toml", "html", "htm", "css", "js", "ts", "py", "c", "h", "cpp", "hpp", "cc",
+        "java", "rs", "go", "sh", "ps1", "vbs", "bat", "cmd", "hta", "php", "rb", "sql"], "colour-coded; any other plain-text file opens too"),
+];
+
+fn all_supported() -> Vec<&'static str> {
+    SUPPORTED.iter().flat_map(|(_, exts, _)| exts.iter().copied()).collect()
+}
+
+/// For About airlock: (category, extensions, note).
+#[tauri::command]
+fn supported_files() -> Vec<(String, Vec<String>, String)> {
+    SUPPORTED.iter().map(|(l, e, n)| (l.to_string(), e.iter().map(|x| x.to_string()).collect(), n.to_string())).collect()
+}
+
 #[tauri::command]
 async fn pick_and_open(app: tauri::AppHandle, state: State<'_, AppState>) -> R<OpenResult> {
     let (doc, chosen) = (state.doc.clone(), state.chosen.clone());
@@ -192,7 +237,8 @@ async fn pick_and_open(app: tauri::AppHandle, state: State<'_, AppState>) -> R<O
             .dialog()
             .file()
             .set_title("Open documents in airlock")
-            .add_filter("Documents", &["pdf", "doc", "docx", "docm", "xls", "xlsx", "xlsm", "ppt", "pptx", "pptm", "odt", "ods", "odp", "rtf", "dotm", "dotx", "xlam", "xltm", "xltx", "potm", "ppsm", "ppsx"])
+            .add_filter("All supported files", &all_supported());
+        let picked = SUPPORTED.iter().fold(picked, |d, (label, exts, _)| d.add_filter(*label, exts))
             .add_filter("All files", &["*"])
             .blocking_pick_files()
             .unwrap_or_default();
@@ -236,6 +282,46 @@ fn close_window(app: tauri::AppHandle) {
 #[tauri::command]
 fn new_window() -> bool {
     open_window(None)
+}
+
+#[derive(Serialize)]
+struct EntryInfo {
+    index: u32,
+    size: u64,
+    flags: Vec<String>,
+    name: String,
+}
+
+/// The open archive's files, as its VM lists them.
+#[tauri::command]
+async fn archive_entries(state: State<'_, AppState>) -> R<Vec<EntryInfo>> {
+    let (doc, chosen) = (state.doc.clone(), state.chosen.clone());
+    blocking(move || {
+        let is_archive = chosen.lock().unwrap().as_ref().is_some_and(|(_, b)| airlock_core::live::has_files(b)) && ENTRY.get().is_none();
+        if !is_archive {
+            return Ok(Vec::new());
+        }
+        let mut g = doc.lock().unwrap();
+        let d = g.as_mut().ok_or("no document open")?;
+        Ok(d.session.entries().map_err(err)?.into_iter().map(|(index, size, flags, name)| EntryInfo { index, size, flags, name }).collect())
+    })
+    .await
+}
+
+/// A file of the open archive, in a new window with a VM of its own.
+#[tauri::command]
+fn open_entry(index: u32, name: String) -> R<()> {
+    let path = OPENED_PATH.lock().unwrap().clone().ok_or("the archive's file is not known")?;
+    let exe = self_exe().ok_or("airlock's program was not found")?;
+    let name = text::sanitize_line(name.as_bytes());
+    let mut c = std::process::Command::new(exe)
+        .args(["--entry".as_ref(), index.to_string().as_ref(), "--entry-name".as_ref(), std::ffi::OsStr::new(&name), path.as_os_str()])
+        .stdin(std::process::Stdio::null())
+        .env_remove("AIRLOCK_DEMO")
+        .spawn()
+        .map_err(err)?;
+    std::thread::spawn(move || c.wait());
+    Ok(())
 }
 
 /// Dropped files.
@@ -380,10 +466,13 @@ async fn analyze(state: State<'_, AppState>) -> R<serde_json::Value> {
     let (report, chosen) = (state.report.clone(), state.chosen.clone());
     blocking(move || {
         let started = std::time::Instant::now();
-        let a = analysis::run(&bytes, "analyze", false, &|_| {}).map_err(err)?;
+        let entry = ENTRY.get();
+        let hint = entry.map(|(_, n)| n.clone()).unwrap_or_else(|| name.clone());
+        let a = analysis::run(&bytes, Some(&hint), entry.map(|(i, _)| *i), "analyze", false, &|_| {}).map_err(err)?;
         let mut j = a.report.to_json();
         j["document"] = name.into();
         j["seconds"] = (started.elapsed().as_secs_f32() as f64).into();
+        j["log"] = a.log.iter().map(|(t, l)| serde_json::json!([t, l])).collect::<Vec<_>>().into();
         // Kept for "Save report" only if that file is still the one open
         // (an automatic check can finish after another file was opened).
         if chosen.lock().unwrap().as_ref().is_some_and(|(_, b)| Arc::ptr_eq(b, &bytes)) {
@@ -408,17 +497,32 @@ fn save_dialog(app: &tauri::AppHandle, title: &str, name: &str, filters: &[(&str
     for (label, ext) in filters {
         d = d.add_filter(*label, ext);
     }
-    d.blocking_save_file().and_then(|p| p.into_path().ok())
+    let chosen = d.blocking_save_file()?;
+    match chosen.clone().into_path() {
+        Ok(p) => Some(p),
+        Err(e) => {
+            log_event(&format!("save dialog returned a location that is not a file path ({chosen}): {e}"));
+            None
+        }
+    }
 }
 
 /// Write to a temporary name, then rename: never a half-written file.
-fn write_atomic(dest: &std::path::Path, f: impl FnOnce(std::fs::File) -> std::io::Result<()>) -> R<()> {
+/// Where the folder does not allow a temporary file next to the target
+/// (some file-chooser portals grant the chosen name only), it is written in
+/// place. Failures are logged with the path.
+fn write_atomic(dest: &std::path::Path, f: impl Fn(std::fs::File) -> std::io::Result<()>) -> R<()> {
     let part = dest.with_extension("part");
-    let r = std::fs::File::create(&part).and_then(f).and_then(|_| std::fs::rename(&part, dest));
-    if r.is_err() {
-        let _ = std::fs::remove_file(&part);
-    }
-    r.map_err(err)
+    let r = match std::fs::File::create(&part) {
+        Ok(file) => f(file).and_then(|_| std::fs::rename(&part, dest)).inspect_err(|_| {
+            let _ = std::fs::remove_file(&part);
+        }),
+        Err(_) => std::fs::File::create(dest).and_then(&f),
+    };
+    r.map_err(|e| {
+        log_event(&format!("could not save {}: {e}", dest.display()));
+        format!("could not save to {}: {e}", dest.display())
+    })
 }
 
 /// A copy safe to keep, share or open anywhere: a new PDF of the VM's
@@ -489,6 +593,166 @@ async fn close_document(state: State<'_, AppState>) -> R<()> {
 }
 
 /// Puts WebKit's web-content process (where document text is drawn) in
+/// Every type airlock opens (the same list as scripts/install.sh).
+const MIME_TYPES: &[&str] = &[
+    "application/pdf",
+    "application/msword",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.ms-word.document.macroEnabled.12",
+    "application/vnd.ms-excel",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel.sheet.macroEnabled.12",
+    "application/vnd.ms-powerpoint",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "application/vnd.ms-powerpoint.presentation.macroEnabled.12",
+    "application/vnd.oasis.opendocument.text",
+    "application/vnd.oasis.opendocument.spreadsheet",
+    "application/vnd.oasis.opendocument.presentation",
+    "application/rtf",
+    "text/rtf",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+    "application/vnd.ms-word.template.macroEnabled.12",
+    "application/vnd.ms-excel.addin.macroEnabled.12",
+    "application/vnd.ms-excel.template.macroEnabled.12",
+    "application/vnd.ms-powerpoint.slideshow.macroEnabled.12",
+    // E-mail messages (attachments open like an archive's files).
+    "message/rfc822",
+    "application/vnd.ms-outlook",
+    // Archives (listed inside the VM; each file opens in a VM of its own).
+    "application/zip",
+    "application/x-7z-compressed",
+    "application/vnd.rar",
+    "application/x-rar",
+    "application/x-rar-compressed",
+    "application/x-tar",
+    "application/gzip",
+    "application/x-bzip2",
+    "application/x-xz",
+    "application/x-iso9660-image",
+    "application/vnd.ms-cab-compressed",
+    // Pictures and text / source code (shown syntax-coloured).
+    "image/png",
+    "image/jpeg",
+    "image/gif",
+    "image/webp",
+    "image/bmp",
+    "image/tiff",
+    "image/svg+xml",
+    "image/avif",
+    "image/heic",
+    "image/vnd.microsoft.icon",
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "text/html",
+    "text/css",
+    "text/xml",
+    "application/xml",
+    "application/json",
+    "application/x-yaml",
+    "text/x-csrc",
+    "text/x-chdr",
+    "text/x-c++src",
+    "text/x-c++hdr",
+    "text/x-python",
+    "text/x-script.python",
+    "text/x-java",
+    "text/x-rust",
+    "text/x-go",
+    "application/javascript",
+    "text/javascript",
+    "application/x-shellscript",
+    "text/x-shellscript",
+    "application/x-powershell",
+    "text/x-log",
+];
+
+/// An AppImage is a single file the desktop knows nothing about: register it
+/// like an installed app (menu and search entry, "Open with airlock", the
+/// window's icon; the window's app id "airlock-app" is matched through
+/// StartupWMClass). Rewritten when the AppImage moves. A launcher from
+/// scripts/install.sh (without our marker) is left alone. Never changes which
+/// app opens a type by default: on first registration the current defaults
+/// are pinned first, like scripts/install.sh does.
+fn integrate_appimage() {
+    let Some(appimage) = std::env::var_os("APPIMAGE").map(PathBuf::from) else { return };
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else { return };
+    let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".local/share"));
+    let apps = data.join("applications");
+    let desktop = apps.join("airlock.desktop");
+    let old = std::fs::read_to_string(&desktop).ok();
+    if old.as_deref().is_some_and(|d| !d.contains("X-Airlock-AppImage=true")) {
+        return;
+    }
+    let exe = format!("\"{}\"", appimage.display().to_string().replace('\\', "\\\\").replace('"', "\\\""));
+    let entry = format!(
+        "[Desktop Entry]\nType=Application\nName=airlock\nGenericName=Safe Document Viewer\n\
+         Comment=Open untrusted PDFs and Office files inside a disposable microVM\n\
+         Exec={exe} %f\nIcon=airlock\nTerminal=false\nCategories=Office;Viewer;Security;\n\
+         Keywords=pdf;docx;xlsx;pptx;malware;sandbox;safe;viewer;\nMimeType={};\n\
+         StartupWMClass=airlock-app\nActions=new-window;quit-all;\nX-Airlock-AppImage=true\n\n\
+         [Desktop Action new-window]\nName=New window\nExec={exe} --new-window\n\n\
+         [Desktop Action quit-all]\nName=Exit airlock (all windows)\nExec={exe} --quit-all\n",
+        MIME_TYPES.join(";")
+    );
+    let icons: [(&str, &[u8]); 6] = [
+        ("32x32", include_bytes!("../icons/32x32.png")),
+        ("48x48", include_bytes!("../icons/48x48.png")),
+        ("64x64", include_bytes!("../icons/64x64.png")),
+        ("128x128", include_bytes!("../icons/128x128.png")),
+        ("256x256", include_bytes!("../icons/256x256.png")),
+        ("512x512", include_bytes!("../icons/icon.png")),
+    ];
+    let mut changed = false;
+    for (size, png) in icons {
+        let path = data.join(format!("icons/hicolor/{size}/apps/airlock.png"));
+        if std::fs::read(&path).ok().as_deref() != Some(png) {
+            changed |= path.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(&path, png).is_ok();
+        }
+    }
+    if old.as_deref() != Some(entry.as_str()) {
+        if old.is_none() {
+            pin_current_defaults(&home);
+        }
+        if std::fs::create_dir_all(&apps).is_err() || std::fs::write(&desktop, &entry).is_err() {
+            return;
+        }
+        changed = true;
+    }
+    if changed {
+        // Each desktop caches its menu and type associations differently.
+        let quiet = |cmd: &str, args: &[&std::ffi::OsStr]| {
+            let _ = std::process::Command::new(cmd).args(args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+        };
+        quiet("update-desktop-database", &["-q".as_ref(), apps.as_os_str()]);
+        quiet("gtk-update-icon-cache", &["-q".as_ref(), "-t".as_ref(), data.join("icons/hicolor").as_os_str()]);
+        quiet("kbuildsycoca6", &[]);
+        quiet("kbuildsycoca5", &[]);
+        log_event(&format!("registered the AppImage with the desktop: {}", appimage.display()));
+    }
+}
+
+/// Make today's effective default for each type explicit, so adding airlock
+/// to "Open with" can never make it the default by accident.
+fn pin_current_defaults(home: &std::path::Path) {
+    let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".config"));
+    let list = std::fs::read_to_string(config.join("mimeapps.list")).unwrap_or_default();
+    let explicit: std::collections::HashSet<&str> = list
+        .lines()
+        .skip_while(|l| l.trim() != "[Default Applications]")
+        .skip(1)
+        .take_while(|l| !l.starts_with('['))
+        .filter_map(|l| l.split_once('=').map(|(k, _)| k.trim()))
+        .collect();
+    for t in MIME_TYPES.iter().filter(|t| !explicit.contains(*t)) {
+        let Ok(out) = std::process::Command::new("xdg-mime").args(["query", "default", t]).stderr(std::process::Stdio::null()).output() else { return };
+        let current = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !current.is_empty() && current != "airlock.desktop" {
+            let _ = std::process::Command::new("xdg-mime").args(["default", &current, t]).stderr(std::process::Stdio::null()).status();
+        }
+    }
+}
+
 /// WebKitGTK's own bubblewrap + seccomp sandbox, which the 4.1 API leaves
 /// off by default. Skipped only if its helpers are missing, so the app
 /// still starts; `airlock doctor` reports that case.
@@ -525,7 +789,45 @@ fn sandbox_web_content() {
 // official servers, regression suite, auto-restore). It runs from the update
 // kit installed next to this app, or else from the source checkout.
 
+/// The AppImage updates from the kit its setup copied to the user's VM
+/// folder (the mounted image is read-only). A newer AppImage refreshes that
+/// kit first (.kit-version differs); the pins it carries are its own.
+fn appimage_kit() -> Option<PathBuf> {
+    std::env::var_os("APPIMAGE")?;
+    let bundled = std::env::current_exe().ok()?.parent()?.join("../lib/airlock/kit");
+    let user = airlock_lib()?.join("kit");
+    if !user.join(".airlock-kit").exists() {
+        return None; // not set up yet
+    }
+    let version = |k: &std::path::Path| std::fs::read_to_string(k.join(".kit-version")).unwrap_or_default();
+    if bundled.is_dir() && version(&bundled) != version(&user) {
+        for d in ["guest", "guest-agent", "proto", "scripts", "tests"] {
+            let _ = std::fs::remove_dir_all(user.join(d));
+            let ok = std::process::Command::new("cp").arg("-r").arg(bundled.join(d)).arg(user.join(d)).status().is_ok_and(|s| s.success());
+            if !ok {
+                log_event(&format!("could not refresh the update kit ({d})"));
+                return None;
+            }
+        }
+        let _ = std::fs::copy(bundled.join(".kit-version"), user.join(".kit-version"));
+        let _ = std::fs::copy(bundled.join(".vm-version"), user.join(".vm-version"));
+        // Check again now: the new kit may bring viewer features.
+        let _ = std::fs::remove_file(user.join("build/update-status"));
+        log_event(&format!("update kit refreshed from this AppImage ({})", version(&bundled).trim()));
+    }
+    Some(user)
+}
+
+/// The AppImage's own CLI, for update.sh's checks.
+fn appimage_cli() -> Option<PathBuf> {
+    std::env::var_os("APPIMAGE")?;
+    Some(std::env::current_exe().ok()?.parent()?.join("../lib/airlock/bin/airlock")).filter(|p| p.is_file())
+}
+
 fn source_tree() -> Option<PathBuf> {
+    if std::env::var_os("APPIMAGE").is_some() {
+        return appimage_kit();
+    }
     let exe_dir = std::env::current_exe().ok().and_then(|p| p.parent().map(PathBuf::from));
     [
         std::env::var_os("AIRLOCK_SOURCE").map(PathBuf::from),
@@ -605,6 +907,248 @@ async fn setup_fix(app: tauri::AppHandle) -> R<Vec<String>> {
     .await
 }
 
+// ---------------------------------------------------------------- settings
+// The window's preferences (colours, panel width, toggles) also go to a file:
+// every window is its own process, and a new one must not start before an
+// older one has flushed its web storage.
+
+fn settings_path(app: &tauri::AppHandle) -> Option<PathBuf> {
+    app.path().app_config_dir().ok().map(|d| d.join("settings.json"))
+}
+
+#[tauri::command]
+fn ui_settings(app: tauri::AppHandle) -> serde_json::Value {
+    settings_path(&app)
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok())
+        .filter(|v| v.is_object())
+        .unwrap_or_else(|| serde_json::json!({}))
+}
+
+#[tauri::command]
+fn ui_setting_set(app: tauri::AppHandle, key: String, value: String) -> R<()> {
+    if !key.starts_with("airlock.") || key.len() > 64 || value.len() > 256 {
+        return Err("not a setting".into());
+    }
+    let path = settings_path(&app).ok_or("no settings folder")?;
+    std::fs::create_dir_all(path.parent().unwrap()).map_err(err)?;
+    // Read-modify-write under a lock: several windows may save at once.
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path.with_extension("lock")).map_err(err)?;
+    unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX) };
+    let mut all = ui_settings(app.clone());
+    all[key] = value.into();
+    let tmp = path.with_extension("json.part");
+    std::fs::write(&tmp, serde_json::to_vec_pretty(&all).map_err(err)?).map_err(err)?;
+    std::fs::rename(&tmp, &path).map_err(err)
+}
+
+/// For "About & logs": versions of everything that touches a document, and
+/// the app's own log (VM stops, tripwires, updates, errors).
+#[tauri::command]
+async fn about_info() -> R<serde_json::Value> {
+    blocking(|| {
+        let mut j = serde_json::json!({ "app": env!("CARGO_PKG_VERSION") });
+        j["install"] = match std::env::var_os("APPIMAGE") {
+            Some(a) => format!("AppImage: {}", PathBuf::from(a).display()),
+            None => format!("installed: {}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()),
+        }
+        .into();
+        if let Ok(a) = airlock_core::vm::Assets::locate() {
+            j["vm_dir"] = a.rootfs.parent().map(|p| p.display().to_string()).unwrap_or_default().into();
+            let info = std::fs::read_to_string(a.rootfs.with_file_name("rootfs.info")).unwrap_or_default();
+            let mut pkgs = Vec::new();
+            for l in info.lines() {
+                if let Some(t) = l.strip_prefix("built ") {
+                    j["image_built"] = t.trim().parse::<u64>().unwrap_or(0).into();
+                } else if let Some(r) = l.strip_prefix("rules ") {
+                    j["rules"] = r.into();
+                    // ClamAV: the daily database's header ("ClamAV-VDB:<date>:<version>:...")
+                    // and how the last refresh went (scripts/clamav-db.sh).
+                    let dir = a.rootfs.parent().map(PathBuf::from).unwrap_or_default();
+                    if dir.join("clamav.ext4").is_file() {
+                        let mut head = [0u8; 160];
+                        let n = std::fs::File::open(dir.join("clamav/daily.cvd")).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
+                        let h = String::from_utf8_lossy(&head[..n]).into_owned();
+                        let f: Vec<&str> = h.split(':').collect();
+                        let status = std::fs::read_to_string(dir.join("clamav.status")).unwrap_or_default();
+                        let mut st = status.split_whitespace();
+                        j["clamav"] = serde_json::json!({
+                            "version": f.get(2).and_then(|v| v.trim().parse::<u64>().ok()),
+                            "date": f.get(1).map(|d| text::sanitize_line(d.as_bytes())),
+                            "checked": st.next().and_then(|t| t.parse::<u64>().ok()),
+                            "state": st.next().map(|s| text::sanitize_line(s.as_bytes())),
+                        });
+                    }
+                    if let Ok(list) = std::fs::read_to_string(a.rootfs.with_file_name("urlhaus.txt")) {
+                        j["urlhaus"] = list.lines().count().into();
+                    }
+                    if let Some((n, updated)) = airlock_core::known::status() {
+                        j["known"] = serde_json::json!({ "count": n, "updated": updated });
+                    }
+                } else if ["mupdf-", "libreoffice-common-", "yara-", "python3-3", "quickjs-", "py3-oletools-", "py3-pygments-2", "zbar-", "7zip-", "imagemagick-7", "clamav-scanner-"].iter().any(|p| l.starts_with(p)) {
+                    pkgs.push(l.to_string());
+                }
+            }
+            j["packages"] = pkgs.into();
+            // "Linux version 6.1.190 ..." is stored in the kernel image.
+            if let Ok(k) = std::fs::read(&a.kernel) {
+                let needle = b"Linux version ";
+                if let Some(i) = k.windows(needle.len()).position(|w| w == needle) {
+                    let end = k[i..].iter().position(|&b| b == 0 || b == b'\n').unwrap_or(0).min(160);
+                    j["kernel"] = text::sanitize_line(&k[i..i + end]).into();
+                }
+            }
+            if let Ok(o) = std::process::Command::new(&a.firecracker).arg("--version").output() {
+                j["firecracker"] = text::sanitize_line(String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").as_bytes()).into();
+            }
+        }
+        let log = std::env::var_os("XDG_STATE_HOME")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
+            .map(|d| d.join("airlock/app.log"));
+        let text = log.and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
+        let lines: Vec<String> = String::from_utf8_lossy(&text).lines().rev().take(150).map(|l| text::sanitize_line(l.as_bytes())).collect();
+        j["log"] = lines.into_iter().rev().collect::<Vec<_>>().into();
+        Ok(j)
+    })
+    .await
+}
+
+/// What "Uninstall airlock" would remove: offered for the AppImage only
+/// (scripts/install.sh --uninstall removes a source install).
+#[derive(Serialize)]
+struct UninstallInfo {
+    available: bool,
+    /// The VM, its build kit and caches.
+    lib: String,
+    lib_bytes: u64,
+    appimage: Option<String>,
+    /// System settings from setup's "Fix" that can be undone.
+    system: bool,
+}
+
+fn airlock_lib() -> Option<PathBuf> {
+    std::env::var_os("AIRLOCK_LIB").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/lib/airlock")))
+}
+
+fn desktop_entry() -> Option<PathBuf> {
+    let data = std::env::var_os("XDG_DATA_HOME").map(PathBuf::from).or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+    Some(data.join("applications/airlock.desktop"))
+}
+
+fn dir_bytes(dir: &std::path::Path) -> u64 {
+    let Ok(rd) = std::fs::read_dir(dir) else { return 0 };
+    rd.flatten()
+        .map(|e| match e.file_type() {
+            Ok(t) if t.is_dir() => dir_bytes(&e.path()),
+            Ok(t) if t.is_file() => e.metadata().map(|m| {
+                use std::os::unix::fs::MetadataExt;
+                m.blocks() * 512
+            }).unwrap_or(0),
+            _ => 0,
+        })
+        .sum()
+}
+
+#[tauri::command]
+async fn uninstall_info() -> R<UninstallInfo> {
+    blocking(|| {
+        let appimage = std::env::var_os("APPIMAGE").map(PathBuf::from);
+        // A launcher from scripts/install.sh means a source install shares
+        // this VM: that one is removed with its own --uninstall.
+        let source_install = desktop_entry().and_then(|d| std::fs::read_to_string(d).ok()).is_some_and(|d| !d.contains("X-Airlock-AppImage=true"));
+        let lib = airlock_lib().ok_or("no home folder")?;
+        let system = ["/etc/udev/rules.d/65-airlock.rules", "/etc/sysctl.d/60-airlock-userns.conf", "/etc/modules-load.d/airlock.conf"].iter().any(|f| std::path::Path::new(f).exists());
+        Ok(UninstallInfo {
+            available: appimage.is_some() && !source_install,
+            lib_bytes: dir_bytes(&lib),
+            lib: lib.display().to_string(),
+            appimage: appimage.map(|p| p.display().to_string()),
+            system,
+        })
+    })
+    .await
+}
+
+/// Removes everything the AppImage added for this user, optionally the
+/// system settings (one password prompt) and the AppImage file, then closes
+/// every airlock window. Documents and files the user saved are not touched.
+#[tauri::command]
+async fn uninstall(app: tauri::AppHandle, system: bool, remove_appimage: bool) -> R<Vec<String>> {
+    let info = uninstall_info().await?;
+    if !info.available {
+        return Err("uninstall is offered for the AppImage only; a source install uses scripts/install.sh --uninstall".into());
+    }
+    let done = blocking(move || {
+        let mut done = Vec::new();
+        // System settings first: their undo script lives in the kit.
+        if system && info.system {
+            let (kit, _) = setup_kit(&app).ok_or("setup files not found")?;
+            let out = std::process::Command::new("sh").arg("scripts/setup.sh").arg("unfix").current_dir(&kit).output().map_err(err)?;
+            if !out.status.success() {
+                return Err("the system settings were not changed (password prompt cancelled?); nothing was removed".to_string());
+            }
+            done.push("System settings from setup undone".to_string());
+        }
+        let home = std::env::var_os("HOME").map(PathBuf::from).ok_or("no home folder")?;
+        if let Some(d) = desktop_entry() {
+            let _ = std::fs::remove_file(&d);
+            let data = d.parent().and_then(|p| p.parent()).map(PathBuf::from).unwrap_or_default();
+            for size in ["32x32", "48x48", "64x64", "128x128", "256x256", "512x512"] {
+                let _ = std::fs::remove_file(data.join(format!("icons/hicolor/{size}/apps/airlock.png")));
+            }
+            let _ = std::process::Command::new("update-desktop-database").arg("-q").arg(data.join("applications")).status();
+            for k in ["kbuildsycoca6", "kbuildsycoca5"] {
+                let _ = std::process::Command::new(k).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
+            }
+            done.push("Menu entry, icon and \"Open with\" removed".to_string());
+        }
+        let lib = PathBuf::from(&info.lib);
+        if lib.starts_with(&home) && (lib.join("rootfs.ext4").exists() || lib.join("kit/.airlock-kit").exists()) {
+            std::fs::remove_dir_all(&lib).map_err(err)?;
+            done.push(format!("Secure viewer removed ({})", info.lib));
+        }
+        let mut dirs = vec![home.join(".cache/airlock")];
+        dirs.extend([app.path().app_local_data_dir(), app.path().app_cache_dir(), app.path().app_config_dir(), app.path().app_data_dir()].into_iter().flatten());
+        for d in dirs.iter().filter(|d| d.starts_with(&home) && d.exists()) {
+            let _ = std::fs::remove_dir_all(d);
+        }
+        done.push("Settings and caches removed".to_string());
+        if remove_appimage {
+            if let Some(a) = &info.appimage {
+                // Safe while running: the mounted image stays until exit.
+                std::fs::remove_file(a).map_err(err)?;
+                done.push(format!("AppImage deleted ({a})"));
+            }
+        }
+        Ok(done)
+    })
+    .await?;
+    log_event(&format!("uninstalled: {}", done.join("; ")));
+    Ok(done)
+}
+
+/// Reads a build's output as lines; curl redraws its meter with \r, so each
+/// redraw is a line too. Lines are sanitised; blank ones are skipped.
+fn stream_lines(out: impl std::io::Read, mut f: impl FnMut(String)) {
+    use std::io::BufRead;
+    let mut out = std::io::BufReader::new(out);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        let Ok(n) = out.read_until(b'\n', &mut buf) else { break };
+        if n == 0 {
+            break;
+        }
+        for part in buf.split(|&b| b == b'\r' || b == b'\n') {
+            let line = text::sanitize_line(part);
+            if !line.trim().is_empty() {
+                f(line);
+            }
+        }
+    }
+}
+
 /// Builds and installs the VM (user space), streaming "setup-progress".
 #[tauri::command]
 async fn setup_build(app: tauri::AppHandle, state: State<'_, AppState>) -> R<()> {
@@ -613,19 +1157,20 @@ async fn setup_build(app: tauri::AppHandle, state: State<'_, AppState>) -> R<()>
         return Err("a build or update is already running".into());
     }
     let result = blocking(move || {
-        use std::io::BufRead;
         let (kit, sinkhole) = setup_kit(&app).ok_or("setup files not found")?;
         let mut cmd = std::process::Command::new("sh");
-        cmd.arg("-c").arg("exec sh scripts/setup.sh build 2>&1").current_dir(&kit).stdout(std::process::Stdio::piped());
+        // AIRLOCK_PROGRESS: package names, download meters and "@@" step
+        // markers for the progress view.
+        cmd.arg("-c").arg("exec sh scripts/setup.sh build 2>&1").current_dir(&kit).env("AIRLOCK_PROGRESS", "1").stdout(std::process::Stdio::piped());
         if let Some(s) = sinkhole {
             cmd.env("AIRLOCK_SINKHOLE", s);
         }
         let mut child = cmd.spawn().map_err(err)?;
         let mut last = String::new();
-        for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
-            last = text::sanitize_line(line.as_bytes());
-            let _ = app.emit("setup-progress", last.clone());
-        }
+        stream_lines(child.stdout.take().unwrap(), |line| {
+            last = line.clone();
+            let _ = app.emit("setup-progress", line);
+        });
         if child.wait().map_err(err)?.success() { Ok(()) } else { Err(format!("the build stopped: {last}")) }
     })
     .await;
@@ -664,6 +1209,7 @@ fn parse_status(text: &str) -> UpdateStatus {
             "firecracker" => st.changes.extend(pair("Firecracker")),
             "alpine" => st.changes.extend(pair("Alpine base")),
             "rules" => st.changes.extend(pair("Malware signatures")),
+            "viewer" => st.changes.insert(0, "New viewer features from this version of airlock (pictures, code, scripts…)".into()),
             "pkg" => {
                 let f: Vec<&str> = v.split_whitespace().collect();
                 if let [name, old, new] = f[..] {
@@ -692,7 +1238,11 @@ async fn update_status(force: bool) -> R<UpdateStatus> {
                 }
             }
         }
-        let out = std::process::Command::new(tree.join("scripts/update.sh")).arg("--status").output().map_err(err)?;
+        let mut cmd = std::process::Command::new(tree.join("scripts/update.sh"));
+        if let Some(cli) = appimage_cli() {
+            cmd.env("AIRLOCK_CLI", cli);
+        }
+        let out = cmd.arg("--status").output().map_err(err)?;
         if !out.status.success() {
             let msg = String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("check failed").to_string();
             return Ok(UpdateStatus { supported: true, error: Some(msg), ..Default::default() });
@@ -719,24 +1269,33 @@ async fn run_update(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Upda
         return Err("an update is already running".into());
     }
     let result = blocking(move || {
-        use std::io::BufRead;
         let tree = source_tree().ok_or("no airlock source checkout found to update from")?;
-        let mut child = std::process::Command::new("sh")
-            .arg("-c")
-            .arg("exec scripts/update.sh 2>&1")
-            .current_dir(&tree)
-            .stdout(std::process::Stdio::piped())
-            .spawn()
-            .map_err(err)?;
-        let mut tail: Vec<String> = Vec::new();
-        for line in std::io::BufReader::new(child.stdout.take().unwrap()).lines().map_while(Result::ok) {
-            let line = text::sanitize_line(line.as_bytes());
-            let _ = app.emit("update-progress", line.clone());
-            tail.push(line);
-            if tail.len() > 40 {
-                tail.remove(0);
-            }
+        // One update at a time across every airlock window (each is its own
+        // process): an exclusive lock on the kit, held until this one ends.
+        let _ = std::fs::create_dir_all(tree.join("build"));
+        let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(tree.join("build/.update.lock")).map_err(err)?;
+        if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+            return Err("another airlock window is already updating; its progress shows there".to_string());
         }
+        let mut cmd = std::process::Command::new("sh");
+        // AIRLOCK_PROGRESS: the build's own output (downloads, packages,
+        // kernel files, test results) for the live progress view.
+        cmd.arg("-c").arg("exec scripts/update.sh 2>&1").current_dir(&tree).env("AIRLOCK_PROGRESS", "1").stdout(std::process::Stdio::piped());
+        if let Some(cli) = appimage_cli() {
+            cmd.env("AIRLOCK_CLI", cli);
+        }
+        let mut child = cmd.spawn().map_err(err)?;
+        let mut tail: Vec<String> = Vec::new();
+        stream_lines(child.stdout.take().unwrap(), |line| {
+            let _ = app.emit("update-progress", line.clone());
+            // Meter redraws and per-file lines would crowd out the summary.
+            if !line.starts_with("@@") && !line.trim_start().starts_with(|c: char| c.is_ascii_digit()) {
+                tail.push(line);
+                if tail.len() > 40 {
+                    tail.remove(0);
+                }
+            }
+        });
         let ok = child.wait().map_err(err)?.success();
         let _ = std::fs::remove_file(tree.join("build/update-status"));
         let lines = if ok { tail.iter().skip_while(|l| !l.starts_with("==> Updated")).cloned().collect() } else { tail };
@@ -769,6 +1328,7 @@ fn stable_rendering() {
 fn main() {
     stable_rendering();
     sandbox_web_content();
+    std::thread::spawn(integrate_appimage);
     let state = AppState::default();
     let mut args: Vec<PathBuf> = std::env::args_os().skip(1).map(PathBuf::from).collect();
     // From the launcher's right-click menu (desktop file actions).
@@ -779,6 +1339,25 @@ fn main() {
         return;
     }
     args.retain(|a| a != "--new-window");
+    // "--entry N --entry-name NAME archive": one file of an archive.
+    if let Some(i) = args.iter().position(|a| a == "--entry") {
+        let n = args.get(i + 1).and_then(|v| v.to_str()).and_then(|v| v.parse::<u32>().ok());
+        let name_at = args.iter().position(|a| a == "--entry-name");
+        let name = name_at.and_then(|j| args.get(j + 1)).map(|v| text::sanitize_line(v.as_os_str().as_encoded_bytes()));
+        if let (Some(n), Some(name)) = (n, name) {
+            let _ = ENTRY.set((n, name));
+        }
+        let mut drop_idx: Vec<usize> = vec![i, i + 1];
+        if let Some(j) = name_at {
+            drop_idx.extend([j, j + 1]);
+        }
+        drop_idx.sort_unstable();
+        for k in drop_idx.into_iter().rev() {
+            if k < args.len() {
+                args.remove(k);
+            }
+        }
+    }
     // "airlock-app a.pdf b.docx": the first here, the others in their own windows.
     if args.len() > 1 {
         open_elsewhere(&args.split_off(1));
@@ -804,6 +1383,14 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            uninstall_info,
+            uninstall,
+            supported_files,
+            archive_entries,
+            open_entry,
+            ui_settings,
+            ui_setting_set,
+            about_info,
             pick_and_open,
             open_path,
             open_paths,

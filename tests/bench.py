@@ -239,7 +239,10 @@ def harmless_file(r):
 
 def analyze(path, out):
     t = time.time()
-    p = subprocess.run([AIRLOCK, "analyze", path, "--out", out, "--report-only"], capture_output=True, text=True, timeout=600)
+    # Every malicious sample here comes from MalwareBazaar, so its fingerprint
+    # list would match them all: the bench measures airlock's own detection.
+    env = dict(os.environ, AIRLOCK_NO_KNOWN_LIST="1")
+    p = subprocess.run([AIRLOCK, "analyze", path, "--out", out, "--report-only"], capture_output=True, text=True, timeout=600, env=env)
     rep = None
     try:
         with open(os.path.join(out, "report.json")) as f:
@@ -263,13 +266,20 @@ def run_one(r, ram, out_root):
                 files = [os.path.join(dp, f) for dp, _, fs in os.walk(work) for f in fs]
                 if len(files) != 1:
                     return r, "ERROR", 0, f"expected 1 file, found {len(files)}"
-                sample = os.path.join(work, "sample.bin")
+                # The extension tells the VM which language to colour (text and code).
+                sample = os.path.join(work, f"sample.{r['type']}")
                 os.rename(files[0], sample)
                 verdict, secs, rep, err = analyze(sample, out)
             finally:
                 shutil.rmtree(work, ignore_errors=True)
         else:
-            verdict, secs, rep, err = analyze(harmless_file(r), out)
+            work = tempfile.mkdtemp(dir=ram)
+            try:
+                sample = os.path.join(work, f"sample.{r['type']}")
+                os.symlink(harmless_file(r), sample)
+                verdict, secs, rep, err = analyze(sample, out)
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
         if rep is not None:
             with open(os.path.join(out, "summary.txt"), "w") as f:
                 f.write("\n".join(f"{x.get('severity')}\t{x.get('title')}\t{x.get('what')}" for x in rep.get("findings", [])))

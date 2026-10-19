@@ -573,7 +573,9 @@ async fn save_report(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Opt
             return Ok(None);
         };
         let json = dest.extension().is_some_and(|e| e.eq_ignore_ascii_case("json"));
-        let body = if json { serde_json::to_string_pretty(&j).map_err(err)? + "\n" } else { report_text(&j) };
+        // Written so that antivirus programs do not take the report for the
+        // malware it quotes (see report::json_for_disk).
+        let body = if json { report::json_for_disk(&j) + "\n" } else { report::defang_text(&report_text(&j)) };
         write_atomic(&dest, |mut f| std::io::Write::write_all(&mut f, body.as_bytes()))?;
         Ok(Some(dest.display().to_string()))
     })
@@ -934,7 +936,7 @@ fn ui_setting_set(app: tauri::AppHandle, key: String, value: String) -> R<()> {
     std::fs::create_dir_all(path.parent().unwrap()).map_err(err)?;
     // Read-modify-write under a lock: several windows may save at once.
     let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(path.with_extension("lock")).map_err(err)?;
-    unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX) };
+    let _ = lock.lock();
     let mut all = ui_settings(app.clone());
     all[key] = value.into();
     let tmp = path.with_extension("json.part");
@@ -998,7 +1000,7 @@ async fn about_info() -> R<serde_json::Value> {
                     j["kernel"] = text::sanitize_line(&k[i..i + end]).into();
                 }
             }
-            if let Ok(o) = std::process::Command::new(&a.firecracker).arg("--version").output() {
+            if let Ok(o) = std::process::Command::new(&a.vmm).arg("--version").output() {
                 j["firecracker"] = text::sanitize_line(String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").as_bytes()).into();
             }
         }
@@ -1042,8 +1044,11 @@ fn dir_bytes(dir: &std::path::Path) -> u64 {
         .map(|e| match e.file_type() {
             Ok(t) if t.is_dir() => dir_bytes(&e.path()),
             Ok(t) if t.is_file() => e.metadata().map(|m| {
-                use std::os::unix::fs::MetadataExt;
-                m.blocks() * 512
+                // Space actually used (sparse disk images are mostly holes).
+                #[cfg(unix)]
+                return std::os::unix::fs::MetadataExt::blocks(&m) * 512;
+                #[cfg(not(unix))]
+                m.len()
             }).unwrap_or(0),
             _ => 0,
         })
@@ -1274,7 +1279,7 @@ async fn run_update(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Upda
         // process): an exclusive lock on the kit, held until this one ends.
         let _ = std::fs::create_dir_all(tree.join("build"));
         let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(tree.join("build/.update.lock")).map_err(err)?;
-        if unsafe { libc::flock(std::os::fd::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+        if lock.try_lock().is_err() {
             return Err("another airlock window is already updating; its progress shows there".to_string());
         }
         let mut cmd = std::process::Command::new("sh");
@@ -1334,7 +1339,7 @@ fn main() {
     // From the launcher's right-click menu (desktop file actions).
     if args.first().is_some_and(|a| a == "--quit-all") {
         for pid in instances().into_iter().filter(|&p| p != std::process::id()) {
-            unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+            terminate(pid);
         }
         return;
     }
@@ -1455,11 +1460,10 @@ fn instances() -> Vec<u32> {
 
 /// Holds the tray lock while this process lives (flock on an open file).
 fn take_tray_lock() -> bool {
-    use std::os::fd::AsRawFd;
     static LOCK: Mutex<Option<std::fs::File>> = Mutex::new(None);
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
     let Ok(f) = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("airlock-tray.lock")) else { return false };
-    if unsafe { libc::flock(f.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+    if f.try_lock().is_err() {
         return false;
     }
     *LOCK.lock().unwrap() = Some(f);
@@ -1532,10 +1536,20 @@ fn start_tray(app: &tauri::AppHandle) {
 fn quit_all(app: &tauri::AppHandle) {
     let me = std::process::id();
     for pid in instances().into_iter().filter(|&p| p != me) {
-        unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        terminate(pid);
     }
     shutdown(app);
 }
+
+/// Asks another airlock window to close properly (it handles SIGTERM).
+#[cfg(unix)]
+fn terminate(pid: u32) {
+    unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+}
+
+/// Windows: other windows are not found yet (instances() reads /proc).
+#[cfg(not(unix))]
+fn terminate(_pid: u32) {}
 
 /// Closes this window's VM (deleting its copy of the document), then exits.
 fn shutdown(app: &tauri::AppHandle) {
@@ -1546,8 +1560,10 @@ fn shutdown(app: &tauri::AppHandle) {
     app.exit(0);
 }
 
+#[cfg(unix)]
 static TERM_PIPE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
+#[cfg(unix)]
 extern "C" fn on_term(_: libc::c_int) {
     // Only async-signal-safe work here: wake the thread below.
     let fd = TERM_PIPE.load(Ordering::SeqCst);
@@ -1556,6 +1572,10 @@ extern "C" fn on_term(_: libc::c_int) {
 
 /// SIGTERM (from "Close all", logout or `kill`) shuts this window down
 /// properly instead of leaving its VM's run directory behind.
+#[cfg(not(unix))]
+fn handle_sigterm(_app: &tauri::AppHandle) {}
+
+#[cfg(unix)]
 fn handle_sigterm(app: &tauri::AppHandle) {
     let mut fds = [0; 2];
     if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {

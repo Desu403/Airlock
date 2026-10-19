@@ -1,0 +1,83 @@
+{
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "publisher": "airlock",
+    "category": "Productivity",
+    "shortDescription": "Open untrusted documents inside disposable VMs",
+    "longDescription": "airlock opens PDF, Office, e-mail, archive, picture and code files inside throwaway virtual machines with no network, shows only pixels, and checks every file for malware.",
+    "resources": {
+      "bundle-stage-win/vm/": "vm/"
+    },
+    "fileAssociations": [
+      {
+        "ext": [
+          "pdf"
+        ],
+        "name": "airlock.pdf",
+        "description": "PDF document",
+        "role": "Viewer"
+      },
+      {
+        "ext": [
+          "doc",
+          "docx",
+          "docm",
+          "dot",
+          "dotx",
+          "dotm",
+          "rtf",
+          "odt"
+        ],
+        "name": "airlock.document",
+        "description": "Document",
+        "role": "Viewer"
+      },
+      {
+        "ext": [
+          "xls",
+          "xlsx",
+          "xlsm",
+          "xlsb",
+          "ods",
+          "csv"
+        ],
+        "name": "airlock.spreadsheet",
+        "description": "Spreadsheet",
+        "role": "Viewer"
+      },
+      {
+        "ext": [
+          "ppt",
+          "pptx",
+          "pptm",
+          "pps",
+          "ppsx",
+          "odp"
+        ],
+        "name": "airlock.presentation",
+        "description": "Presentation",
+        "role": "Viewer"
+      },
+      {
+        "ext": [
+          "eml",
+          "msg"
+        ],
+        "name": "airlock.email",
+        "description": "E-mail message",
+        "role": "Viewer"
+      }
+    ],
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "compression": "lzma",
+        "displayLanguageSelector": false,
+        "installerHooks": "windows/hooks.nsh"
+      }
+    }
+  }
+}

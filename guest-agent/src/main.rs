@@ -95,6 +95,26 @@ fn finish(out: File) -> ! {
     power_off()
 }
 
+/// The connection to the host: vsock under Firecracker (Linux), a
+/// virtio-serial port named "airlock" under QEMU (Windows, which has no
+/// vsock; `airlock.link=serial`). Both carry the same frames.
+fn host_link() -> std::io::Result<File> {
+    if !fs::read_to_string("/proc/cmdline").unwrap_or_default().split_whitespace().any(|t| t == "airlock.link=serial") {
+        return vsock_connect(FRAME_PORT);
+    }
+    // The port appears shortly after boot; its node is made by devtmpfs.
+    for _ in 0..100 {
+        for e in fs::read_dir("/sys/class/virtio-ports").into_iter().flatten().flatten() {
+            if fs::read_to_string(e.path().join("name")).is_ok_and(|n| n.trim() == "airlock") {
+                let dev = format!("/dev/{}", e.file_name().to_string_lossy());
+                return fs::OpenOptions::new().read(true).write(true).open(dev);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Err(std::io::Error::other("no virtio-serial port named airlock"))
+}
+
 fn vsock_connect(port: u32) -> std::io::Result<File> {
     unsafe {
         let fd = libc::socket(libc::AF_VSOCK, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0);
@@ -309,10 +329,10 @@ fn main() {
     let mode = mode_from_cmdline();
     log(&format!("mode {mode:?}"));
 
-    let mut out = match vsock_connect(FRAME_PORT) {
+    let mut out = match host_link() {
         Ok(f) => f,
         Err(e) => {
-            log(&format!("vsock connect failed: {e}"));
+            log(&format!("host connection failed: {e}"));
             power_off();
         }
     };

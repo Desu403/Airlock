@@ -137,7 +137,7 @@ fn analyze(doc: &[u8], out_dir: &Path, verbose: bool, mode: &'static str, pages:
     let (rep, s) = (a.report, a.session);
     rep.print();
     std::fs::create_dir_all(out_dir)?;
-    std::fs::write(out_dir.join("report.json"), serde_json::to_vec_pretty(&rep.to_json())?)?;
+    std::fs::write(out_dir.join("report.json"), report::json_for_disk(&rep.to_json()))?;
     if s.protocol_violation.is_none() && pages {
         save_pages(&s.pages, out_dir)?;
     }
@@ -400,7 +400,7 @@ fn doctor() -> Result<()> {
     }
     match vm::Assets::locate() {
         Ok(a) => {
-            check(true, &format!("firecracker {}", a.firecracker.display()), "");
+            check(true, &format!("firecracker {}", a.vmm.display()), "");
             let hardened = a.kernel.ends_with("vmlinux-airlock") || a.kernel.ends_with("lib/airlock/vmlinux");
             check(hardened, &format!("guest kernel {}", a.kernel.display()), "run guest/build-kernel.sh for the hardened kernel");
             check(true, &format!("guest image {}", a.rootfs.display()), "");

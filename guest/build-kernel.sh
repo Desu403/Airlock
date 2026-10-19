@@ -1,6 +1,7 @@
 #!/bin/sh
 # Builds the hardened guest kernel (rootless, inside the Alpine build root):
 # Firecracker's microvm 6.1 config + guest/kernel-hardening.config.
+# Outputs vmlinux (Firecracker, Linux) and bzImage (QEMU, Windows).
 # Inputs (checksum-verified downloads): vendor/dl/kernel/linux-$V.tar.xz,
 # vendor/dl/kernel/microvm-6.1.config. Output: vendor/bin/vmlinux-airlock.
 set -eu
@@ -26,11 +27,11 @@ fakeroot_sh build/buildroot "
     make olddefconfig >/dev/null
     if [ $NOTE = echo ]; then
         # One line per 20 compiled files: count and source folder.
-        { make -j\$(nproc) vmlinux 2>&1; echo \$? > /tmp/rc; } | tee /src/build/kernel/build.log |
+        { make -j\$(nproc) vmlinux bzImage 2>&1; echo \$? > /tmp/rc; } | tee /src/build/kernel/build.log |
             awk '/^  (CC|AS|AR|LD) /{ n++; if (n % 20 == 0) { split(\$2, p, \"/\"); print \"@@kernel \" n \" \" p[1]; fflush() } }'
         [ \$(cat /tmp/rc) = 0 ] || { tail -40 /src/build/kernel/build.log; exit 1; }
     else
-        make -j\$(nproc) vmlinux >/src/build/kernel/build.log 2>&1 || { tail -40 /src/build/kernel/build.log; exit 1; }
+        make -j\$(nproc) vmlinux bzImage >/src/build/kernel/build.log 2>&1 || { tail -40 /src/build/kernel/build.log; exit 1; }
     fi
 "
 
@@ -45,4 +46,7 @@ while IFS= read -r line; do
     esac
 done < guest/kernel-hardening.config
 cp "$SRC/vmlinux" vendor/bin/vmlinux-airlock
+# The same kernel in the boot-loader format, for QEMU on Windows (it does not
+# start a bare vmlinux built by current toolchains).
+cp "$SRC/arch/x86/boot/bzImage" vendor/bin/bzImage-airlock
 echo "built vendor/bin/vmlinux-airlock ($(du -h vendor/bin/vmlinux-airlock | cut -f1)), $missing hardening option(s) not applied"

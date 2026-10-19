@@ -636,8 +636,40 @@ impl Report {
     }
 }
 
+/// A report as written to a file: the same JSON, with the characters code
+/// is made of (( ) % ; < > ' = `) as \u escapes. It reads back identical,
+/// but the file no longer holds the exploit code it quotes as evidence, so
+/// antivirus programs do not quarantine the report itself.
+pub fn json_for_disk(v: &serde_json::Value) -> String {
+    let s = serde_json::to_string_pretty(v).unwrap_or_default();
+    // These never occur in JSON's own syntax, only inside strings.
+    s.chars()
+        .map(|c| match c {
+            '(' | ')' | '%' | ';' | '<' | '>' | '\'' | '=' | '`' => format!("\\u{:04x}", c as u32),
+            c => c.to_string(),
+        })
+        .collect()
+}
+
+/// A text report as written to a file, "defanged" as analysts share
+/// indicators: links cannot be clicked (hxxp) and % (how exploit code
+/// hides its payload, %u9090...) is written [%]. Checked with Windows
+/// Defender: an invisible separator was not enough, [%] is.
+pub fn defang_text(s: &str) -> String {
+    s.replace("http://", "hxxp://").replace("https://", "hxxps://").replace('%', "[%]")
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn written_reports_read_back_the_same() {
+        let v = serde_json::json!({ "what": "unescape('%u9090%u9090'); x = (a < b) ; `q`", "n": 1.5, "list": [1, 2] });
+        let s = json_for_disk(&v);
+        assert!(!s.contains("unescape('") && !s.contains("%u9090"));
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&s).unwrap(), v);
+        let t = defang_text("see http://evil.example/p.exe and unescape(%u9090)");
+        assert!(t.contains("hxxp://evil.example") && t.contains("unescape([%]u9090)"));
+    }
     #[test]
     fn linked_pictures_are_tracking_not_attacks() {
         use super::*;

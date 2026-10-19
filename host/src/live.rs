@@ -7,7 +7,7 @@ use crate::{pdf, text, vm};
 use airlock_proto::{valid_text, Cmd, Error, Header, Ind, Kind, HEADER_LEN, MAX_DPI, MAX_QUERY, MIN_DPI};
 use anyhow::{anyhow, bail, Context, Result};
 use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
+use crate::link::Stream;
 use std::time::{Duration, Instant};
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(150);
@@ -129,7 +129,7 @@ enum Msg {
 pub struct LiveSession {
     run: vm::RunDir,
     child: std::process::Child,
-    stream: UnixStream,
+    stream: Stream,
     pub pages: Vec<PageSize>,
     /// Anything the in-VM monitor reported while we were viewing.
     pub indicators: Vec<(Ind, String)>,

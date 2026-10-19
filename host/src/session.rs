@@ -5,7 +5,7 @@ use crate::{pdf, vm};
 use airlock_proto::{valid_text, Error, Header, Ind, Kind, HEADER_LEN};
 use anyhow::{bail, Context, Result};
 use std::io::Read;
-use std::os::unix::net::{UnixListener, UnixStream};
+use crate::link::{Listener, Stream};
 use std::time::{Duration, Instant};
 
 const BOOT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -93,7 +93,7 @@ pub fn run(assets: &vm::Assets, run: &vm::RunDir, spec: &vm::Spec, verbose: bool
     }
 }
 
-fn accept(listener: &UnixListener, child: &mut std::process::Child) -> Result<UnixStream> {
+fn accept(listener: &Listener, child: &mut std::process::Child) -> Result<Stream> {
     let deadline = Instant::now() + BOOT_TIMEOUT;
     loop {
         match listener.accept() {

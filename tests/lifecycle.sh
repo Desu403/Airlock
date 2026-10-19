@@ -24,6 +24,10 @@ KIT=$APP/usr/lib/airlock/kit
 CLI=$APP/usr/lib/airlock/bin/airlock
 [ -x "$CLI" ] && ok "AppImage carries its CLI" || bad "no CLI in the AppImage"
 
+# ClamAV's server limits repeated full downloads from one address: seed the
+# test install with the cached database (only "changed?" requests go out).
+if [ -f build/clamav/main.cvd ]; then mkdir -p "$LIB/clamav" && cp build/clamav/*.cvd "$LIB/clamav/"; fi
+
 echo "== first-time setup (build) =="
 start=$(date +%s)
 if AIRLOCK_LIB=$LIB AIRLOCK_SINKHOLE=$APP/usr/lib/airlock/bin/sinkhole sh "$KIT/scripts/setup.sh" build > "$H/setup.log" 2>&1; then

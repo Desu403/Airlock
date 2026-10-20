@@ -76,15 +76,23 @@ fn err(e: impl std::fmt::Display) -> String {
     s
 }
 
-/// A small log of things worth knowing afterwards (why a VM stopped):
-/// $XDG_STATE_HOME/airlock/app.log, restarted when over 1 MB.
-fn log_event(msg: &str) {
-    use std::io::Write;
-    let dir = std::env::var_os("XDG_STATE_HOME")
+/// Where the activity log lives: ~/.local/state/airlock on Linux (or
+/// $XDG_STATE_HOME), %LOCALAPPDATA%\airlock\logs on Windows.
+fn log_dir() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("airlock").join("logs"));
+    }
+    std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
-        .map(|d| d.join("airlock"));
-    let Some(dir) = dir else { return };
+        .map(|d| d.join("airlock"))
+}
+
+/// A small log of things worth knowing afterwards (why a VM stopped):
+/// app.log in log_dir(), restarted when over 1 MB.
+fn log_event(msg: &str) {
+    use std::io::Write;
+    let Some(dir) = log_dir() else { return };
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("app.log");
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > 1 << 20) {
@@ -1025,10 +1033,7 @@ async fn about_info(app: tauri::AppHandle) -> R<serde_json::Value> {
                 j["firecracker"] = text::sanitize_line(String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").as_bytes()).into();
             }
         }
-        let log = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
-            .map(|d| d.join("airlock/app.log"));
+        let log = log_dir().map(|d| d.join("app.log"));
         let text = log.and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
         let lines: Vec<String> = String::from_utf8_lossy(&text).lines().rev().take(150).map(|l| text::sanitize_line(l.as_bytes())).collect();
         j["log"] = lines.into_iter().rev().collect::<Vec<_>>().into();

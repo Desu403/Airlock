@@ -1,212 +1,183 @@
 # airlock
 
-Open PDFs and Office documents you don't trust — and see what they try to do.
+airlock is a viewer for files you don't trust. Every file you open gets its
+own small virtual machine with no network card. The VM opens the file and
+sends back pictures of the pages and cleaned-up text, and when you close the
+file the VM is thrown away. Your computer never opens the document itself.
 
-airlock opens every document inside a disposable **Firecracker microVM**
-(hardware virtualisation via KVM). Your computer never parses the document:
-it only receives validated pixels, numbers and cleaned text. When you close
-the document, the VM is destroyed.
+While you read, a second VM opens the same file next to a fake internet and
+watches what it tries to do: start programs, download things, phone home,
+drop files, exploit the reader. Then a third VM goes through the second
+one's disk. You get a verdict in plain language (clean, suspicious or
+malicious), the reasons behind it, and the technical evidence if you want it.
 
-- **View** — read, zoom, search and copy text while the file stays sealed in
-  a VM with **no network card**.
-- **Analyze** — detonate the file in a VM wired to a **fake internet** and
-  report what it tries to do: contact servers, run programs, drop files,
-  exploit the reader. Findings are grouped by *who saw them* (outside the VM,
-  in-VM monitor, JavaScript emulation, known-malware signatures, static
-  structure) and mapped to MITRE ATT&CK. The app runs this **automatically**
-  for every file you open (a badge next to *Sealed* shows the result; anything
-  suspicious opens the report by itself). It can be turned off in the logo menu.
-- **Known malware** — ~5,000 [YARA-Forge](https://github.com/YARAHQ/yara-forge)
-  rules (its quality-tested "core" package) run inside the VM over the file,
-  its unpacked insides (decompressed PDF; every ZIP part, OLE stream and
-  macro's source) and anything it drops, and name the family or exploit
-  when one is known.
-- **Phishing content** — QR codes on the first pages are read inside the VM;
-  pages that borrow a brand (Microsoft, Adobe, PayPal, Meta, …) but link
-  elsewhere, and callback scams ("call this number to cancel"), are flagged.
-- **Tripwire** — a viewing VM that tries to start a program, use the network
-  or attack its kernel is destroyed at once (`airlock containment` proves it).
-- **AI-text hints** (optional, Text panel) — leftovers that AI chat tools put
-  into pasted text (citation codes, hidden markers, stock phrasing). Hints,
-  not proof.
+It runs on Linux (AppImage) and Windows 11 (installer).
 
-**Measured, not claimed** (`tests/bench.py`, ~3,000 real documents by hash):
-on 177 samples of well-known document exploits (CVE-2017-0199, -11882,
--8570, 2018-0802, 2021-40444, Follina, 2023-36884, 2026-21509) 97% come out
-"likely malicious" and none is missed; on 2,093 harmless documents (Govdocs1,
-Apache POI test files) none does.
+## Why I built it
 
-Supported: PDF, DOC/DOCX, XLS/XLSX, PPT/PPTX, ODT/ODS/ODP, RTF (type is
-detected from content, never from the file name).
+Everyone gets attachments they aren't sure about: an invoice they didn't
+expect, a "shared document", a zip from someone they barely know. The usual
+advice is "don't open it", which doesn't help when you actually need to read
+it. Online scanners mean uploading your file to someone else. Desktop
+antivirus only recognises what it has seen before.
 
-## How it protects you
+I wanted something that lets you open the file anyway, with nothing at risk,
+and tells you honestly what the file is.
 
-An attacker needs a chain of independent exploits, and even then has no
-network to send anything to:
+## What it opens
 
-1. renderer runs as `nobody` under a seccomp supervisor (exec/fork/ptrace/
-   kernel-attack syscalls blocked and logged)
-2. hardened guest kernel (no modules, BPF, io_uring, user namespaces, IPv6,
-   raw sockets; panics on any oops)
-3. Firecracker VMM (minimal Rust device model, its own seccomp)
-4. bubblewrap jail around the VMM (all namespaces, no capabilities),
-   running as a **spare user ID** that owns nothing on your system (from
-   your `/etc/subuid` range, like rootless Podman — no root needed)
-5. a strict, fuzzed host protocol: fixed-size headers, pixels and numbers;
-   the only text channel is narrowed to plain visible characters — or
-   switched off entirely with **Pixels only**
-6. the fake-internet process is jailed, capability-less and seccomp-locked
-
-Details: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). No sandbox is
-perfect; airlock's goal is to make escape require several unrelated 0-days.
-
-## Requirements
-
-- Linux on **x86_64** with KVM (`/dev/kvm` readable/writable — usually the
-  `kvm` group)
-- unprivileged user namespaces (default on Arch, Fedora, Debian 11+; see
-  Troubleshooting for Ubuntu 24.04+)
-- ~6 GB free disk, ~15 minutes for the first build; no root needed
-
-Packages:
-
-| Distro | Command |
+| Kind | Files |
 |---|---|
-| Arch | `sudo pacman -S --needed rust bubblewrap iproute2 nftables util-linux e2fsprogs curl xz python file xdg-dbus-proxy webkit2gtk-4.1 gtk3 libsoup3 librsvg` |
-| Debian 12 / Ubuntu 24.04 | `sudo apt install bubblewrap iproute2 nftables util-linux e2fsprogs curl xz-utils python3 file xdg-dbus-proxy build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libsoup-3.0-dev librsvg2-dev` and Rust via [rustup](https://rustup.rs) (distro Rust is too old) |
-| Fedora | `sudo dnf install rust cargo bubblewrap iproute nftables util-linux e2fsprogs curl xz python3 file xdg-dbus-proxy webkit2gtk4.1-devel gtk3-devel libsoup3-devel librsvg2-devel` |
+| Documents | PDF, Word, Excel, PowerPoint, OpenDocument, RTF |
+| E-mail | .eml and Outlook .msg (attachments open in their own VM) |
+| Archives | zip, 7z, rar, tar, gz, cab, iso (each file inside opens in its own VM) |
+| Pictures | png, jpg, gif, webp, bmp, tiff, svg, heic, avif and a few more |
+| Text and code | txt, md, json, html, js, py, c/cpp, ps1, vbs, bat and most other plain text, with syntax colours |
 
-The webkit/gtk packages and `xdg-dbus-proxy` are only needed for the
-desktop app (`--no-app` skips it). The app runs its web view in WebKit's
-own bubblewrap + seccomp sandbox, with an airlock-only cache directory.
+The real type is read from the file's contents inside the VM. Renaming
+`invoice.exe` to `invoice.pdf` doesn't fool it.
 
-## Setup
+## How well the malware check works
 
-**AppImage** (`scripts/appimage.sh` builds `dist/airlock-*.AppImage`): run it;
-a setup screen checks the computer, fixes what needs root with one password
-prompt, and builds the VM in your user account (about 600 MB of pinned,
-checksum-verified downloads, 10-20 minutes). The same steps by hand:
-`scripts/setup.sh check | plan | fix | build`.
+I don't trust numbers I can't reproduce, so there is a test bench
+(`tests/bench.py`) with real files listed by hash. Every release has to pass
+it before it ships. These are the numbers from the current version, with
+the known-malware list switched off so that only airlock's own detection
+counts:
 
-**From source:**
+| Set | Files | Result |
+|---|---|---|
+| Real malware (MalwareBazaar: documents, scripts, phishing pages) | 1,240 | 71% red, 91% flagged red or orange |
+| Known document exploits (9 CVEs, Follina among them) | 177 | 176 red, none missed |
+| Ordinary documents (Govdocs1, Apache POI test files, open-source code) | 2,562 | **0 false alarms**, 7% orange |
 
-```sh
-git clone <this repo> airlock && cd airlock
-scripts/bootstrap.sh            # fetch pinned + checksummed inputs, build everything
-host/target/release/airlock doctor
-host/target/release/airlock selftest
-```
+In normal use the score is higher, because airlock also checks every file
+against 1.16 million known-malware fingerprints and every link against
+URLhaus's list of active malware sites, all offline. The weak spot is
+obfuscated scripts that do nothing until a real user is watching. More on
+that below.
 
-`bootstrap.sh` downloads exact, SHA-256-pinned versions of Firecracker,
-the Alpine root filesystem and the Linux kernel source, builds a hardened
-guest kernel and the guest image without root, then builds the CLI and app.
-Add `--tests` to also run the regression suite.
+## How it keeps you safe
 
-## Install
+To get out, a malicious file would have to break through several walls, one
+after another, each built from different code:
 
-```sh
-scripts/install.sh              # for your user, no root: ~/.local/bin + launcher
-scripts/install.sh --default    # ... and open PDF/Office files with airlock by default
-scripts/install.sh --uninstall  # remove, and restore your previous default apps
-```
+1. the program reading the file runs as an unprivileged user, and a monitor
+   blocks and logs any attempt to start programs, open the network or
+   attack the kernel. In the viewing VM, any attempt like that ends the
+   session at once (the "tripwire")
+2. a hardened Linux kernel with everything a document reader doesn't need
+   removed
+3. the hypervisor: Firecracker on Linux, QEMU with the Windows Hypervisor
+   Platform on Windows
+4. a jail around the hypervisor itself: a spare user ID, bubblewrap and
+   seccomp on Linux, a Job object on Windows (no child processes, memory
+   ceiling, no clipboard)
+5. a strict, fuzzed protocol between the VM and the app: pictures, numbers
+   and filtered text, nothing else. "Pixels only" mode switches the text off
+   too
 
-The installer puts `airlock` and `airlock-app` in `~/.local/bin`, the VM
-image and kernel in `~/.local/lib/airlock`, and adds an **airlock** launcher
-with "Open with airlock" for PDF and Office files. A plain install changes
-none of your default apps. Re-run it after rebuilding to update.
+No sandbox is perfect. The goal is that escaping needs several unrelated
+zero-days at once, plus a network that isn't there. The details are in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-## Keeping it up to date
+## How it got here
 
-The realistic risk for any viewer is running old renderers with known bugs.
-Run this every few weeks (`airlock doctor` warns once the VM image is more
-than 30 days old):
+This took far longer than I expected, and most of the time went into
+problems you never see in the finished app:
 
-```sh
-scripts/update.sh            # newest guest packages, 6.1 LTS kernel, Firecracker, YARA rules
-scripts/update.sh --check    # just show what is out of date
-scripts/update.sh --rollback # back to the version before the last update
-scripts/update.sh --status   # machine-readable check (used by the app)
-```
+- **No root, no admin.** Running VMs normally means root. On Linux every VM
+  runs as a spare user ID from your subuid range, the way rootless Podman
+  does it, and setup asks for your password once. On Windows the installer
+  works per user, and only turning on the hypervisor feature needs admin.
+- **The viewer builds itself.** The AppImage doesn't ship a 1.6 GB image.
+  On first run it builds the VM on your machine from pinned, checksummed
+  downloads (Alpine, kernel.org, Firecracker), and every update is tested
+  before it replaces the old one, with a rollback if anything fails.
+- **False alarms.** A security tool that cries wolf gets ignored. Every
+  detection is measured against thousands of ordinary files, and anything
+  that flags a normal document doesn't ship. Some of the fixes were
+  humbling: "facture" (French for invoice) matching inside "manufacture",
+  or a book's author page looking like Microsoft phishing because the
+  author writes about Windows.
+- **Small things that took days.** The UI flickered on NVIDIA under
+  Wayland until every blur and fade was removed. ClamAV's output arrived
+  empty inside the VM until it was read from its log file instead. On
+  Windows the VM took 11 seconds to boot until I found the kernel was
+  wiping all its memory at start-up. Cutting that brought it to 1.4
+  seconds.
+- **Windows without rewriting it.** Everything inside the VM is shared
+  between both systems. Only the part that starts the VM is different, and
+  the same 42 test files give the same verdict on both.
 
-`scripts/install.sh` also installs a small **update kit**, so an installed
-airlock updates itself from the official servers (Alpine, kernel.org,
-Firecracker's releases) with no source checkout and no compilers: the build
-runs in a throwaway Alpine build root (`~/.local/lib/airlock/kit/scripts/update.sh`;
-the kit keeps ~2 GB: a build cache and the previous version for rollback).
+## Getting it
 
-The desktop app does the same from its **Updates** button: once a day it
-checks kernel.org, GitHub and Alpine's mirror (this can be switched off in
-the Updates panel), pops up a notice when security fixes are out (e.g. a new
-MuPDF) and, unless switched off, installs them in the background and tells
-you afterwards.
+**Linux:** download the AppImage from
+[Releases](https://github.com/Desu403/Airlock/releases), make it executable
+and run it. A setup screen checks your computer, fixes what it can and
+builds the viewer (about 600 MB of downloads, 10 to 20 minutes, then about
+2.4 GB on disk). It needs x86_64 with KVM.
 
-New kernels are verified against kernel.org's GPG-signed checksums,
-Firecracker, Alpine and the YARA-Forge rules against their published
-checksums. The working
-version is kept aside and the full regression suite must pass before the new
-one is used; otherwise the old one is restored. An installed copy is
-updated too.
+**Windows:** run the installer from
+[Releases](https://github.com/Desu403/Airlock/releases). It needs Windows 11
+with the Windows Hypervisor Platform feature (Windows 10 should work but is
+not tested yet); the installer offers to turn it on. About 1.9 GB on disk.
 
-## Usage
+Building from source, the command-line tool, the per-user install script
+and troubleshooting are in [docs/INSTALL.md](docs/INSTALL.md).
 
-```sh
-airlock-app [files...]       # desktop app (drag & drop works)
+## Monthly updates
 
-airlock view file.pdf        # safe copy: file.airlock/safe.pdf + PNGs
-airlock analyze file.docx    # behaviour report + report.json
-airlock selftest             # prove every detector fires
-airlock doctor               # check this machine
-```
+Malware changes every week, so a detection score from last month says less
+every day. Once a month I:
 
-Without installing, run them from the source tree:
-`app/target/release/airlock-app`, `host/target/release/airlock`.
+1. add fresh malware samples from MalwareBazaar to the bench and rerun the
+   whole thing, so detection gets measured against what is going around
+   now, not last year
+2. look at what was missed and fix what can be fixed without making
+   anything else worse (zero false alarms is the rule)
+3. update the readers inside the VM (MuPDF, LibreOffice and the rest) for
+   security fixes
+4. publish the release with its bench numbers in the release notes, so you
+   can see whether it got better or worse
 
-`safe.pdf` contains only images of the pages — no scripts, links, forms,
-fonts or embedded files survive.
+Between releases airlock updates its malware data by itself every day:
+ClamAV signatures, the fingerprint list and the malware-site list.
 
-In the app:
+## Roadmap
 
-- **Save ▸ Safe PDF copy** (Ctrl+S) writes that same kind of pixels-only
-  PDF, safe to keep, share or open in any reader.
-- **Save ▸ Print** (Ctrl+P) prints the pixels the VM drew.
-- **Save report…** in the analysis panel exports the report as text (or
-  `.json` for tools).
-- Opening or dropping several files opens each in **its own window, with
-  its own VM**: documents never share a renderer.
+Next:
 
-## Troubleshooting
+- **Updates inside the app.** airlock downloads and installs new versions
+  itself from GitHub Releases, signed with a key only I hold, so you never
+  have to fetch a new AppImage or installer by hand.
+- **Small detection updates.** Split the VM into a big base (the readers,
+  which rarely change) and a small airlock layer (the checks and rules,
+  a few MB), so a detection fix is a quick download instead of a rebuild.
+- **The fake internet on Windows,** so the Windows malware check sees
+  network behaviour like the Linux one does.
+- **A faster ClamAV.** Start each check from a saved VM that already has
+  the signatures loaded, instead of loading 8 million of them every time.
 
-- **`/dev/kvm` access** — enable VT-x/AMD-V in firmware, then
-  `sudo usermod -aG kvm $USER` and log in again.
-- **User namespaces blocked (Ubuntu 24.04+)** — Ubuntu restricts them via
-  AppArmor. Either `sudo sysctl kernel.apparmor_restrict_unprivileged_userns=0`
-  or install an AppArmor profile that grants `userns` to `bwrap`.
-- **Debian older kernels** — `sudo sysctl kernel.unprivileged_userns_clone=1`.
-- **"VMs run as your own uid" (doctor warning)** — airlock still works, minus
-  one wall. Give your user a spare ID range:
-  `sudo usermod --add-subuids 100000-165535 --add-subgids 100000-165535 $USER`,
-  and make sure `/dev/kvm` and `/dev/net/tun` are mode 0666 (systemd's
-  default).
-- **Anything else** — run `airlock doctor`; each failed check prints a fix.
-  `-v` on any command prints the (sanitised) VM console.
+Later:
 
-## Status and limits
+- better detection for obfuscated scripts
+- macOS (the VM side is ready; it needs a launcher for Apple's
+  Virtualization framework)
+- .deb and .rpm packages next to the AppImage
+- opening Office macros in a real Windows VM, to watch them run
 
-Working: view (live), analyze, PDF JavaScript emulation, Office static
-triage (VBA incl. stomping, XLM, DDE, Follina, remote templates, RTF
-exploits), YARA signatures, desktop app, regression suite (`tests/run.sh`).
+## Limits
 
-Signatures name what is *known*: new or custom malware usually matches
-nothing, which is why the behaviour checks come first. Rules for a
-technique rather than a family (`SUSP_…`, `INDICATOR_…`) never decide the
-verdict on their own.
+- Signatures only name malware that is already known. Brand-new or targeted
+  malware often matches nothing, which is why the behaviour checks come
+  first, and why "no threats found" is never a guarantee.
+- Malware that waits, or checks for a real user, may stay quiet in a VM
+  that lives for a few seconds.
+- The Windows malware check has no fake internet yet (see the roadmap).
+- The VM image is large (about 1.6 GB), mostly because of LibreOffice.
 
-Not yet: .deb/.rpm packages (the AppImage and `scripts/install.sh` do
-per-user installs; the AppImage runs without WebKit's extra web-view sandbox,
-which `scripts/install.sh` keeps), Windows and macOS hosts, executing Office
-macros (needs a Windows guest). The guest image is
-~1.1 GB because of LibreOffice.
+## Licence
 
-Guest packages (MuPDF, LibreOffice, …) come from Alpine's 3.24 branch at
-build time, so rebuilding the image (`guest/build-rootfs.sh`) picks up
-their security updates.
+Not decided yet. Until there is a licence file, all rights are reserved:
+you can read the code, but not reuse it.

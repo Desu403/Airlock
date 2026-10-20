@@ -8,7 +8,7 @@
 set -eu
 cd "$(dirname "$0")/.."
 IMG=$(realpath "${1:-dist/airlock-0.1.0-x86_64.AppImage}")
-H=${LIFECYCLE_HOME:-/mnt/storage/airlock-lifecycle}
+H=${LIFECYCLE_HOME:-$PWD/build/lifecycle-home}
 rm -rf "$H"; mkdir -p "$H"
 export HOME=$H XDG_CONFIG_HOME=$H/.config XDG_DATA_HOME=$H/.local/share XDG_STATE_HOME=$H/.local/state XDG_CACHE_HOME=$H/.cache
 LIB=$H/.local/lib/airlock

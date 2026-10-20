@@ -1347,7 +1347,13 @@ async fn app_update_check(app: tauri::AppHandle) -> R<serde_json::Value> {
     // Only installed copies replace themselves: the AppImage, or the
     // Windows install. A build run from the source tree is not updated.
     let installable = cfg!(windows) || std::env::var_os("APPIMAGE").is_some();
-    let update = app.updater().map_err(err)?.check().await.map_err(err)?;
+    let update = match app.updater().map_err(err)?.check().await {
+        Ok(u) => u,
+        // No release published yet (GitHub answers 404 for latest.json):
+        // nothing newer, not an error.
+        Err(e) if format!("{e}").contains("valid release JSON") => None,
+        Err(e) => return Err(err(e)),
+    };
     Ok(match update {
         Some(u) => serde_json::json!({ "current": current, "available": true, "version": u.version, "notes": u.body.unwrap_or_default(), "date": u.date.map(|d| d.to_string()), "installable": installable }),
         None => serde_json::json!({ "current": current, "available": false, "installable": installable }),

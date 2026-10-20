@@ -145,6 +145,15 @@ pub fn clamav(dir: &Path, pack_only: bool) -> Result<String> {
         }
         for f in ["main.cvd", "daily.cvd", "bytecode.cvd"] {
             let path = db.join(f);
+            // Only a real database counts as "the copy we have" (an older
+            // installer left a 512-byte stub of daily.cvd).
+            let real = fs::metadata(&path).is_ok_and(|m| m.len() > 64 << 10) && fs::File::open(&path).and_then(|mut h| {
+                let mut magic = [0u8; 11];
+                h.read_exact(&mut magic).map(|_| &magic == b"ClamAV-VDB:")
+            }).unwrap_or(false);
+            if !real {
+                let _ = fs::remove_file(&path);
+            }
             let mut req = agent().get(&format!("{CLAMAV}/{f}")).set("User-Agent", CLAMAV_UA);
             // Only when newer than the copy we have (a "not changed" answer is tiny).
             if let Ok(t) = fs::metadata(&path).and_then(|m| m.modified()) {

@@ -996,9 +996,12 @@ async fn about_info(app: tauri::AppHandle) -> R<serde_json::Value> {
                     // ClamAV: the daily database's header ("ClamAV-VDB:<date>:<version>:...")
                     // and how the last refresh went (scripts/clamav-db.sh).
                     let dir = a.rootfs.parent().map(PathBuf::from).unwrap_or_default();
-                    if dir.join("clamav.ext4").is_file() {
+                    if dir.join("clamav.ext4").is_file() || dir.join("clamav.sqfs").is_file() {
                         let mut head = [0u8; 160];
-                        let n = std::fs::File::open(dir.join("clamav/daily.cvd")).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
+                        let n = std::fs::File::open(dir.join("clamav/daily.cvd"))
+                            .or_else(|_| std::fs::File::open(dir.join("clamav.daily-header")))
+                            .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
+                            .unwrap_or(0);
                         let h = String::from_utf8_lossy(&head[..n]).into_owned();
                         let f: Vec<&str> = h.split(':').collect();
                         let status = std::fs::read_to_string(dir.join("clamav.status")).unwrap_or_default();
@@ -1338,6 +1341,29 @@ async fn run_update(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Upda
     result
 }
 
+/// The malware data next to the viewer (fingerprints, malware sites, ClamAV),
+/// refreshed by airlock itself: on Windows, which has no update kit (on
+/// Linux scripts/update.sh does it). At most once a day unless `force`.
+#[tauri::command]
+async fn refresh_data(force: bool) -> R<serde_json::Value> {
+    blocking(move || {
+        let dir = airlock_core::vm::Assets::locate().map_err(err)?.rootfs.parent().map(PathBuf::from).ok_or("no viewer folder")?;
+        let stamp = dir.join("data.refreshed");
+        let last = std::fs::metadata(&stamp).and_then(|m| m.modified()).ok();
+        let fresh = last.and_then(|t| t.elapsed().ok()).is_some_and(|age| age < std::time::Duration::from_secs(86400));
+        if fresh && !force {
+            return Ok(serde_json::json!({ "ran": false, "lines": [] }));
+        }
+        let lines = airlock_core::feeds::refresh(&dir);
+        for l in &lines {
+            log_event(&format!("malware data: {l}"));
+        }
+        let _ = std::fs::write(&stamp, b"");
+        Ok(serde_json::json!({ "ran": true, "lines": lines }))
+    })
+    .await
+}
+
 /// A newer airlock on GitHub Releases (latest.json, signed with the
 /// project's key; tauri-plugin-updater refuses anything else).
 #[tauri::command]
@@ -1497,6 +1523,7 @@ fn main() {
             update_status,
             run_update,
             app_update_check,
+            refresh_data,
             log_line,
             app_update_install,
             restart_app,

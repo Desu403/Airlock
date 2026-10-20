@@ -3,6 +3,7 @@
 
 pub mod aitext;
 pub mod analysis;
+pub mod feeds;
 pub mod known;
 pub mod link;
 pub mod live;

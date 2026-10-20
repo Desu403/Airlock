@@ -1015,6 +1015,18 @@ function noteStatus(st) {
   $("m-updates-dot").hidden = !any;
 }
 
+// Windows: airlock refreshes the malware data itself (no update kit).
+const dataRefresh = { running: false, lines: [] };
+async function runDataRefresh(force) {
+  if (dataRefresh.running) return;
+  dataRefresh.running = true;
+  try {
+    const r = await invoke("refresh_data", { force });
+    if (r.ran) { dataRefresh.lines = r.lines; status("Malware data refreshed"); }
+  } catch (e) { dataRefresh.lines = [`Refresh failed: ${e}`]; }
+  finally { dataRefresh.running = false; }
+}
+
 async function checkAppUpdate() {
   try { appUpd.status = await invoke("app_update_check"); appUpd.error = null; } catch (e) { appUpd.error = String(e); }
   noteStatus();
@@ -1124,9 +1136,22 @@ function renderUpdates(body) {
   const st = updates.status;
   const nodes = appUpdateNodes(body);
   if (!st || !st.supported) {
-    nodes.push(el("p", "note", navigator.userAgent.includes("Windows")
-      ? "On Windows the viewer and its malware checks come with each new version of the app."
-      : "This copy of airlock has no update kit: install it with scripts/install.sh (which adds the kit), or set AIRLOCK_SOURCE to an airlock source folder."));
+    if (navigator.userAgent.includes("Windows")) {
+      // Windows: the viewer comes with each app version; the malware data
+      // (fingerprints, malware sites, ClamAV) airlock refreshes itself daily.
+      nodes.push(el("p", "", "The viewer comes with each new version of the app. Its malware data (known-malware fingerprints, malware sites, ClamAV signatures) is refreshed every day."));
+      const r = el("button", "", dataRefresh.running ? "Refreshing…" : "Refresh malware data now");
+      r.disabled = dataRefresh.running;
+      r.onclick = async () => { await runDataRefresh(true); renderUpdates(body); };
+      const row = el("div", "row");
+      row.append(r);
+      nodes.push(row);
+      if (dataRefresh.lines.length) {
+        const ul = el("ul", "progress");
+        for (const l of dataRefresh.lines) ul.append(el("li", "", l));
+        nodes.push(ul);
+      }
+    } else nodes.push(el("p", "note", "This copy of airlock has no update kit: install it with scripts/install.sh (which adds the kit), or set AIRLOCK_SOURCE to an airlock source folder."));
     body.replaceChildren(...nodes);
     return;
   }
@@ -1257,6 +1282,7 @@ async function autoCheckUpdates() {
   if (pref("airlock.autoUpdateCheck", "1") !== "1") return;
   // Test runs (a demo script drives the app) never start updates.
   if (await invoke("demo_script").catch(() => null)) return;
+  if (navigator.userAgent.includes("Windows")) runDataRefresh(false);
   // A new version of the app: offered, never installed without a click.
   checkAppUpdate().then((a) => {
     if (a && a.available && a.installable && Date.now() > Number(pref("airlock.appUpdateSnooze", "0")))

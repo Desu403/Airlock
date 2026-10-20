@@ -33,7 +33,7 @@ pub fn run_staged(doc: &[u8], name: Option<&str>, entry: Option<u32>, mode: &'st
     let assets = vm::Assets::locate()?;
     // ClamAV's database (scripts/clamav-db.sh), when present: its VM starts
     // first and runs alongside the others.
-    let sigs = assets.rootfs.parent().map(|p| p.join("clamav.ext4")).filter(|p| p.is_file() && std::env::var_os("AIRLOCK_NO_CLAMAV").is_none());
+    let sigs = clamav_disk(&assets).filter(|_| std::env::var_os("AIRLOCK_NO_CLAMAV").is_none());
     let clam = sigs.map(|sigs| {
         let (doc, ext) = (doc.to_vec(), name.and_then(vm::ext_hint));
         std::thread::spawn(move || -> Result<session::Session> {
@@ -145,6 +145,15 @@ pub fn run_staged(doc: &[u8], name: Option<&str>, entry: Option<u32>, mode: &'st
     let report = build(&indicators, &mut log);
     note_at(&mut log, t0, format!("Report built from {} observation(s). All VMs and their disks are gone; your computer only received the findings", indicators.len()));
     Ok(Analysis { report, session: s, log, clamav_pending: false })
+}
+
+/// The ClamAV database disk next to the VM image: clamav.ext4 (Linux,
+/// scripts/clamav-db.sh) or clamav.sqfs (airlock's own refresh, Windows);
+/// the newer one when both are there.
+pub fn clamav_disk(assets: &vm::Assets) -> Option<std::path::PathBuf> {
+    let dir = assets.rootfs.parent()?;
+    let mtime = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+    ["clamav.ext4", "clamav.sqfs"].iter().map(|n| dir.join(n)).filter(|p| p.is_file()).max_by_key(|p| mtime(p))
 }
 
 fn note_at(log: &mut Vec<(f32, String)>, t0: std::time::Instant, s: String) {

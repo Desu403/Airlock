@@ -103,11 +103,19 @@ cp build/rootfs.ext4 "$STAGE/vm/rootfs.ext4"
 cp build/rootfs.info "$STAGE/vm/rootfs.info" 2>/dev/null || true
 # The blank scratch disk the analysis VM writes to (Windows has no mke2fs).
 mke2fs -q -t ext4 -O ^has_journal -E root_owner=0:0 -L scratch "$STAGE/vm/scratch.img" 96M
-for f in known-malware.bin known-malware.info urlhaus.txt clamav.ext4 clamav.status; do
+for f in known-malware.bin known-malware.info urlhaus.txt clamav.status; do
     [ -f "build/$f" ] && cp "build/$f" "$STAGE/vm/"
 done
-mkdir -p "$STAGE/vm/clamav"
-[ -f build/clamav/daily.cvd ] && head -c 512 build/clamav/daily.cvd > "$STAGE/vm/clamav/daily.cvd"
+# ClamAV as squashfs (what airlock's own daily refresh writes on Windows),
+# packed by the Linux CLI from build/clamav; the database files themselves
+# are not shipped: the first refresh downloads them.
+(cd host && cargo build --release -q --bin airlock)
+if [ -f build/clamav/main.cvd ]; then
+    rm -rf "$W/clamav-pack" && mkdir -p "$W/clamav-pack/clamav"
+    cp -p build/clamav/*.cvd "$W/clamav-pack/clamav/"
+    host/target/release/airlock pack-clamav "$W/clamav-pack" >/dev/null
+    cp "$W/clamav-pack/clamav.sqfs" "$W/clamav-pack/clamav.daily-header" "$STAGE/vm/"
+fi
 
 (cd host && cargo xwin build --release -q --target $TARGET --bin airlock)
 cp host/target/$TARGET/release/airlock.exe "$STAGE/vm/airlock.exe"

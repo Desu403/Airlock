@@ -376,7 +376,9 @@ fn main() {
     }
     if mode == Mode::ClamAv && mount("tmpfs", "/run", "tmpfs", nosx, "size=16m,mode=0755") {
         let _ = fs::create_dir_all(clamav::SIGS);
-        if !mount("/dev/vdc", clamav::SIGS, "ext4", libc::MS_RDONLY | nosx, "") {
+        // ext4 (made by scripts/clamav-db.sh) or squashfs (made by airlock
+        // itself where there is no mke2fs, e.g. on Windows).
+        if !mount("/dev/vdc", clamav::SIGS, "ext4", libc::MS_RDONLY | nosx, "") && !mount("/dev/vdc", clamav::SIGS, "squashfs", libc::MS_RDONLY | nosx, "") {
             let _ = fs::remove_dir(clamav::SIGS);
         }
     }

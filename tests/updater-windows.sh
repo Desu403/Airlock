@@ -8,21 +8,24 @@
 #
 # Needs: the laptop reachable over SSH (key login), the update key, the
 # Windows toolchain (scripts/windows.sh). The laptop downloads from a
-# temporary web server on this computer (port 8765, only while it runs).
+# temporary web server on this computer (port 8765 on 127.0.0.1 only, through
+# an SSH tunnel, only while the test runs).
 set -eu
 cd "$(dirname "$0")/.."
 HOST=${1:-${AIRLOCK_WINDOWS_HOST:?usage: tests/updater-windows.sh user@windows-host}}
 T=$PWD/build/updater-test-windows
 PORT=${AIRLOCK_TEST_PORT:-8765}
-LAPTOP_IP=${HOST#*@}
-ME=$(ip -4 route get "$LAPTOP_IP" | sed -n 's/.* src \([0-9.]*\).*/\1/p')
-rm -rf "$T"
+# The laptop reaches this computer's test server through an SSH tunnel
+# (its own 127.0.0.1:PORT): no firewall port has to be opened here.
+ME=127.0.0.1
+# AIRLOCK_TEST_REUSE=1: keep the installers of the last run (no rebuild).
+[ "${AIRLOCK_TEST_REUSE:-}" = 1 ] || rm -rf "$T"
 mkdir -p "$T/server"
 fail() { echo "FAIL $*"; exit 1; }
 ps() { # runs PowerShell code on the laptop
     printf '%s\n' "$1" > "$T/run.ps1"
     scp -q -o BatchMode=yes "$T/run.ps1" "$HOST:C:/airlock-test/run-updater.ps1" 2>/dev/null
-    ssh -o BatchMode=yes "$HOST" "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:/airlock-test/run-updater.ps1" 2>&1 | grep -v -E 'post-quantum|store now|upgraded. See'
+    ssh -o BatchMode=yes "$HOST" "powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File C:/airlock-test/run-updater.ps1" 2>&1 | { grep -v -E 'post-quantum|store now|upgraded. See' || true; }
 }
 ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST" exit 2>/dev/null || fail "laptop $HOST not reachable"
 
@@ -30,13 +33,17 @@ ssh -o BatchMode=yes -o ConnectTimeout=8 "$HOST" exit 2>/dev/null || fail "lapto
 cat > "$T/old.json" <<EOF
 {"plugins":{"updater":{"endpoints":["http://$ME:$PORT/latest.json"],"dangerousInsecureTransportProtocol":true}}}
 EOF
-AIRLOCK_VERSION=0.1.0-updatertest AIRLOCK_EXTRA_CONFIG=$T/old.json scripts/windows.sh > "$T/build-old.log" 2>&1 || fail "old build (see $T/build-old.log)"
-mv dist/airlock-0.1.0-updatertest-windows-x64-setup.exe "$T/old-setup.exe"
+if [ ! -f "$T/old-setup.exe" ]; then
+    AIRLOCK_VERSION=0.1.0-updatertest AIRLOCK_EXTRA_CONFIG=$T/old.json scripts/windows.sh > "$T/build-old.log" 2>&1 || fail "old build (see $T/build-old.log)"
+    mv dist/airlock-0.1.0-updatertest-windows-x64-setup.exe "$T/old-setup.exe"
+fi
 echo "ok   old installer built (0.1.0)"
 printf '{"version":"0.1.1"}' > "$T/new.json"
-TAURI_SIGNING_PRIVATE_KEY=$(cat "$HOME/.config/airlock/updater.key") TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" \
-    AIRLOCK_VERSION=0.1.1 AIRLOCK_EXTRA_CONFIG=$T/new.json scripts/windows.sh > "$T/build-new.log" 2>&1 || fail "new build (see $T/build-new.log)"
-mv dist/airlock-0.1.1-windows-x64-setup.exe dist/airlock-0.1.1-windows-x64-setup.exe.sig "$T/server/"
+if [ ! -f "$T/server/airlock-0.1.1-windows-x64-setup.exe.sig" ]; then
+    TAURI_SIGNING_PRIVATE_KEY=$(cat "$HOME/.config/airlock/updater.key") TAURI_SIGNING_PRIVATE_KEY_PASSWORD="" \
+        AIRLOCK_VERSION=0.1.1 AIRLOCK_EXTRA_CONFIG=$T/new.json scripts/windows.sh > "$T/build-new.log" 2>&1 || fail "new build (see $T/build-new.log)"
+    mv dist/airlock-0.1.1-windows-x64-setup.exe dist/airlock-0.1.1-windows-x64-setup.exe.sig "$T/server/"
+fi
 echo "ok   new installer built and signed (0.1.1)"
 latest() { # signature file -> latest.json
     python3 -I - "$T/server" "$1" "http://$ME:$PORT" <<'EOF'
@@ -48,9 +55,11 @@ json.dump({"version": "0.1.1", "notes": "updater test", "pub_date": "2026-10-20T
 EOF
 }
 
-(cd "$T/server" && exec python3 -m http.server "$PORT" --bind "$ME") > "$T/server.log" 2>&1 &
+(cd "$T/server" && exec python3 -m http.server "$PORT" --bind 127.0.0.1) > "$T/server.log" 2>&1 &
 SERVER=$!
-trap 'kill $SERVER 2>/dev/null' EXIT
+ssh -o BatchMode=yes -o ExitOnForwardFailure=yes -N -R "$PORT:127.0.0.1:$PORT" "$HOST" 2>/dev/null &
+TUNNEL=$!
+trap 'kill $SERVER $TUNNEL 2>/dev/null' EXIT
 sleep 1
 
 # Install the old version (silent, per user) on the laptop.
@@ -74,14 +83,14 @@ Start-ScheduledTask -TaskName airlock-updater-test' > /dev/null
     while [ $i -lt 60 ]; do
         sleep 5
         out=$(ps 'Get-Content "$env:LOCALAPPDATA\airlock\logs\app.log" -ErrorAction SilentlyContinue | Select-String "app update" | Select -Last 2')
-        case $out in *"installed"*|*"failed"*|*"none found"*) break ;; esac
+        case $out in *"installed"*|*"failed"*|*"none found"*|*"downloading 0.1.1"*) break ;; esac
         i=$((i+1))
     done
     echo "$out"
 }
 
 # 1. Tampered: the right installer, signed with a different key.
-mkdir -p "$T/otherkey"
+rm -rf "$T/otherkey"; mkdir -p "$T/otherkey"
 PATH=$HOME/.cargo/bin:$PATH cargo tauri signer generate --ci -p "" -w "$T/otherkey/k" > /dev/null 2>&1
 cp "$T/server/airlock-0.1.1-windows-x64-setup.exe" "$T/otherkey/setup.exe"
 PATH=$HOME/.cargo/bin:$PATH cargo tauri signer sign -f "$T/otherkey/k" -p "" "$T/otherkey/setup.exe" > /dev/null 2>&1
@@ -95,7 +104,9 @@ echo "ok   tampered update refused, 0.1.0 still installed"
 # 2. The real update.
 latest "$T/server/airlock-0.1.1-windows-x64-setup.exe.sig"
 out=$(run_app)
-case $out in *"installed"*) ;; *) fail "update not installed: $out" ;; esac
+# On Windows the updater closes airlock to run the installer, so the log
+# shows the download only; the installed version is the proof.
+case $out in *"downloading 0.1.1"*|*"installed"*) ;; *) fail "update did not start: $out" ;; esac
 i=0
 while [ "$(version)" != "0.1.1" ] && [ $i -lt 40 ]; do sleep 5; i=$((i+1)); done
 [ "$(version)" = "0.1.1" ] || fail "installed version is $(version), not 0.1.1"

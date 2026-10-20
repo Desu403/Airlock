@@ -1195,7 +1195,7 @@ async fn setup_build(app: tauri::AppHandle, state: State<'_, AppState>) -> R<()>
         let mut cmd = std::process::Command::new("sh");
         // AIRLOCK_PROGRESS: package names, download meters and "@@" step
         // markers for the progress view.
-        cmd.arg("-c").arg("exec sh scripts/setup.sh build 2>&1").current_dir(&kit).env("AIRLOCK_PROGRESS", "1").stdout(std::process::Stdio::piped());
+        cmd.arg("-c").arg(low_priority("sh scripts/setup.sh build 2>&1")).current_dir(&kit).env("AIRLOCK_PROGRESS", "1").stdout(std::process::Stdio::piped());
         if let Some(s) = sinkhole {
             cmd.env("AIRLOCK_SINKHOLE", s);
         }
@@ -1295,6 +1295,13 @@ struct UpdateResult {
     restart: bool,
 }
 
+/// Building the viewer (first setup, updates) runs at the lowest CPU and
+/// disk priority: it takes a little longer while the computer is busy, but
+/// never slows down what the user is doing.
+fn low_priority(command: &str) -> String {
+    format!("if command -v ionice >/dev/null; then exec nice -n 19 ionice -c 3 {command}; else exec nice -n 19 {command}; fi")
+}
+
 /// Runs scripts/update.sh, streaming its progress as "update-progress" events.
 #[tauri::command]
 async fn run_update(app: tauri::AppHandle, state: State<'_, AppState>) -> R<UpdateResult> {
@@ -1314,7 +1321,7 @@ async fn run_update(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Upda
         let mut cmd = std::process::Command::new("sh");
         // AIRLOCK_PROGRESS: the build's own output (downloads, packages,
         // kernel files, test results) for the live progress view.
-        cmd.arg("-c").arg("exec scripts/update.sh 2>&1").current_dir(&tree).env("AIRLOCK_PROGRESS", "1").stdout(std::process::Stdio::piped());
+        cmd.arg("-c").arg(low_priority("scripts/update.sh 2>&1")).current_dir(&tree).env("AIRLOCK_PROGRESS", "1").stdout(std::process::Stdio::piped());
         if let Some(cli) = appimage_cli() {
             cmd.env("AIRLOCK_CLI", cli);
         }

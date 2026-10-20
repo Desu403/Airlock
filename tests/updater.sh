@@ -60,7 +60,7 @@ run_old() {
 # 1. A tampered update: the new file, but signed by a different key.
 before=$(sha256sum "$T/airlock.AppImage" | cut -d' ' -f1)
 cp "$T/server/latest.json" "$T/latest.good.json"
-mkdir -p "$T/otherkey"
+rm -rf "$T/otherkey"; mkdir -p "$T/otherkey"
 PATH=$HOME/.cargo/bin:$PATH cargo tauri signer generate --ci -p "" -w "$T/otherkey/k" > /dev/null 2>&1
 PATH=$HOME/.cargo/bin:$PATH cargo tauri signer sign -f "$T/otherkey/k" -p "" "$T/server/airlock-0.1.1-x86_64.AppImage" > /dev/null 2>&1
 python3 -I - "$T/server" <<'EOF'

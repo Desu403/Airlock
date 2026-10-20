@@ -13,6 +13,28 @@ malicious), the reasons behind it, and the technical evidence if you want it.
 
 It runs on Linux (AppImage) and Windows 11 (installer).
 
+## Viewing first, the analyzer second
+
+The main point of airlock is that opening a file is safe, and that part is
+the solid one: the file never leaves its VM, and the VM is gone when you
+close it. Whether the verdict is right is a separate question. A wrong
+verdict doesn't put your computer at risk, but it can tell you the wrong
+thing about the file, so the analyzer is where most of my work goes now.
+
+If airlock gets a file wrong, please
+[open an issue](https://github.com/Desu403/Airlock/issues):
+
+- **False alarm** (a normal file marked orange or red): the most useful
+  report. Include a screenshot of the analysis panel or the text from
+  **Save report**, and say what kind of file it is. Don't upload the file
+  itself if it's private; the report is usually enough to rebuild a test
+  case.
+- **Missed malware** (a known-bad file marked clean): the file's SHA-256 is
+  enough if it's on MalwareBazaar or VirusTotal. Please don't attach live
+  malware to an issue.
+
+Every confirmed false alarm becomes a permanent test, so it can't come back.
+
 ## Why I built it
 
 Everyone gets attachments they aren't sure about: an invoice they didn't

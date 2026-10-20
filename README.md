@@ -83,32 +83,22 @@ zero-days at once, plus a network that isn't there. The details are in
 
 ## How it got here
 
-This took far longer than I expected, and most of the time went into
-problems you never see in the finished app:
+The viewer was the easy part. Most of the work went into making it usable
+without giving it more power than it needs: on Linux the VMs run as a spare
+user ID instead of root, and the app builds its own VM image on first run
+from pinned, checksummed downloads, so there is no 1.6 GB blob to trust.
+Every update of that image runs the test suite before it replaces the old
+one and rolls back if anything fails.
 
-- **No root, no admin.** Running VMs normally means root. On Linux every VM
-  runs as a spare user ID from your subuid range, the way rootless Podman
-  does it, and setup asks for your password once. On Windows the installer
-  works per user, and only turning on the hypervisor feature needs admin.
-- **The viewer builds itself.** The AppImage doesn't ship a 1.6 GB image.
-  On first run it builds the VM on your machine from pinned, checksummed
-  downloads (Alpine, kernel.org, Firecracker), and every update is tested
-  before it replaces the old one, with a rollback if anything fails.
-- **False alarms.** A security tool that cries wolf gets ignored. Every
-  detection is measured against thousands of ordinary files, and anything
-  that flags a normal document doesn't ship. Some of the fixes were
-  humbling: "facture" (French for invoice) matching inside "manufacture",
-  or a book's author page looking like Microsoft phishing because the
-  author writes about Windows.
-- **Small things that took days.** The UI flickered on NVIDIA under
-  Wayland until every blur and fade was removed. ClamAV's output arrived
-  empty inside the VM until it was read from its log file instead. On
-  Windows the VM took 11 seconds to boot until I found the kernel was
-  wiping all its memory at start-up. Cutting that brought it to 1.4
-  seconds.
-- **Windows without rewriting it.** Everything inside the VM is shared
-  between both systems. Only the part that starts the VM is different, and
-  the same 42 test files give the same verdict on both.
+The other big part was false alarms. A scanner that flags normal files gets
+ignored, so every detection rule is run against a few thousand ordinary
+documents before it ships, and anything that turns one of them red goes
+back for another round.
+
+The Windows version came last. Everything inside the VM is shared with
+Linux; only the part that starts the VM is different (QEMU on the Windows
+Hypervisor Platform instead of Firecracker), and both give the same verdicts
+on the same files.
 
 ## Getting it
 

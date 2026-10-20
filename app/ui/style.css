@@ -870,3 +870,7 @@ button.check.failed:hover:not(:disabled) { color: var(--med); }
 .about.supported dd { display: flex; flex-direction: column; gap: 2px; }
 .about .exts { font: 11.5px/1.6 var(--mono); color: var(--text); word-spacing: 2px; }
 .about .ext-note { font-size: 11.5px; color: var(--muted); }
+
+/* Activity log panel */
+.check-label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin-right: auto; cursor: pointer; }
+.panel .console-log.tall:only-child, .panel .row + .console-log.tall { max-height: calc(100vh - 230px); }

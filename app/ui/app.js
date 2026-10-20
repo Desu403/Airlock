@@ -1215,6 +1215,7 @@ async function runDemo() {
     if (cmd === "tscroll") $("panel-body").scrollTop = Number(arg) || 0;
     if (cmd === "settings") await showSettings();
     if (cmd === "about") await showAbout();
+    if (cmd === "logs") await showLogs();
     if (cmd === "palette") { openPalette(); $("pal-q").value = arg || ""; renderPalette(); }
     if (cmd === "thumbs") setThumbs(true);
     if (cmd === "openentry") { const fs = await invoke("archive_entries"); const f = fs[Number(arg) || 0]; if (f) await invoke("open_entry", { index: f.index, name: f.name }); }
@@ -1648,7 +1649,7 @@ const TOUR = [
     text: "airlock opens every PDF and Office file inside its own throwaway virtual machine, a tiny separate computer with no network.",
     how: "Your computer never reads the file itself. It only receives pictures of the pages and cleaned-up text. Close the document and the whole VM is destroyed." },
   { target: "appbtn", kicker: "Menu", title: "The airlock menu",
-    text: "Click the airlock logo for: New window, Check files automatically (on by default), Pixels only (no text leaves the VM, for files you really distrust), Updates (a dot on the logo means one is ready), Settings, About airlock, the guided tour, and closing.",
+    text: "Click the airlock logo for: New window, Check files automatically (on by default), Pixels only (no text leaves the VM, for files you really distrust), Updates (a dot on the logo means one is ready), Settings, About airlock, the Activity log, the guided tour, and closing.",
     how: "Settings is where you pick the colours and background (and, for the AppImage, uninstall). About airlock shows what protects you and how fresh it is, every version, and the app log: VMs that stopped, attacks the tripwire blocked, updates, errors." },
   { target: "open", kicker: "Open", title: "Open a document",
     text: "Pick files here, press Ctrl+O, or drag them onto the window.",
@@ -1952,17 +1953,19 @@ async function showSettings() {
   } catch {}
 }
 $("m-settings").onclick = () => { toggleAppMenu(false); showSettings(); };
-// About airlock: what protects you (layers and how fresh they are), the
-// versions of everything that touches a document, and the app's own log.
+// About airlock: what protects you (layers and how fresh they are) and the
+// versions of everything that touches a document. The log has its own panel.
 async function showAbout() {
   const body = openPanel("About airlock");
   const sec = (title) => el("h3", "set-head", title);
   const group = () => el("dl", "about");
   const version = group(), protection = group(), readers = group();
-  const logBox = el("div", "console-log tall", "Loading…");
   const supported = el("dl", "about supported");
-  body.replaceChildren(sec("airlock"), version, sec("Supported files"), supported, sec("Protection"), protection, sec("Inside the VM"), readers, sec("App log"),
-    el("p", "note", "Everything airlock did on this computer: VMs that stopped, attacks the tripwire blocked, updates, errors. Documents' contents are never logged."), logBox);
+  const logLink = el("button", "", "Open the activity log…");
+  logLink.onclick = showLogs;
+  const logRow = el("div", "row");
+  logRow.append(logLink);
+  body.replaceChildren(sec("airlock"), version, sec("Supported files"), supported, sec("Protection"), protection, sec("Inside the VM"), readers, logRow);
   // What airlock opens (the same list as the Open dialog's filters).
   try {
     for (const [label, exts, note] of await invoke("supported_files")) {
@@ -1989,23 +1992,47 @@ async function showAbout() {
   row(readers, "VM kernel", info.kernel && info.kernel.replace(/^Linux version (\S+).*/, "Linux $1 (hardened)"));
   row(readers, "VM engine", info.firecracker);
   if (info.packages?.length) row(readers, "Readers", info.packages.join(", "));
-  const lines = info.log || [];
-  logBox.replaceChildren(...(lines.length ? lines : ["(empty)"]).map((l) => {
-    const m = /^(\d{9,})\s+(pid \d+\s+)?(.*)$/.exec(l);
-    const r = el("div", "ln");
-    if (m) r.append(el("span", "t", new Date(Number(m[1]) * 1000).toLocaleString()), document.createTextNode(` ${m[3]}`));
-    else r.textContent = l;
-    if (/attack|tripwire|crash|could not|error|failed/i.test(l)) r.classList.add("warn");
-    return r;
-  }));
-  logBox.scrollTop = logBox.scrollHeight;
-  const copy = el("button", "", "Copy log");
-  copy.onclick = async () => { try { await navigator.clipboard.writeText(lines.join("\n")); copy.textContent = "Copied"; } catch { copy.textContent = "Could not copy"; } };
-  const rowEl = el("div", "row");
-  rowEl.append(copy);
-  body.append(rowEl);
 }
 $("m-about").onclick = () => { toggleAppMenu(false); showAbout(); };
+
+// The activity log: everything airlock did on this computer (VMs that
+// stopped, attacks the tripwire blocked, updates, errors), newest last.
+async function showLogs() {
+  const body = openPanel("Activity log");
+  const box = el("div", "console-log tall", "Loading…");
+  const only = el("label", "check-label");
+  const problems = el("input");
+  problems.type = "checkbox";
+  only.append(problems, document.createTextNode(" Problems only"));
+  const refresh = el("button", "", "Refresh");
+  const copy = el("button", "", "Copy log");
+  const row = el("div", "row");
+  row.append(only, refresh, copy);
+  body.replaceChildren(el("p", "note", "What airlock did on this computer: VMs that started and stopped, attacks the tripwire blocked, updates, errors. The contents of your documents are never logged."), row, box);
+  let lines = [];
+  const bad = (l) => /attack|tripwire|crash|could not|error|failed|refused/i.test(l);
+  const draw = () => {
+    const shown = problems.checked ? lines.filter(bad) : lines;
+    box.replaceChildren(...(shown.length ? shown : [problems.checked ? "(no problems logged)" : "(empty)"]).map((l) => {
+      const m = /^(\d{9,})\s+(pid \d+\s+)?(.*)$/.exec(l);
+      const r = el("div", "ln");
+      if (m) r.append(el("span", "t", new Date(Number(m[1]) * 1000).toLocaleString()), document.createTextNode(` ${m[3]}`));
+      else r.textContent = l;
+      if (bad(l)) r.classList.add("warn");
+      return r;
+    }));
+    box.scrollTop = box.scrollHeight;
+  };
+  const load = async () => {
+    try { lines = (await invoke("about_info")).log || []; } catch (e) { lines = [`could not read the log: ${e}`]; }
+    draw();
+  };
+  problems.onchange = draw;
+  refresh.onclick = load;
+  copy.onclick = async () => { try { await navigator.clipboard.writeText(lines.join("\n")); copy.textContent = "Copied"; } catch { copy.textContent = "Could not copy"; } };
+  await load();
+}
+$("m-logs").onclick = () => { toggleAppMenu(false); showLogs(); };
 
 $("m-close").onclick = closeWindow;
 function showAutoCheck() { $("m-auto").setAttribute("aria-checked", String(autoCheckOn())); }
@@ -2107,7 +2134,8 @@ function paletteCommands() {
     ["Spreadsheets: one page per sheet / pages", "", doc && !$("sheetbtn").hidden, () => $("sheetbtn").click()],
     ["Updates…", "", true, showUpdates],
     ["Settings…", "", true, showSettings],
-    ["About airlock (versions, protection, log)…", "", true, showAbout],
+    ["About airlock (versions, protection)…", "", true, showAbout],
+    ["Activity log…", "", true, showLogs],
     ["Supported file types…", "", true, showAbout],
     ["Guided tour", "", true, startTour],
     ["New window", "", true, () => invoke("new_window")],

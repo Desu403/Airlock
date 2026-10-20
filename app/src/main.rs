@@ -349,6 +349,14 @@ fn initial_path(state: State<'_, AppState>) -> Option<String> {
 }
 
 /// Test hook: AIRLOCK_DEMO="search=word;analyze" drives the UI after opening.
+/// Test runs only (a demo script is set): a line into the app's log.
+#[tauri::command]
+fn log_line(line: String) {
+    if std::env::var_os("AIRLOCK_DEMO").is_some() {
+        log_event(&text::sanitize_line(line.as_bytes()));
+    }
+}
+
 #[tauri::command]
 fn demo_script() -> Option<String> {
     std::env::var("AIRLOCK_DEMO").ok()
@@ -958,9 +966,11 @@ fn ui_setting_set(app: tauri::AppHandle, key: String, value: String) -> R<()> {
 /// For "About & logs": versions of everything that touches a document, and
 /// the app's own log (VM stops, tripwires, updates, errors).
 #[tauri::command]
-async fn about_info() -> R<serde_json::Value> {
-    blocking(|| {
-        let mut j = serde_json::json!({ "app": env!("CARGO_PKG_VERSION") });
+async fn about_info(app: tauri::AppHandle) -> R<serde_json::Value> {
+    // The release version (tauri.conf.json), the one the updater compares.
+    let version = app.package_info().version.to_string();
+    blocking(move || {
+        let mut j = serde_json::json!({ "app": version });
         j["install"] = match std::env::var_os("APPIMAGE") {
             Some(a) => format!("AppImage: {}", PathBuf::from(a).display()),
             None => format!("installed: {}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()),
@@ -1323,6 +1333,49 @@ async fn run_update(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Upda
     result
 }
 
+/// A newer airlock on GitHub Releases (latest.json, signed with the
+/// project's key; tauri-plugin-updater refuses anything else).
+#[tauri::command]
+async fn app_update_check(app: tauri::AppHandle) -> R<serde_json::Value> {
+    use tauri_plugin_updater::UpdaterExt;
+    let current = app.package_info().version.to_string();
+    // Only installed copies replace themselves: the AppImage, or the
+    // Windows install. A build run from the source tree is not updated.
+    let installable = cfg!(windows) || std::env::var_os("APPIMAGE").is_some();
+    let update = app.updater().map_err(err)?.check().await.map_err(err)?;
+    Ok(match update {
+        Some(u) => serde_json::json!({ "current": current, "available": true, "version": u.version, "notes": u.body.unwrap_or_default(), "date": u.date.map(|d| d.to_string()), "installable": installable }),
+        None => serde_json::json!({ "current": current, "available": false, "installable": installable }),
+    })
+}
+
+/// Downloads the new version, checks its signature and installs it in place
+/// (the AppImage file is swapped, keeping a backup until it worked; on
+/// Windows its installer runs). Progress: "app-update-progress" (done, total).
+#[tauri::command]
+async fn app_update_install(app: tauri::AppHandle) -> R<()> {
+    use tauri_plugin_updater::UpdaterExt;
+    let update = app.updater().map_err(err)?.check().await.map_err(err)?.ok_or("airlock is already up to date")?;
+    log_event(&format!("app update: downloading {} (current {})", update.version, update.current_version));
+    let mut done = 0u64;
+    let progress = app.clone();
+    update
+        .download_and_install(
+            move |chunk, total| {
+                done += chunk as u64;
+                let _ = progress.emit("app-update-progress", (done, total));
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| {
+            log_event(&format!("app update failed: {e}"));
+            err(e)
+        })?;
+    log_event(&format!("app update: {} installed (signature checked)", update.version));
+    Ok(())
+}
+
 #[tauri::command]
 fn restart_app(app: tauri::AppHandle, state: State<'_, AppState>) {
     if let Some(d) = state.doc.lock().unwrap().take() {
@@ -1383,6 +1436,7 @@ fn main() {
     let doc = state.doc.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
         .setup(|app| {
             // Its own data directory: otherwise WebKit uses (and its sandbox
@@ -1431,6 +1485,9 @@ fn main() {
             chosen_name,
             update_status,
             run_update,
+            app_update_check,
+            log_line,
+            app_update_install,
             restart_app,
             set_pixels_only,
             viewing_findings,

@@ -21,5 +21,16 @@
       "icons/icon.png",
       "icons/icon.ico"
     ]
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQyMzIzMEE4RUZCNjJDNzgKUldSNExMYnZxREF5UW1nZnVab29kL1J6dEJ4YjgwRkdsVGZBZmxnTlh6d00zVEc1cU9Tbm5MVHgK",
+      "endpoints": [
+        "https://github.com/Desu403/Airlock/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

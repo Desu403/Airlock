@@ -981,6 +981,9 @@ window.__TAURI__.webview.getCurrentWebview().onDragDropEvent((event) => {
 // automatic restore on failure). Checked at most once a day.
 
 const updates = { status: null, running: false, log: [], restart: false };
+// New versions of the app itself (GitHub Releases, signed): status from
+// app_update_check, the download while it runs, done = restart to finish.
+const appUpd = { status: null, error: null, running: false, done: false, got: 0, total: 0 };
 
 function pref(key, fallback) {
   try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
@@ -1005,10 +1008,83 @@ function describeChanges(st, max) {
 }
 
 function noteStatus(st) {
-  updates.status = st;
+  if (st !== undefined) updates.status = st;
   // A dot on the airlock logo and on the menu item; no toolbar button.
-  $("updates-dot").hidden = !(st && st.available);
-  $("m-updates-dot").hidden = !(st && st.available);
+  const any = (updates.status && updates.status.available) || (appUpd.status && appUpd.status.available && appUpd.status.installable) || appUpd.done;
+  $("updates-dot").hidden = !any;
+  $("m-updates-dot").hidden = !any;
+}
+
+async function checkAppUpdate() {
+  try { appUpd.status = await invoke("app_update_check"); appUpd.error = null; } catch (e) { appUpd.error = String(e); }
+  noteStatus();
+  return appUpd.status;
+}
+
+async function installAppUpdate(body) {
+  if (appUpd.running) return;
+  Object.assign(appUpd, { running: true, error: null, got: 0, total: 0 });
+  if (body) renderUpdates(body);
+  status(`Downloading airlock ${appUpd.status?.version || ""}…`);
+  try {
+    await invoke("app_update_install");
+    appUpd.done = true;
+    status(`airlock ${appUpd.status?.version || ""} is installed: restart to use it`);
+    notify("airlock was updated", `Version ${appUpd.status?.version || ""} is installed and its signature checked. Restart airlock to use it.`, [["Restart now", () => invoke("restart_app")], ["Later", hideToast]]);
+  } catch (e) {
+    appUpd.error = String(e);
+    status(`App update failed: ${e}`, true);
+  } finally {
+    appUpd.running = false;
+    noteStatus();
+    if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates($("panel-body"));
+  }
+}
+
+window.__TAURI__.event.listen("app-update-progress", (e) => {
+  [appUpd.got, appUpd.total] = e.payload;
+  const bar = document.getElementById("app-update-bar");
+  if (bar && appUpd.total) bar.value = appUpd.got / appUpd.total;
+  const txt = document.getElementById("app-update-text");
+  if (txt) txt.textContent = appUpd.total ? `${(appUpd.got / 1048576).toFixed(0)} of ${(appUpd.total / 1048576).toFixed(0)} MB` : `${(appUpd.got / 1048576).toFixed(0)} MB`;
+});
+
+// The app section of the Updates panel.
+function appUpdateNodes(body) {
+  const nodes = [el("h3", "set-head", "airlock app")];
+  const s = appUpd.status;
+  const row = el("div", "row");
+  if (appUpd.done) {
+    nodes.push(el("p", "", `Version ${s?.version} is installed. Restart airlock to use it.`));
+    const r = el("button", "primary", "Restart airlock");
+    r.onclick = () => invoke("restart_app");
+    row.append(r);
+  } else if (appUpd.running) {
+    const bar = el("progress");
+    bar.id = "app-update-bar";
+    bar.max = 1;
+    if (appUpd.total) bar.value = appUpd.got / appUpd.total;
+    const txt = el("span", "note", "Starting the download…");
+    txt.id = "app-update-text";
+    nodes.push(el("p", "", `Downloading version ${s?.version}… the signature is checked before anything is replaced.`), bar, txt);
+  } else if (s && s.available) {
+    nodes.push(el("p", "", `Version ${s.version} is available (you have ${s.current}).`));
+    if (s.notes) nodes.push(el("p", "note", s.notes.slice(0, 600)));
+    if (s.installable) {
+      const go = el("button", "primary", `Update to ${s.version}`);
+      go.onclick = () => installAppUpdate(body);
+      row.append(go);
+    } else nodes.push(el("p", "note", "This copy runs from a source folder, so it does not replace itself: rebuild it from the newest source."));
+  } else if (s) nodes.push(el("p", "", `Version ${s.current}: the newest.`));
+  if (appUpd.error) nodes.push(el("p", "note", `Last app check failed: ${appUpd.error}`));
+  if (!appUpd.running && !appUpd.done) {
+    const c = el("button", "", "Check for a new version");
+    c.onclick = async () => { c.disabled = true; c.textContent = "Checking…"; await checkAppUpdate(); renderUpdates(body); };
+    row.append(c);
+  }
+  nodes.push(row, el("p", "note", "New versions come from airlock's GitHub releases and are signed: airlock refuses any download not signed with the project's key."));
+  nodes.push(el("h3", "set-head", "Secure viewer and malware data"));
+  return nodes;
 }
 
 async function checkUpdates(force) {
@@ -1046,10 +1122,11 @@ function hideToast() { $("toast").hidden = true; }
 
 function renderUpdates(body) {
   const st = updates.status;
-  const nodes = [];
+  const nodes = appUpdateNodes(body);
   if (!st || !st.supported) {
-    nodes.push(el("p", "", "This copy of airlock has no update kit."),
-      el("p", "note", "Install it with scripts/install.sh (which adds the kit), or set AIRLOCK_SOURCE to an airlock source folder."));
+    nodes.push(el("p", "note", navigator.userAgent.includes("Windows")
+      ? "On Windows the viewer and its malware checks come with each new version of the app."
+      : "This copy of airlock has no update kit: install it with scripts/install.sh (which adds the kit), or set AIRLOCK_SOURCE to an airlock source folder."));
     body.replaceChildren(...nodes);
     return;
   }
@@ -1120,7 +1197,9 @@ function renderUpdates(body) {
 
 function showUpdates() {
   hideToast();
-  renderUpdates(openPanel("Updates"));
+  const body = openPanel("Updates");
+  renderUpdates(body);
+  if (!appUpd.status && !appUpd.running) checkAppUpdate().then(() => { if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates(body); });
 }
 
 // quiet: started automatically — no panel, a notice when done.
@@ -1178,6 +1257,13 @@ async function autoCheckUpdates() {
   if (pref("airlock.autoUpdateCheck", "1") !== "1") return;
   // Test runs (a demo script drives the app) never start updates.
   if (await invoke("demo_script").catch(() => null)) return;
+  // A new version of the app: offered, never installed without a click.
+  checkAppUpdate().then((a) => {
+    if (a && a.available && a.installable && Date.now() > Number(pref("airlock.appUpdateSnooze", "0")))
+      notify(`airlock ${a.version} is available`, "A new version of the app. It downloads in the background, its signature is checked, and a restart finishes it.", [
+        ["Update", () => { hideToast(); installAppUpdate(null); }],
+        ["Later", () => { setPref("airlock.appUpdateSnooze", String(Date.now() + 86400000)); hideToast(); }]]);
+  });
   try {
     const st = await checkUpdates(false);
     if (!st.available) return;
@@ -1215,6 +1301,8 @@ async function runDemo() {
     if (cmd === "tscroll") $("panel-body").scrollTop = Number(arg) || 0;
     if (cmd === "settings") await showSettings();
     if (cmd === "about") await showAbout();
+    // tests/updater.sh: check for a new app version and install it.
+    if (cmd === "appupdate") { const st = await checkAppUpdate(); if (st && st.available) await installAppUpdate(null); else await invoke("log_line", { line: `app update test: none found (${appUpd.error || "up to date"})` }); }
     if (cmd === "logs") await showLogs();
     if (cmd === "palette") { openPalette(); $("pal-q").value = arg || ""; renderPalette(); }
     if (cmd === "thumbs") setThumbs(true);

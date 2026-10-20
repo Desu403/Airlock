@@ -874,3 +874,6 @@ button.check.failed:hover:not(:disabled) { color: var(--med); }
 /* Activity log panel */
 .check-label { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); margin-right: auto; cursor: pointer; }
 .panel .console-log.tall:only-child, .panel .row + .console-log.tall { max-height: calc(100vh - 230px); }
+
+/* App update download */
+#app-update-bar { width: 100%; height: 6px; margin: 4px 0; accent-color: var(--seal); }

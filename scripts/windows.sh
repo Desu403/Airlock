@@ -112,8 +112,18 @@ mkdir -p "$STAGE/vm/clamav"
 (cd host && cargo xwin build --release -q --target $TARGET --bin airlock)
 cp host/target/$TARGET/release/airlock.exe "$STAGE/vm/airlock.exe"
 
-(cd app && cargo tauri build --runner cargo-xwin --target $TARGET --bundles nsis --config tauri.nsis.json)
+set -- --config tauri.nsis.json
+[ -n "${AIRLOCK_EXTRA_CONFIG:-}" ] && set -- "$@" --config "$AIRLOCK_EXTRA_CONFIG"
+rm -f app/target/$TARGET/release/bundle/nsis/*-setup.exe app/target/$TARGET/release/bundle/nsis/*-setup.exe.sig
+if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+    printf '{"bundle":{"createUpdaterArtifacts":false}}' > app/target/no-updater-sig.json
+    set -- "$@" --config target/no-updater-sig.json
+fi
+(cd app && cargo tauri build --runner cargo-xwin --target $TARGET --bundles nsis "$@")
 mkdir -p dist
 VERSION=$(sed -n 's/^  "version": "\(.*\)",/\1/p' app/tauri.conf.json)
+VERSION=${AIRLOCK_VERSION:-$VERSION}
 cp app/target/$TARGET/release/bundle/nsis/*-setup.exe "dist/airlock-$VERSION-windows-x64-setup.exe"
+rm -f "dist/airlock-$VERSION-windows-x64-setup.exe.sig"
+for s in app/target/$TARGET/release/bundle/nsis/*-setup.exe.sig; do [ -f "$s" ] && cp "$s" "dist/airlock-$VERSION-windows-x64-setup.exe.sig"; done
 ls -lh "dist/airlock-$VERSION-windows-x64-setup.exe"

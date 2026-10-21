@@ -83,7 +83,9 @@ Start-ScheduledTask -TaskName airlock-updater-test' > /dev/null
     while [ $i -lt 60 ]; do
         sleep 5
         out=$(ps 'Get-Content "$env:LOCALAPPDATA\airlock\logs\app.log" -ErrorAction SilentlyContinue | Select-String "app update" | Select -Last 2')
-        case $out in *"installed"*|*"failed"*|*"none found"*|*"downloading 0.1.1"*) break ;; esac
+        case $out in *"installed"*|*"failed"*|*"none found"*) break ;; esac
+        # The updater closes airlock to run the installer: the new version is the sign.
+        [ "$(version)" = "0.1.1" ] && break
         i=$((i+1))
     done
     echo "$out"
@@ -96,7 +98,9 @@ cp "$T/server/airlock-0.1.1-windows-x64-setup.exe" "$T/otherkey/setup.exe"
 PATH=$HOME/.cargo/bin:$PATH cargo tauri signer sign -f "$T/otherkey/k" -p "" "$T/otherkey/setup.exe" > /dev/null 2>&1
 latest "$T/otherkey/setup.exe.sig"
 out=$(run_app)
-case $out in *"failed"*) ;; *) fail "tampered update was not refused: $out" ;; esac
+# A broken download (the SSH tunnel) is not the check we want: once more.
+case $out in *"decoding response body"*|*"error sending request"*) out=$(run_app) ;; esac
+case $out in *"signature"*|*"different key"*) ;; *) fail "tampered update was not refused by its signature: $out" ;; esac
 sleep 5
 [ "$(version)" = "0.1.0" ] || fail "tampered update changed the installed version ($(version))"
 echo "ok   tampered update refused, 0.1.0 still installed"
@@ -104,6 +108,7 @@ echo "ok   tampered update refused, 0.1.0 still installed"
 # 2. The real update.
 latest "$T/server/airlock-0.1.1-windows-x64-setup.exe.sig"
 out=$(run_app)
+case $out in *"decoding response body"*|*"error sending request"*) out=$(run_app) ;; esac
 # On Windows the updater closes airlock to run the installer, so the log
 # shows the download only; the installed version is the proof.
 case $out in *"downloading 0.1.1"*|*"installed"*) ;; *) fail "update did not start: $out" ;; esac

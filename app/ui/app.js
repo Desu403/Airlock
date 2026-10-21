@@ -3,7 +3,12 @@
 // numbers, and sanitised text — always inserted with textContent, never HTML.
 
 const { invoke } = window.__TAURI__.core;
-const $ = (id) => document.getElementById(id);
+// The progress console (#forge) moves between the setup screen and the
+// Updates panel; a panel that closes takes it out of the page. It is kept
+// here, and ids inside it are found in it even while it is detached.
+let FORGE = null;
+const $ = (id) => document.getElementById(id) || (FORGE && FORGE.querySelector("#" + CSS.escape(id)));
+FORGE = $("forge");
 
 const PT_TO_PX = 96 / 72;
 const ZOOMS = [0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
@@ -1202,8 +1207,8 @@ function renderUpdates(body) {
   nodes.push(checkLabel, installLabel);
 
   if (updates.forge) {
-    $("forge").hidden = false;
-    nodes.push($("forge"));
+    FORGE.hidden = false;
+    nodes.push(FORGE);
   }
   if (updates.log.length) {
     const ul = el("ul", "progress");
@@ -1516,7 +1521,7 @@ const forge = {
     Object.assign(this, { mode, t0: Date.now(), step: update ? "check/upstream" : "check", stepT0: Date.now(), done: new Set(),
       skipped: new Set(update ? [] : ["check/upstream", "tests/tests"]), count: 0, total: 0,
       dl: { mb: 0, cur: 0 }, sub: null, live: null, lines: 0, finished: null, tEnd: 0, frac: 0 });
-    $("forge").querySelector(".forge-note").innerHTML = update
+    FORGE.querySelector(".forge-note").innerHTML = update
       ? "<strong>Why does this take a while?</strong> The new viewer is built on your computer from verified sources and must pass the full test suite before it replaces the current one. You can keep reading documents meanwhile."
       : "<strong>Why does this take a while?</strong> airlock builds its viewer on your own computer from official, fingerprint-checked sources, instead of shipping a ready-made black box. It happens once; after that every document opens in a second.";
     // An update's package list is for those who want it: folded.
@@ -1528,7 +1533,7 @@ const forge = {
       return li;
     }));
     $("setup-log").replaceChildren();
-    $("forge").classList.remove("ok", "bad");
+    FORGE.classList.remove("ok", "bad");
     $("forge-title").textContent = update ? "Updating the secure viewer" : "Building the secure viewer";
     this.render();
   },
@@ -1704,7 +1709,7 @@ const forge = {
     this.finished = ok ? "ok" : "bad";
     this.tEnd = Date.now();
     if (ok) this.frac = 1;
-    $("forge").classList.add(ok ? "ok" : "bad");
+    FORGE.classList.add(ok ? "ok" : "bad");
     const update = this.mode === "update";
     $("forge-title").textContent = ok ? (update ? "Updated · all checks passed" : "The secure viewer is ready") : (update ? "Update stopped" : "The build stopped");
     $("forge-what").textContent = ok ? `${update ? "Updated" : "Built"} and checked in ${fmtTime((Date.now() - this.t0) / 1000)}` : message;
@@ -1718,8 +1723,8 @@ const forge = {
 $("setup-build").onclick = async () => {
   const b = $("setup-build");
   b.disabled = true;
-  $("setup").append($("forge"));
-  $("forge").hidden = false;
+  $("setup").append(FORGE);
+  FORGE.hidden = false;
   $("setup-list").hidden = true;
   $("setup").classList.add("building");
   forge.reset();
@@ -1739,7 +1744,7 @@ $("setup-build").onclick = async () => {
   }
   $("setup-list").hidden = false;
   $("setup").classList.remove("building");
-  if (ok) $("forge").hidden = true;
+  if (ok) FORGE.hidden = true;
   checkSetup();
 };
 const setupReady = checkSetup();
@@ -2521,7 +2526,7 @@ $("m-palette").onclick = () => { toggleAppMenu(false); openPalette(); };
 // The logo comes alive while airlock is working: a check running, an update
 // or the first build. Calm otherwise.
 setInterval(() => {
-  const working = !!check.running || updates.running || !$("forge").hidden && forge.finished === null;
+  const working = !!check.running || updates.running || !FORGE.hidden && forge.finished === null;
   $("appbtn").classList.toggle("working", working);
 }, 400);
 

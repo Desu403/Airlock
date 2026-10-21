@@ -73,6 +73,23 @@ fn run() -> Result<()> {
             Ok(())
         }
         "selftest" => selftest(out_dir.unwrap_or_else(|| PathBuf::from("selftest.airlock")), verbose),
+        // The malware data in DIR (default: the installed viewer's folder):
+        // fingerprints, malware sites, ClamAV. "pack-clamav DIR" only builds
+        // clamav.sqfs from DIR/clamav (scripts/windows.sh).
+        "refresh-data" | "pack-clamav" => {
+            let dir = match input {
+                Some(d) => d,
+                None => vm::Assets::locate()?.rootfs.parent().map(Path::to_path_buf).unwrap_or_default(),
+            };
+            if cmd == "pack-clamav" {
+                println!("{}", airlock_core::feeds::clamav(&dir, true)?);
+            } else {
+                for line in airlock_core::feeds::refresh(&dir) {
+                    println!("{line}");
+                }
+            }
+            Ok(())
+        }
         _ => usage(),
     }
 }

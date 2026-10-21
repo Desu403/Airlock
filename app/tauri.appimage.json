@@ -19,6 +19,7 @@
           "/usr/bin/xdg-dbus-proxy": "/usr/bin/xdg-dbus-proxy"
         }
       }
-    }
+    },
+    "createUpdaterArtifacts": true
   }
 }

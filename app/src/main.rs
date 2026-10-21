@@ -76,15 +76,23 @@ fn err(e: impl std::fmt::Display) -> String {
     s
 }
 
-/// A small log of things worth knowing afterwards (why a VM stopped):
-/// $XDG_STATE_HOME/airlock/app.log, restarted when over 1 MB.
-fn log_event(msg: &str) {
-    use std::io::Write;
-    let dir = std::env::var_os("XDG_STATE_HOME")
+/// Where the activity log lives: ~/.local/state/airlock on Linux (or
+/// $XDG_STATE_HOME), %LOCALAPPDATA%\airlock\logs on Windows.
+fn log_dir() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return std::env::var_os("LOCALAPPDATA").map(|d| PathBuf::from(d).join("airlock").join("logs"));
+    }
+    std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
-        .map(|d| d.join("airlock"));
-    let Some(dir) = dir else { return };
+        .map(|d| d.join("airlock"))
+}
+
+/// A small log of things worth knowing afterwards (why a VM stopped):
+/// app.log in log_dir(), restarted when over 1 MB.
+fn log_event(msg: &str) {
+    use std::io::Write;
+    let Some(dir) = log_dir() else { return };
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("app.log");
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > 1 << 20) {
@@ -349,6 +357,14 @@ fn initial_path(state: State<'_, AppState>) -> Option<String> {
 }
 
 /// Test hook: AIRLOCK_DEMO="search=word;analyze" drives the UI after opening.
+/// Test runs only (a demo script is set): a line into the app's log.
+#[tauri::command]
+fn log_line(line: String) {
+    if std::env::var_os("AIRLOCK_DEMO").is_some() {
+        log_event(&text::sanitize_line(line.as_bytes()));
+    }
+}
+
 #[tauri::command]
 fn demo_script() -> Option<String> {
     std::env::var("AIRLOCK_DEMO").ok()
@@ -461,18 +477,29 @@ fn viewing_findings(state: State<'_, AppState>) -> serde_json::Value {
 
 /// Full behavioural analysis in separate microVMs; viewing continues meanwhile.
 #[tauri::command]
-async fn analyze(state: State<'_, AppState>) -> R<serde_json::Value> {
+async fn analyze(app: tauri::AppHandle, state: State<'_, AppState>, id: Option<u64>) -> R<serde_json::Value> {
     let (name, bytes) = state.chosen.lock().unwrap().clone().ok_or("no document chosen")?;
     let (report, chosen) = (state.report.clone(), state.chosen.clone());
     blocking(move || {
         let started = std::time::Instant::now();
         let entry = ENTRY.get();
         let hint = entry.map(|(_, n)| n.clone()).unwrap_or_else(|| name.clone());
-        let a = analysis::run(&bytes, Some(&hint), entry.map(|(i, _)| *i), "analyze", false, &|_| {}).map_err(err)?;
-        let mut j = a.report.to_json();
-        j["document"] = name.into();
-        j["seconds"] = (started.elapsed().as_secs_f32() as f64).into();
-        j["log"] = a.log.iter().map(|(t, l)| serde_json::json!([t, l])).collect::<Vec<_>>().into();
+        let to_json = |a: &analysis::Analysis| {
+            let mut j = a.report.to_json();
+            j["document"] = name.clone().into();
+            j["seconds"] = (started.elapsed().as_secs_f32() as f64).into();
+            j["log"] = a.log.iter().map(|(t, l)| serde_json::json!([t, l])).collect::<Vec<_>>().into();
+            j["clamav_pending"] = a.clamav_pending.into();
+            // Which check this is (the window may have started another since).
+            j["id"] = id.unwrap_or(0).into();
+            j
+        };
+        // The verdict from airlock's own checks, shown while ClamAV finishes.
+        let early = |a: &analysis::Analysis| {
+            let _ = app.emit("analysis-early", to_json(a));
+        };
+        let a = analysis::run_staged(&bytes, Some(&hint), entry.map(|(i, _)| *i), "analyze", false, &|_| {}, &early).map_err(err)?;
+        let j = to_json(&a);
         // Kept for "Save report" only if that file is still the one open
         // (an automatic check can finish after another file was opened).
         if chosen.lock().unwrap().as_ref().is_some_and(|(_, b)| Arc::ptr_eq(b, &bytes)) {
@@ -947,9 +974,11 @@ fn ui_setting_set(app: tauri::AppHandle, key: String, value: String) -> R<()> {
 /// For "About & logs": versions of everything that touches a document, and
 /// the app's own log (VM stops, tripwires, updates, errors).
 #[tauri::command]
-async fn about_info() -> R<serde_json::Value> {
-    blocking(|| {
-        let mut j = serde_json::json!({ "app": env!("CARGO_PKG_VERSION") });
+async fn about_info(app: tauri::AppHandle) -> R<serde_json::Value> {
+    // The release version (tauri.conf.json), the one the updater compares.
+    let version = app.package_info().version.to_string();
+    blocking(move || {
+        let mut j = serde_json::json!({ "app": version });
         j["install"] = match std::env::var_os("APPIMAGE") {
             Some(a) => format!("AppImage: {}", PathBuf::from(a).display()),
             None => format!("installed: {}", std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_default()),
@@ -967,9 +996,12 @@ async fn about_info() -> R<serde_json::Value> {
                     // ClamAV: the daily database's header ("ClamAV-VDB:<date>:<version>:...")
                     // and how the last refresh went (scripts/clamav-db.sh).
                     let dir = a.rootfs.parent().map(PathBuf::from).unwrap_or_default();
-                    if dir.join("clamav.ext4").is_file() {
+                    if dir.join("clamav.ext4").is_file() || dir.join("clamav.sqfs").is_file() {
                         let mut head = [0u8; 160];
-                        let n = std::fs::File::open(dir.join("clamav/daily.cvd")).and_then(|mut f| std::io::Read::read(&mut f, &mut head)).unwrap_or(0);
+                        let n = std::fs::File::open(dir.join("clamav/daily.cvd"))
+                            .or_else(|_| std::fs::File::open(dir.join("clamav.daily-header")))
+                            .and_then(|mut f| std::io::Read::read(&mut f, &mut head))
+                            .unwrap_or(0);
                         let h = String::from_utf8_lossy(&head[..n]).into_owned();
                         let f: Vec<&str> = h.split(':').collect();
                         let status = std::fs::read_to_string(dir.join("clamav.status")).unwrap_or_default();
@@ -1004,10 +1036,7 @@ async fn about_info() -> R<serde_json::Value> {
                 j["firecracker"] = text::sanitize_line(String::from_utf8_lossy(&o.stdout).lines().next().unwrap_or("").as_bytes()).into();
             }
         }
-        let log = std::env::var_os("XDG_STATE_HOME")
-            .map(PathBuf::from)
-            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/state")))
-            .map(|d| d.join("airlock/app.log"));
+        let log = log_dir().map(|d| d.join("app.log"));
         let text = log.and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
         let lines: Vec<String> = String::from_utf8_lossy(&text).lines().rev().take(150).map(|l| text::sanitize_line(l.as_bytes())).collect();
         j["log"] = lines.into_iter().rev().collect::<Vec<_>>().into();
@@ -1166,7 +1195,7 @@ async fn setup_build(app: tauri::AppHandle, state: State<'_, AppState>) -> R<()>
         let mut cmd = std::process::Command::new("sh");
         // AIRLOCK_PROGRESS: package names, download meters and "@@" step
         // markers for the progress view.
-        cmd.arg("-c").arg("exec sh scripts/setup.sh build 2>&1").current_dir(&kit).env("AIRLOCK_PROGRESS", "1").stdout(std::process::Stdio::piped());
+        cmd.arg("-c").arg(low_priority("sh scripts/setup.sh build 2>&1")).current_dir(&kit).env("AIRLOCK_PROGRESS", "1").stdout(std::process::Stdio::piped());
         if let Some(s) = sinkhole {
             cmd.env("AIRLOCK_SINKHOLE", s);
         }
@@ -1266,6 +1295,13 @@ struct UpdateResult {
     restart: bool,
 }
 
+/// Building the viewer (first setup, updates) runs at the lowest CPU and
+/// disk priority: it takes a little longer while the computer is busy, but
+/// never slows down what the user is doing.
+fn low_priority(command: &str) -> String {
+    format!("if command -v ionice >/dev/null; then exec nice -n 19 ionice -c 3 {command}; else exec nice -n 19 {command}; fi")
+}
+
 /// Runs scripts/update.sh, streaming its progress as "update-progress" events.
 #[tauri::command]
 async fn run_update(app: tauri::AppHandle, state: State<'_, AppState>) -> R<UpdateResult> {
@@ -1285,7 +1321,7 @@ async fn run_update(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Upda
         let mut cmd = std::process::Command::new("sh");
         // AIRLOCK_PROGRESS: the build's own output (downloads, packages,
         // kernel files, test results) for the live progress view.
-        cmd.arg("-c").arg("exec scripts/update.sh 2>&1").current_dir(&tree).env("AIRLOCK_PROGRESS", "1").stdout(std::process::Stdio::piped());
+        cmd.arg("-c").arg(low_priority("scripts/update.sh 2>&1")).current_dir(&tree).env("AIRLOCK_PROGRESS", "1").stdout(std::process::Stdio::piped());
         if let Some(cli) = appimage_cli() {
             cmd.env("AIRLOCK_CLI", cli);
         }
@@ -1310,6 +1346,78 @@ async fn run_update(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Upda
     .await;
     updating.store(false, Ordering::SeqCst);
     result
+}
+
+/// The malware data next to the viewer (fingerprints, malware sites, ClamAV),
+/// refreshed by airlock itself: on Windows, which has no update kit (on
+/// Linux scripts/update.sh does it). At most once a day unless `force`.
+#[tauri::command]
+async fn refresh_data(force: bool) -> R<serde_json::Value> {
+    blocking(move || {
+        let dir = airlock_core::vm::Assets::locate().map_err(err)?.rootfs.parent().map(PathBuf::from).ok_or("no viewer folder")?;
+        let stamp = dir.join("data.refreshed");
+        let last = std::fs::metadata(&stamp).and_then(|m| m.modified()).ok();
+        let fresh = last.and_then(|t| t.elapsed().ok()).is_some_and(|age| age < std::time::Duration::from_secs(86400));
+        if fresh && !force {
+            return Ok(serde_json::json!({ "ran": false, "lines": [] }));
+        }
+        let lines = airlock_core::feeds::refresh(&dir);
+        for l in &lines {
+            log_event(&format!("malware data: {l}"));
+        }
+        let _ = std::fs::write(&stamp, b"");
+        Ok(serde_json::json!({ "ran": true, "lines": lines }))
+    })
+    .await
+}
+
+/// A newer airlock on GitHub Releases (latest.json, signed with the
+/// project's key; tauri-plugin-updater refuses anything else).
+#[tauri::command]
+async fn app_update_check(app: tauri::AppHandle) -> R<serde_json::Value> {
+    use tauri_plugin_updater::UpdaterExt;
+    let current = app.package_info().version.to_string();
+    // Only installed copies replace themselves: the AppImage, or the
+    // Windows install. A build run from the source tree is not updated.
+    let installable = cfg!(windows) || std::env::var_os("APPIMAGE").is_some();
+    let update = match app.updater().map_err(err)?.check().await {
+        Ok(u) => u,
+        // No release published yet (GitHub answers 404 for latest.json):
+        // nothing newer, not an error.
+        Err(e) if format!("{e}").contains("valid release JSON") => None,
+        Err(e) => return Err(err(e)),
+    };
+    Ok(match update {
+        Some(u) => serde_json::json!({ "current": current, "available": true, "version": u.version, "notes": u.body.unwrap_or_default(), "date": u.date.map(|d| d.to_string()), "installable": installable }),
+        None => serde_json::json!({ "current": current, "available": false, "installable": installable }),
+    })
+}
+
+/// Downloads the new version, checks its signature and installs it in place
+/// (the AppImage file is swapped, keeping a backup until it worked; on
+/// Windows its installer runs). Progress: "app-update-progress" (done, total).
+#[tauri::command]
+async fn app_update_install(app: tauri::AppHandle) -> R<()> {
+    use tauri_plugin_updater::UpdaterExt;
+    let update = app.updater().map_err(err)?.check().await.map_err(err)?.ok_or("airlock is already up to date")?;
+    log_event(&format!("app update: downloading {} (current {})", update.version, update.current_version));
+    let mut done = 0u64;
+    let progress = app.clone();
+    update
+        .download_and_install(
+            move |chunk, total| {
+                done += chunk as u64;
+                let _ = progress.emit("app-update-progress", (done, total));
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| {
+            log_event(&format!("app update failed: {e}"));
+            err(e)
+        })?;
+    log_event(&format!("app update: {} installed (signature checked)", update.version));
+    Ok(())
 }
 
 #[tauri::command]
@@ -1372,6 +1480,7 @@ fn main() {
     let doc = state.doc.clone();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(state)
         .setup(|app| {
             // Its own data directory: otherwise WebKit uses (and its sandbox
@@ -1420,6 +1529,10 @@ fn main() {
             chosen_name,
             update_status,
             run_update,
+            app_update_check,
+            refresh_data,
+            log_line,
+            app_update_install,
             restart_app,
             set_pixels_only,
             viewing_findings,

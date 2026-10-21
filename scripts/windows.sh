@@ -103,17 +103,35 @@ cp build/rootfs.ext4 "$STAGE/vm/rootfs.ext4"
 cp build/rootfs.info "$STAGE/vm/rootfs.info" 2>/dev/null || true
 # The blank scratch disk the analysis VM writes to (Windows has no mke2fs).
 mke2fs -q -t ext4 -O ^has_journal -E root_owner=0:0 -L scratch "$STAGE/vm/scratch.img" 96M
-for f in known-malware.bin known-malware.info urlhaus.txt clamav.ext4 clamav.status; do
+for f in known-malware.bin known-malware.info urlhaus.txt clamav.status; do
     [ -f "build/$f" ] && cp "build/$f" "$STAGE/vm/"
 done
-mkdir -p "$STAGE/vm/clamav"
-[ -f build/clamav/daily.cvd ] && head -c 512 build/clamav/daily.cvd > "$STAGE/vm/clamav/daily.cvd"
+# ClamAV as squashfs (what airlock's own daily refresh writes on Windows),
+# packed by the Linux CLI from build/clamav; the database files themselves
+# are not shipped: the first refresh downloads them.
+(cd host && cargo build --release -q --bin airlock)
+if [ -f build/clamav/main.cvd ]; then
+    rm -rf "$W/clamav-pack" && mkdir -p "$W/clamav-pack/clamav"
+    cp -p build/clamav/*.cvd "$W/clamav-pack/clamav/"
+    host/target/release/airlock pack-clamav "$W/clamav-pack" >/dev/null
+    cp "$W/clamav-pack/clamav.sqfs" "$W/clamav-pack/clamav.daily-header" "$STAGE/vm/"
+fi
 
 (cd host && cargo xwin build --release -q --target $TARGET --bin airlock)
 cp host/target/$TARGET/release/airlock.exe "$STAGE/vm/airlock.exe"
 
-(cd app && cargo tauri build --runner cargo-xwin --target $TARGET --bundles nsis --config tauri.nsis.json)
+set -- --config tauri.nsis.json
+[ -n "${AIRLOCK_EXTRA_CONFIG:-}" ] && set -- "$@" --config "$AIRLOCK_EXTRA_CONFIG"
+rm -f app/target/$TARGET/release/bundle/nsis/*-setup.exe app/target/$TARGET/release/bundle/nsis/*-setup.exe.sig
+if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+    printf '{"bundle":{"createUpdaterArtifacts":false}}' > app/target/no-updater-sig.json
+    set -- "$@" --config target/no-updater-sig.json
+fi
+(cd app && cargo tauri build --runner cargo-xwin --target $TARGET --bundles nsis "$@")
 mkdir -p dist
 VERSION=$(sed -n 's/^  "version": "\(.*\)",/\1/p' app/tauri.conf.json)
+VERSION=${AIRLOCK_VERSION:-$VERSION}
 cp app/target/$TARGET/release/bundle/nsis/*-setup.exe "dist/airlock-$VERSION-windows-x64-setup.exe"
+rm -f "dist/airlock-$VERSION-windows-x64-setup.exe.sig"
+for s in app/target/$TARGET/release/bundle/nsis/*-setup.exe.sig; do [ -f "$s" ] && cp "$s" "dist/airlock-$VERSION-windows-x64-setup.exe.sig"; done
 ls -lh "dist/airlock-$VERSION-windows-x64-setup.exe"

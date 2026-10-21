@@ -26,8 +26,21 @@ git ls-files guest guest-agent proto scripts/bootstrap.sh | sort | xargs sha256s
 (cd "$STAGE/kit" && find . -type f ! -name .kit-version | sort | xargs sha256sum | sha256sum | cut -c1-12) > "$STAGE/kit/.kit-version"
 install -m 0755 host/target/release/airlock host/target/release/sinkhole "$STAGE/bin/"
 
-(cd app && cargo tauri build --bundles appimage --config tauri.appimage.json)
+# Signed for the in-app updater when the key is there (scripts/release.sh
+# sets it); AIRLOCK_EXTRA_CONFIG: one more tauri config, for tests only.
+set -- --config tauri.appimage.json
+[ -n "${AIRLOCK_EXTRA_CONFIG:-}" ] && set -- "$@" --config "$AIRLOCK_EXTRA_CONFIG"
+rm -f app/target/release/bundle/appimage/*.AppImage app/target/release/bundle/appimage/*.AppImage.sig
+if [ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
+    # Without the key tauri cannot write the updater signature: plain build.
+    printf '{"bundle":{"createUpdaterArtifacts":false}}' > app/target/no-updater-sig.json
+    set -- "$@" --config target/no-updater-sig.json
+fi
+(cd app && cargo tauri build --bundles appimage "$@")
 mkdir -p dist
 VERSION=$(sed -n 's/^  "version": "\(.*\)",/\1/p' app/tauri.conf.json)
+VERSION=${AIRLOCK_VERSION:-$VERSION}
 cp app/target/release/bundle/appimage/*.AppImage "dist/airlock-$VERSION-x86_64.AppImage"
+rm -f "dist/airlock-$VERSION-x86_64.AppImage.sig"
+for s in app/target/release/bundle/appimage/*.AppImage.sig; do [ -f "$s" ] && cp "$s" "dist/airlock-$VERSION-x86_64.AppImage.sig"; done
 ls -lh "dist/airlock-$VERSION-x86_64.AppImage"

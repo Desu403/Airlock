@@ -3,7 +3,12 @@
 // numbers, and sanitised text — always inserted with textContent, never HTML.
 
 const { invoke } = window.__TAURI__.core;
-const $ = (id) => document.getElementById(id);
+// The progress console (#forge) moves between the setup screen and the
+// Updates panel; a panel that closes takes it out of the page. It is kept
+// here, and ids inside it are found in it even while it is detached.
+let FORGE = null;
+const $ = (id) => document.getElementById(id) || (FORGE && FORGE.querySelector("#" + CSS.escape(id)));
+FORGE = $("forge");
 
 const PT_TO_PX = 96 / 72;
 const ZOOMS = [0.5, 0.67, 0.75, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
@@ -815,8 +820,10 @@ function showCheck() {
   const b = $("check");
   const [cls, label, title] = check.attacked
     ? ["malicious", "Attack blocked", "This document tried to attack your computer while it was shown; its VM was destroyed at once. Click for details."]
+    : check.running && check.report
+    ? [verdictClass(check.report.verdict), `${{ malicious: /LIKELY/.test(check.report.verdict) ? "Likely malicious" : "Malicious", suspicious: "Suspicious", clean: "No threats found" }[verdictClass(check.report.verdict)]} · ClamAV…`, `${check.report.headline || check.report.verdict}. ClamAV is still checking; the result updates by itself. Click for the report.`]
     : check.running
-    ? ["checking", "Checking…", "Checking this file for malware in two separate microVMs (one wired to a fake internet). Keep reading meanwhile. Click to watch."]
+    ? ["checking", "Checking…", "Checking this file for malware in separate microVMs (one wired to a fake internet). Keep reading meanwhile. Click to watch."]
     : check.report
       ? [verdictClass(check.report.verdict), { malicious: /LIKELY/.test(check.report.verdict) ? "Likely malicious" : "Malicious", suspicious: "Suspicious", clean: "No threats found" }[verdictClass(check.report.verdict)], `${check.report.headline || check.report.verdict}. Click for the full report.`]
       : check.error
@@ -839,7 +846,7 @@ function clearCheck() {
 function startCheck() {
   const gen = ++check.gen;
   Object.assign(check, { report: null, error: null });
-  const p = invoke("analyze").then(
+  const p = invoke("analyze", { id: gen }).then(
     (r) => {
       if (gen !== check.gen) return r;
       check.report = r;
@@ -853,6 +860,8 @@ function startCheck() {
     if (gen !== check.gen) return;
     check.running = null;
     showCheck();
+    // The panel showed the early report: show the final one in its place.
+    if (check.report && !$("panel").hidden && $("panel-title").textContent.startsWith("Analysis")) { showAnalysis(check.panelName); return; }
     // Something found: show it without waiting for a click (unless the
     // analysis panel is already open and waiting for this result).
     if (check.report && verdictClass(check.report.verdict) !== "clean" && !(!$("panel").hidden && $("panel-title").textContent.startsWith("Analysis"))) showAnalysis();
@@ -865,9 +874,10 @@ function startCheck() {
 // The report panel: the finished check, or a spinner until it finishes.
 async function showAnalysis(name, again = false) {
   const title = typeof name === "string" ? `Analysis · ${name}` : "Analysis";
+  check.panelName = name;
   const body = openPanel(title);
   if (again || (!check.report && !check.running)) startCheck();
-  if (check.running) {
+  if (check.running && !check.report) {
     const wait = el("div", "row");
     wait.append(el("div", "spinner"), el("span", "note", "Detonating in a separate microVM wired to a fake internet, then examining its disk in a second VM. You can keep reading meanwhile."));
     body.replaceChildren(wait);
@@ -878,6 +888,11 @@ async function showAnalysis(name, again = false) {
   if (check.report) {
     const report = check.report;
     renderReport(body, report, `${report.document} · analyzed in ${report.seconds.toFixed(1)}s`);
+    if (check.running && report.clamav_pending) {
+      const wait = el("div", "row");
+      wait.append(el("div", "spinner"), el("span", "note", "ClamAV is still checking (it loads millions of signatures first). This report updates by itself when it finishes."));
+      body.insertBefore(wait, body.firstChild);
+    }
     const save = el("button", "", "Save report…");
     save.title = "Save as text (or .json for tools)";
     save.onclick = saveReport;
@@ -899,6 +914,16 @@ async function showAnalysis(name, again = false) {
 function analyze(name) {
   return showAnalysis(name);
 }
+
+// airlock's own checks are done: their verdict, while ClamAV finishes.
+window.__TAURI__.event.listen("analysis-early", (e) => {
+  const r = e.payload;
+  if (!check.running || !r || r.id !== check.gen) return;
+  check.report = r;
+  showCheck();
+  if (!$("panel").hidden && $("panel-title").textContent.startsWith("Analysis")) showAnalysis(check.panelName);
+  else if (verdictClass(r.verdict) !== "clean") showAnalysis();
+});
 
 $("check").onclick = () => (check.attacked ? attackBlocked(check.attackMsg) : showAnalysis());
 
@@ -961,6 +986,9 @@ window.__TAURI__.webview.getCurrentWebview().onDragDropEvent((event) => {
 // automatic restore on failure). Checked at most once a day.
 
 const updates = { status: null, running: false, log: [], restart: false };
+// New versions of the app itself (GitHub Releases, signed): status from
+// app_update_check, the download while it runs, done = restart to finish.
+const appUpd = { status: null, error: null, running: false, done: false, got: 0, total: 0 };
 
 function pref(key, fallback) {
   try { return localStorage.getItem(key) ?? fallback; } catch { return fallback; }
@@ -985,10 +1013,95 @@ function describeChanges(st, max) {
 }
 
 function noteStatus(st) {
-  updates.status = st;
+  if (st !== undefined) updates.status = st;
   // A dot on the airlock logo and on the menu item; no toolbar button.
-  $("updates-dot").hidden = !(st && st.available);
-  $("m-updates-dot").hidden = !(st && st.available);
+  const any = (updates.status && updates.status.available) || (appUpd.status && appUpd.status.available && appUpd.status.installable) || appUpd.done;
+  $("updates-dot").hidden = !any;
+  $("m-updates-dot").hidden = !any;
+}
+
+// Windows: airlock refreshes the malware data itself (no update kit).
+const dataRefresh = { running: false, lines: [] };
+async function runDataRefresh(force) {
+  if (dataRefresh.running) return;
+  dataRefresh.running = true;
+  try {
+    const r = await invoke("refresh_data", { force });
+    if (r.ran) { dataRefresh.lines = r.lines; status("Malware data refreshed"); }
+  } catch (e) { dataRefresh.lines = [`Refresh failed: ${e}`]; }
+  finally { dataRefresh.running = false; }
+}
+
+async function checkAppUpdate() {
+  try { appUpd.status = await invoke("app_update_check"); appUpd.error = null; } catch (e) { appUpd.error = String(e); }
+  noteStatus();
+  return appUpd.status;
+}
+
+async function installAppUpdate(body) {
+  if (appUpd.running) return;
+  Object.assign(appUpd, { running: true, error: null, got: 0, total: 0 });
+  if (body) renderUpdates(body);
+  status(`Downloading airlock ${appUpd.status?.version || ""}…`);
+  try {
+    await invoke("app_update_install");
+    appUpd.done = true;
+    status(`airlock ${appUpd.status?.version || ""} is installed: restart to use it`);
+    notify("airlock was updated", `Version ${appUpd.status?.version || ""} is installed and its signature checked. Restart airlock to use it.`, [["Restart now", () => invoke("restart_app")], ["Later", hideToast]]);
+  } catch (e) {
+    appUpd.error = String(e);
+    status(`App update failed: ${e}`, true);
+  } finally {
+    appUpd.running = false;
+    noteStatus();
+    if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates($("panel-body"));
+  }
+}
+
+window.__TAURI__.event.listen("app-update-progress", (e) => {
+  [appUpd.got, appUpd.total] = e.payload;
+  const bar = document.getElementById("app-update-bar");
+  if (bar && appUpd.total) bar.value = appUpd.got / appUpd.total;
+  const txt = document.getElementById("app-update-text");
+  if (txt) txt.textContent = appUpd.total ? `${(appUpd.got / 1048576).toFixed(0)} of ${(appUpd.total / 1048576).toFixed(0)} MB` : `${(appUpd.got / 1048576).toFixed(0)} MB`;
+});
+
+// The app section of the Updates panel.
+function appUpdateNodes(body) {
+  const nodes = [el("h3", "set-head", "airlock app")];
+  const s = appUpd.status;
+  const row = el("div", "row");
+  if (appUpd.done) {
+    nodes.push(el("p", "", `Version ${s?.version} is installed. Restart airlock to use it.`));
+    const r = el("button", "primary", "Restart airlock");
+    r.onclick = () => invoke("restart_app");
+    row.append(r);
+  } else if (appUpd.running) {
+    const bar = el("progress");
+    bar.id = "app-update-bar";
+    bar.max = 1;
+    if (appUpd.total) bar.value = appUpd.got / appUpd.total;
+    const txt = el("span", "note", "Starting the download…");
+    txt.id = "app-update-text";
+    nodes.push(el("p", "", `Downloading version ${s?.version}… the signature is checked before anything is replaced.`), bar, txt);
+  } else if (s && s.available) {
+    nodes.push(el("p", "", `Version ${s.version} is available (you have ${s.current}).`));
+    if (s.notes) nodes.push(el("p", "note", s.notes.slice(0, 600)));
+    if (s.installable) {
+      const go = el("button", "primary", `Update to ${s.version}`);
+      go.onclick = () => installAppUpdate(body);
+      row.append(go);
+    } else nodes.push(el("p", "note", "This copy runs from a source folder, so it does not replace itself: rebuild it from the newest source."));
+  } else if (s) nodes.push(el("p", "", `Version ${s.current}: the newest.`));
+  if (appUpd.error) nodes.push(el("p", "note", `Last app check failed: ${appUpd.error}`));
+  if (!appUpd.running && !appUpd.done) {
+    const c = el("button", "", "Check for a new version");
+    c.onclick = async () => { c.disabled = true; c.textContent = "Checking…"; await checkAppUpdate(); renderUpdates(body); };
+    row.append(c);
+  }
+  nodes.push(row, el("p", "note", "New versions come from airlock's GitHub releases and are signed: airlock refuses any download not signed with the project's key."));
+  nodes.push(el("h3", "set-head", "Secure viewer and malware data"));
+  return nodes;
 }
 
 async function checkUpdates(force) {
@@ -1026,10 +1139,24 @@ function hideToast() { $("toast").hidden = true; }
 
 function renderUpdates(body) {
   const st = updates.status;
-  const nodes = [];
+  const nodes = appUpdateNodes(body);
   if (!st || !st.supported) {
-    nodes.push(el("p", "", "This copy of airlock has no update kit."),
-      el("p", "note", "Install it with scripts/install.sh (which adds the kit), or set AIRLOCK_SOURCE to an airlock source folder."));
+    if (navigator.userAgent.includes("Windows")) {
+      // Windows: the viewer comes with each app version; the malware data
+      // (fingerprints, malware sites, ClamAV) airlock refreshes itself daily.
+      nodes.push(el("p", "", "The viewer comes with each new version of the app. Its malware data (known-malware fingerprints, malware sites, ClamAV signatures) is refreshed every day."));
+      const r = el("button", "", dataRefresh.running ? "Refreshing…" : "Refresh malware data now");
+      r.disabled = dataRefresh.running;
+      r.onclick = async () => { await runDataRefresh(true); renderUpdates(body); };
+      const row = el("div", "row");
+      row.append(r);
+      nodes.push(row);
+      if (dataRefresh.lines.length) {
+        const ul = el("ul", "progress");
+        for (const l of dataRefresh.lines) ul.append(el("li", "", l));
+        nodes.push(ul);
+      }
+    } else nodes.push(el("p", "note", "This copy of airlock has no update kit: install it with scripts/install.sh (which adds the kit), or set AIRLOCK_SOURCE to an airlock source folder."));
     body.replaceChildren(...nodes);
     return;
   }
@@ -1080,8 +1207,8 @@ function renderUpdates(body) {
   nodes.push(checkLabel, installLabel);
 
   if (updates.forge) {
-    $("forge").hidden = false;
-    nodes.push($("forge"));
+    FORGE.hidden = false;
+    nodes.push(FORGE);
   }
   if (updates.log.length) {
     const ul = el("ul", "progress");
@@ -1100,7 +1227,9 @@ function renderUpdates(body) {
 
 function showUpdates() {
   hideToast();
-  renderUpdates(openPanel("Updates"));
+  const body = openPanel("Updates");
+  renderUpdates(body);
+  if (!appUpd.status && !appUpd.running) checkAppUpdate().then(() => { if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates(body); });
 }
 
 // quiet: started automatically — no panel, a notice when done.
@@ -1158,6 +1287,14 @@ async function autoCheckUpdates() {
   if (pref("airlock.autoUpdateCheck", "1") !== "1") return;
   // Test runs (a demo script drives the app) never start updates.
   if (await invoke("demo_script").catch(() => null)) return;
+  if (navigator.userAgent.includes("Windows")) runDataRefresh(false);
+  // A new version of the app: offered, never installed without a click.
+  checkAppUpdate().then((a) => {
+    if (a && a.available && a.installable && Date.now() > Number(pref("airlock.appUpdateSnooze", "0")))
+      notify(`airlock ${a.version} is available`, "A new version of the app. It downloads in the background, its signature is checked, and a restart finishes it.", [
+        ["Update", () => { hideToast(); installAppUpdate(null); }],
+        ["Later", () => { setPref("airlock.appUpdateSnooze", String(Date.now() + 86400000)); hideToast(); }]]);
+  });
   try {
     const st = await checkUpdates(false);
     if (!st.available) return;
@@ -1195,6 +1332,9 @@ async function runDemo() {
     if (cmd === "tscroll") $("panel-body").scrollTop = Number(arg) || 0;
     if (cmd === "settings") await showSettings();
     if (cmd === "about") await showAbout();
+    // tests/updater.sh: check for a new app version and install it.
+    if (cmd === "appupdate") { const st = await checkAppUpdate(); if (st && st.available) await installAppUpdate(null); else await invoke("log_line", { line: `app update test: none found (${appUpd.error || "up to date"})` }); }
+    if (cmd === "logs") await showLogs();
     if (cmd === "palette") { openPalette(); $("pal-q").value = arg || ""; renderPalette(); }
     if (cmd === "thumbs") setThumbs(true);
     if (cmd === "openentry") { const fs = await invoke("archive_entries"); const f = fs[Number(arg) || 0]; if (f) await invoke("open_entry", { index: f.index, name: f.name }); }
@@ -1381,7 +1521,7 @@ const forge = {
     Object.assign(this, { mode, t0: Date.now(), step: update ? "check/upstream" : "check", stepT0: Date.now(), done: new Set(),
       skipped: new Set(update ? [] : ["check/upstream", "tests/tests"]), count: 0, total: 0,
       dl: { mb: 0, cur: 0 }, sub: null, live: null, lines: 0, finished: null, tEnd: 0, frac: 0 });
-    $("forge").querySelector(".forge-note").innerHTML = update
+    FORGE.querySelector(".forge-note").innerHTML = update
       ? "<strong>Why does this take a while?</strong> The new viewer is built on your computer from verified sources and must pass the full test suite before it replaces the current one. You can keep reading documents meanwhile."
       : "<strong>Why does this take a while?</strong> airlock builds its viewer on your own computer from official, fingerprint-checked sources, instead of shipping a ready-made black box. It happens once; after that every document opens in a second.";
     // An update's package list is for those who want it: folded.
@@ -1393,7 +1533,7 @@ const forge = {
       return li;
     }));
     $("setup-log").replaceChildren();
-    $("forge").classList.remove("ok", "bad");
+    FORGE.classList.remove("ok", "bad");
     $("forge-title").textContent = update ? "Updating the secure viewer" : "Building the secure viewer";
     this.render();
   },
@@ -1569,7 +1709,7 @@ const forge = {
     this.finished = ok ? "ok" : "bad";
     this.tEnd = Date.now();
     if (ok) this.frac = 1;
-    $("forge").classList.add(ok ? "ok" : "bad");
+    FORGE.classList.add(ok ? "ok" : "bad");
     const update = this.mode === "update";
     $("forge-title").textContent = ok ? (update ? "Updated · all checks passed" : "The secure viewer is ready") : (update ? "Update stopped" : "The build stopped");
     $("forge-what").textContent = ok ? `${update ? "Updated" : "Built"} and checked in ${fmtTime((Date.now() - this.t0) / 1000)}` : message;
@@ -1583,8 +1723,8 @@ const forge = {
 $("setup-build").onclick = async () => {
   const b = $("setup-build");
   b.disabled = true;
-  $("setup").append($("forge"));
-  $("forge").hidden = false;
+  $("setup").append(FORGE);
+  FORGE.hidden = false;
   $("setup-list").hidden = true;
   $("setup").classList.add("building");
   forge.reset();
@@ -1604,7 +1744,7 @@ $("setup-build").onclick = async () => {
   }
   $("setup-list").hidden = false;
   $("setup").classList.remove("building");
-  if (ok) $("forge").hidden = true;
+  if (ok) FORGE.hidden = true;
   checkSetup();
 };
 const setupReady = checkSetup();
@@ -1628,7 +1768,7 @@ const TOUR = [
     text: "airlock opens every PDF and Office file inside its own throwaway virtual machine, a tiny separate computer with no network.",
     how: "Your computer never reads the file itself. It only receives pictures of the pages and cleaned-up text. Close the document and the whole VM is destroyed." },
   { target: "appbtn", kicker: "Menu", title: "The airlock menu",
-    text: "Click the airlock logo for: New window, Check files automatically (on by default), Pixels only (no text leaves the VM, for files you really distrust), Updates (a dot on the logo means one is ready), Settings, About airlock, the guided tour, and closing.",
+    text: "Click the airlock logo for: New window, Check files automatically (on by default), Pixels only (no text leaves the VM, for files you really distrust), Updates (a dot on the logo means one is ready), Settings, About airlock, the Activity log, the guided tour, and closing.",
     how: "Settings is where you pick the colours and background (and, for the AppImage, uninstall). About airlock shows what protects you and how fresh it is, every version, and the app log: VMs that stopped, attacks the tripwire blocked, updates, errors." },
   { target: "open", kicker: "Open", title: "Open a document",
     text: "Pick files here, press Ctrl+O, or drag them onto the window.",
@@ -1932,17 +2072,19 @@ async function showSettings() {
   } catch {}
 }
 $("m-settings").onclick = () => { toggleAppMenu(false); showSettings(); };
-// About airlock: what protects you (layers and how fresh they are), the
-// versions of everything that touches a document, and the app's own log.
+// About airlock: what protects you (layers and how fresh they are) and the
+// versions of everything that touches a document. The log has its own panel.
 async function showAbout() {
   const body = openPanel("About airlock");
   const sec = (title) => el("h3", "set-head", title);
   const group = () => el("dl", "about");
   const version = group(), protection = group(), readers = group();
-  const logBox = el("div", "console-log tall", "Loading…");
   const supported = el("dl", "about supported");
-  body.replaceChildren(sec("airlock"), version, sec("Supported files"), supported, sec("Protection"), protection, sec("Inside the VM"), readers, sec("App log"),
-    el("p", "note", "Everything airlock did on this computer: VMs that stopped, attacks the tripwire blocked, updates, errors. Documents' contents are never logged."), logBox);
+  const logLink = el("button", "", "Open the activity log…");
+  logLink.onclick = showLogs;
+  const logRow = el("div", "row");
+  logRow.append(logLink);
+  body.replaceChildren(sec("airlock"), version, sec("Supported files"), supported, sec("Protection"), protection, sec("Inside the VM"), readers, logRow);
   // What airlock opens (the same list as the Open dialog's filters).
   try {
     for (const [label, exts, note] of await invoke("supported_files")) {
@@ -1969,23 +2111,47 @@ async function showAbout() {
   row(readers, "VM kernel", info.kernel && info.kernel.replace(/^Linux version (\S+).*/, "Linux $1 (hardened)"));
   row(readers, "VM engine", info.firecracker);
   if (info.packages?.length) row(readers, "Readers", info.packages.join(", "));
-  const lines = info.log || [];
-  logBox.replaceChildren(...(lines.length ? lines : ["(empty)"]).map((l) => {
-    const m = /^(\d{9,})\s+(pid \d+\s+)?(.*)$/.exec(l);
-    const r = el("div", "ln");
-    if (m) r.append(el("span", "t", new Date(Number(m[1]) * 1000).toLocaleString()), document.createTextNode(` ${m[3]}`));
-    else r.textContent = l;
-    if (/attack|tripwire|crash|could not|error|failed/i.test(l)) r.classList.add("warn");
-    return r;
-  }));
-  logBox.scrollTop = logBox.scrollHeight;
-  const copy = el("button", "", "Copy log");
-  copy.onclick = async () => { try { await navigator.clipboard.writeText(lines.join("\n")); copy.textContent = "Copied"; } catch { copy.textContent = "Could not copy"; } };
-  const rowEl = el("div", "row");
-  rowEl.append(copy);
-  body.append(rowEl);
 }
 $("m-about").onclick = () => { toggleAppMenu(false); showAbout(); };
+
+// The activity log: everything airlock did on this computer (VMs that
+// stopped, attacks the tripwire blocked, updates, errors), newest last.
+async function showLogs() {
+  const body = openPanel("Activity log");
+  const box = el("div", "console-log tall", "Loading…");
+  const only = el("label", "check-label");
+  const problems = el("input");
+  problems.type = "checkbox";
+  only.append(problems, document.createTextNode(" Problems only"));
+  const refresh = el("button", "", "Refresh");
+  const copy = el("button", "", "Copy log");
+  const row = el("div", "row");
+  row.append(only, refresh, copy);
+  body.replaceChildren(el("p", "note", "What airlock did on this computer: VMs that started and stopped, attacks the tripwire blocked, updates, errors. The contents of your documents are never logged."), row, box);
+  let lines = [];
+  const bad = (l) => /attack|tripwire|crash|could not|error|failed|refused/i.test(l);
+  const draw = () => {
+    const shown = problems.checked ? lines.filter(bad) : lines;
+    box.replaceChildren(...(shown.length ? shown : [problems.checked ? "(no problems logged)" : "(empty)"]).map((l) => {
+      const m = /^(\d{9,})\s+(pid \d+\s+)?(.*)$/.exec(l);
+      const r = el("div", "ln");
+      if (m) r.append(el("span", "t", new Date(Number(m[1]) * 1000).toLocaleString()), document.createTextNode(` ${m[3]}`));
+      else r.textContent = l;
+      if (bad(l)) r.classList.add("warn");
+      return r;
+    }));
+    box.scrollTop = box.scrollHeight;
+  };
+  const load = async () => {
+    try { lines = (await invoke("about_info")).log || []; } catch (e) { lines = [`could not read the log: ${e}`]; }
+    draw();
+  };
+  problems.onchange = draw;
+  refresh.onclick = load;
+  copy.onclick = async () => { try { await navigator.clipboard.writeText(lines.join("\n")); copy.textContent = "Copied"; } catch { copy.textContent = "Could not copy"; } };
+  await load();
+}
+$("m-logs").onclick = () => { toggleAppMenu(false); showLogs(); };
 
 $("m-close").onclick = closeWindow;
 function showAutoCheck() { $("m-auto").setAttribute("aria-checked", String(autoCheckOn())); }
@@ -2087,7 +2253,8 @@ function paletteCommands() {
     ["Spreadsheets: one page per sheet / pages", "", doc && !$("sheetbtn").hidden, () => $("sheetbtn").click()],
     ["Updates…", "", true, showUpdates],
     ["Settings…", "", true, showSettings],
-    ["About airlock (versions, protection, log)…", "", true, showAbout],
+    ["About airlock (versions, protection)…", "", true, showAbout],
+    ["Activity log…", "", true, showLogs],
     ["Supported file types…", "", true, showAbout],
     ["Guided tour", "", true, startTour],
     ["New window", "", true, () => invoke("new_window")],
@@ -2359,7 +2526,7 @@ $("m-palette").onclick = () => { toggleAppMenu(false); openPalette(); };
 // The logo comes alive while airlock is working: a check running, an update
 // or the first build. Calm otherwise.
 setInterval(() => {
-  const working = !!check.running || updates.running || !$("forge").hidden && forge.finished === null;
+  const working = !!check.running || updates.running || !FORGE.hidden && forge.finished === null;
   $("appbtn").classList.toggle("working", working);
 }, 400);
 

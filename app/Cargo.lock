@@ -19,7 +19,7 @@ dependencies = [
 
 [[package]]
 name = "airlock"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "airlock-proto",
  "anyhow",
@@ -40,7 +40,7 @@ dependencies = [
 
 [[package]]
 name = "airlock-app"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "airlock",
  "libc",

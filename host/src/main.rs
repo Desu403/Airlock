@@ -1,6 +1,6 @@
 use airlock_core::{analysis, live, pdf, report, session, vm};
 
-use airlock_proto::MAX_DOC_BYTES;
+use airlock_proto::{MAX_ARCHIVE_BYTES, MAX_DOC_BYTES};
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
@@ -100,8 +100,9 @@ static DOC_NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 fn read_doc(input: &Path) -> Result<Vec<u8>> {
     let _ = DOC_NAME.set(input.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
     let meta = std::fs::metadata(input).with_context(|| format!("reading {}", input.display()))?;
-    if meta.len() > MAX_DOC_BYTES {
-        bail!("document larger than {} MiB", MAX_DOC_BYTES >> 20);
+    let limit = if airlock_core::live::is_archive_path(input) { MAX_ARCHIVE_BYTES } else { MAX_DOC_BYTES };
+    if meta.len() > limit {
+        bail!("file larger than {} MiB", limit >> 20);
     }
     Ok(std::fs::read(input)?)
 }

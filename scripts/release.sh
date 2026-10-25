@@ -59,6 +59,8 @@ ls -lh "$OUT"
 
 [ "${1:-}" = --publish ] || { echo "built in $OUT (not published: run with --publish)"; exit 0; }
 
+# The release points at this commit: GitHub must have it first.
+git push origin HEAD
 # The token git already uses for github.com.
 TOKEN=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill 2>/dev/null | sed -n 's/^password=//p')
 [ -n "$TOKEN" ] || { echo "no GitHub token found for github.com" >&2; exit 1; }

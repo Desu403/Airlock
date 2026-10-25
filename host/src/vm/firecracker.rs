@@ -333,7 +333,12 @@ pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<C
     let rootfs = pass_fd(&mut fds, &assets.rootfs)?;
     let mut drives = vec![serde_json::json!({ "drive_id": "rootfs", "path_on_host": rootfs, "is_root_device": true, "is_read_only": true })];
     for d in &spec.drives {
-        drives.push(serde_json::json!({ "drive_id": d.id, "path_on_host": format!("/vm/{}.img", d.id), "is_root_device": false, "is_read_only": d.read_only }));
+        let path = if d.read_only {
+            pass_fd(&mut fds, &d.path)?
+        } else {
+            format!("/vm/{}.img", d.id)
+        };
+        drives.push(serde_json::json!({ "drive_id": d.id, "path_on_host": path, "is_root_device": false, "is_read_only": d.read_only }));
     }
     let cfg = serde_json::json!({
         "boot-source": { "kernel_image_path": kernel, "boot_args": boot_args },
@@ -363,7 +368,9 @@ pub fn spawn(assets: &Assets, run: &RunDir, spec: &Spec, log: &Path) -> Result<C
     // spare uid needs no access to the paths (home dirs, $XDG_RUNTIME_DIR).
     bind_fd(&mut cmd, &mut fds, "--ro-bind-fd", &cfg_path, "/vm/vm.json")?;
     for d in &spec.drives {
-        bind_fd(&mut cmd, &mut fds, if d.read_only { "--ro-bind-fd" } else { "--bind-fd" }, &d.path, &format!("/vm/{}.img", d.id))?;
+        if !d.read_only {
+            bind_fd(&mut cmd, &mut fds, "--bind-fd", &d.path, &format!("/vm/{}.img", d.id))?;
+        }
     }
     // The vsock socket must live at the same path inside and outside.
     bind_fd(&mut cmd, &mut fds, "--bind-fd", &run.path, run_s)?;

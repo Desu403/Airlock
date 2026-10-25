@@ -21,6 +21,7 @@ pub const MAX_PAGES: u32 = 2000;
 pub const DOC_MAGIC: [u8; 8] = *b"ALDOC1\0\0";
 pub const DOC_HEADER_LEN: usize = 16;
 pub const MAX_DOC_BYTES: u64 = 256 * 1024 * 1024;
+pub const MAX_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 #[repr(u32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

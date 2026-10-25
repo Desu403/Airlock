@@ -28,7 +28,7 @@ mod selftest;
 mod triage;
 mod yara;
 
-use airlock_proto::{sanitize_into, Error, Header, Ind, Kind, DOC_HEADER_LEN, DOC_MAGIC, FRAME_PORT, MAX_DIM, MAX_DOC_BYTES, MAX_PAGES, MAX_TEXT};
+use airlock_proto::{sanitize_into, Error, Header, Ind, Kind, DOC_HEADER_LEN, DOC_MAGIC, FRAME_PORT, MAX_DIM, MAX_PAGES, MAX_TEXT};
 use monitor::Net;
 use std::ffi::CString;
 use std::fs::{self, File};
@@ -249,7 +249,7 @@ fn load_document() -> Option<Vec<u8>> {
         return None;
     }
     let len = u64::from_le_bytes(hdr[8..16].try_into().unwrap());
-    if len == 0 || len > MAX_DOC_BYTES {
+    if len == 0 || len > airlock_proto::MAX_ARCHIVE_BYTES {
         return None;
     }
     let mut doc = vec![0u8; len as usize];

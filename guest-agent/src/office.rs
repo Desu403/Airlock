@@ -62,14 +62,17 @@ pub fn detect(doc: &[u8]) -> Option<Kind> {
         });
     }
     if doc.starts_with(b"PK\x03\x04") {
-        // ZIP: part names live (uncompressed) in local headers and the central directory.
-        if contains(doc, b"word/") {
+        // ZIP: part names live (uncompressed) in local headers. Real OOXML
+        // files have word/, xl/, ppt/ within the first KB; searching the
+        // whole file false-positives on compressed data in large ZIPs.
+        let zip_head = &doc[..doc.len().min(4096)];
+        if contains(zip_head, b"word/") {
             return Some(Kind::Office("docx"));
         }
-        if contains(doc, b"xl/") {
+        if contains(zip_head, b"xl/") {
             return Some(Kind::Office("xlsx"));
         }
-        if contains(doc, b"ppt/") {
+        if contains(zip_head, b"ppt/") {
             return Some(Kind::Office("pptx"));
         }
         if contains(&doc[..doc.len().min(256)], b"mimetypeapplication/vnd.oasis.opendocument.spreadsheet") {

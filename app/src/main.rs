@@ -4,7 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use airlock_core::live::{is_spreadsheet, Layout, LiveSession};
-use airlock_core::proto::MAX_DOC_BYTES;
+use airlock_core::proto::{MAX_ARCHIVE_BYTES, MAX_DOC_BYTES};
 use airlock_core::{analysis, report, text};
 use serde::Serialize;
 use std::path::PathBuf;
@@ -131,14 +131,19 @@ static OPENED_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 fn open_impl(doc: Arc<Mutex<Option<Doc>>>, chosen: Arc<Mutex<Option<(String, Arc<Vec<u8>>)>>>, path: PathBuf) -> R<OpenInfo> {
     *OPENED_PATH.lock().unwrap() = Some(path.clone());
     let meta = std::fs::metadata(&path).map_err(err)?;
-    if !meta.is_file() || meta.len() > MAX_DOC_BYTES {
-        return Err("not a file, or larger than 256 MiB".into());
+    let limit = if airlock_core::live::is_archive_path(&path) { MAX_ARCHIVE_BYTES } else { MAX_DOC_BYTES };
+    if !meta.is_file() || meta.len() > limit {
+        return Err(format!("not a file, or larger than {} MiB", limit >> 20).into());
     }
     let bytes = Arc::new(std::fs::read(&path).map_err(err)?);
     // File names are attacker-chosen too ("invoice\u{202E}fdp.exe").
     let name = path.file_name().map(|n| text::sanitize_line(n.as_encoded_bytes())).unwrap_or_default();
+    log_event(&format!("open {} ({} KB)", name, bytes.len() / 1024));
     *chosen.lock().unwrap() = Some((name.clone(), bytes.clone()));
-    open_bytes(doc, name, &bytes)
+    match open_bytes(doc, name, &bytes) {
+        Ok(info) => Ok(info),
+        Err(e) => { log_event(&format!("open failed: {e}")); Err(e) }
+    }
 }
 
 /// Boots a fresh VM for the document (closing this window's previous one).
@@ -158,6 +163,8 @@ fn open_bytes(doc: Arc<Mutex<Option<Doc>>>, name: String, bytes: &[u8]) -> R<Ope
         Some((_, inner)) => format!("{name} › {}", inner.rsplit(['/', '\\']).next().unwrap_or(inner)),
         None => name,
     };
+    let kind = if archive && email { "email" } else if archive { "archive" } else { "document" };
+    log_event(&format!("view {kind}: {} page(s), VM ready in {} ms", session.pages.len(), session.boot_time.as_millis()));
     let info = OpenInfo {
         name,
         archive,
@@ -480,6 +487,7 @@ fn viewing_findings(state: State<'_, AppState>) -> serde_json::Value {
 async fn analyze(app: tauri::AppHandle, state: State<'_, AppState>, id: Option<u64>) -> R<serde_json::Value> {
     let (name, bytes) = state.chosen.lock().unwrap().clone().ok_or("no document chosen")?;
     let (report, chosen) = (state.report.clone(), state.chosen.clone());
+    log_event(&format!("analyze {name}"));
     blocking(move || {
         let started = std::time::Instant::now();
         let entry = ENTRY.get();
@@ -498,7 +506,13 @@ async fn analyze(app: tauri::AppHandle, state: State<'_, AppState>, id: Option<u
         let early = |a: &analysis::Analysis| {
             let _ = app.emit("analysis-early", to_json(a));
         };
-        let a = analysis::run_staged(&bytes, Some(&hint), entry.map(|(i, _)| *i), "analyze", false, &|_| {}, &early).map_err(err)?;
+        let a = match analysis::run_staged(&bytes, Some(&hint), entry.map(|(i, _)| *i), "analyze", false, &|_| {}, &early) {
+            Ok(a) => a,
+            Err(e) => { log_event(&format!("analyze failed after {:.1}s: {e:#}", started.elapsed().as_secs_f32())); return Err(err(e)); }
+        };
+        let findings = a.report.findings.len();
+        let verdict = if a.report.findings.is_empty() { "clean" } else { "findings" };
+        log_event(&format!("analyze done in {:.1}s: {verdict}, {findings} finding(s), ClamAV {}", started.elapsed().as_secs_f32(), if a.clamav_pending { "pending" } else { "done" }));
         let j = to_json(&a);
         // Kept for "Save report" only if that file is still the one open
         // (an automatic check can finish after another file was opened).
@@ -615,6 +629,7 @@ async fn close_document(state: State<'_, AppState>) -> R<()> {
     blocking(move || {
         if let Some(d) = doc.lock().unwrap().take() {
             d.session.close();
+            log_event("closed");
         }
         Ok(())
     })

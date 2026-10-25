@@ -63,8 +63,9 @@ pub fn is_archive(doc: &[u8]) -> bool {
     let has = |n: &[u8]| doc.windows(n.len()).any(|w| w == n);
     let at = |off: usize, m: &[u8]| doc.len() >= off + m.len() && &doc[off..off + m.len()] == m;
     if at(0, b"PK\x03\x04") || at(0, b"PK\x05\x06") {
-        let head = &doc[..doc.len().min(256)];
-        return !(has(b"word/") || has(b"xl/") || has(b"ppt/") || head.windows(31).any(|w| w == b"mimetypeapplication/vnd.oasis."));
+        let zip_head = &doc[..doc.len().min(4096)];
+        let zh = |n: &[u8]| zip_head.windows(n.len()).any(|w| w == n);
+        return !(zh(b"word/") || zh(b"xl/") || zh(b"ppt/") || zh(b"mimetypeapplication/vnd.oasis."));
     }
     at(0, b"7z\xBC\xAF\x27\x1C") || at(0, b"Rar!\x1A\x07") || at(257, b"ustar") || at(0, &[0x1F, 0x8B]) || at(0, &[0xFD, b'7', b'z', b'X', b'Z', 0])
         || at(0, b"MSCF") || at(0x8001, b"CD001") || at(0x8801, b"CD001") || at(0x9001, b"CD001") || (at(0, b"BZh") && doc.len() > 4 && (b'1'..=b'9').contains(&doc[3]))

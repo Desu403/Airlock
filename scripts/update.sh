@@ -21,6 +21,9 @@
 #   scripts/update.sh --rollback go back to the version before the last update
 #   scripts/update.sh --status   machine-readable check for the app (key=value),
 #                                also cached in build/update-status
+#   scripts/update.sh --verify   only check that every download airlock uses
+#                                and would update to verifies (exit 1 if not;
+#                                needs no airlock binary: the daily canary)
 set -eu
 cd "$(dirname "$0")/.."
 MODE=update
@@ -29,11 +32,13 @@ case "${1:-}" in
     --check) MODE=check ;;
     --status) MODE=status ;;
     --rollback) MODE=rollback ;;
-    *) echo "usage: $0 [--check|--status|--rollback]" >&2; exit 2 ;;
+    --verify) MODE=verify ;;
+    *) echo "usage: $0 [--check|--status|--verify|--rollback]" >&2; exit 2 ;;
 esac
 PREV=build/previous
 LOG=build/update.log
 die() { echo "error: $*" >&2; exit 1; }
+. scripts/verify.sh
 # Pins are plain "NAME=value" lines (not e.g. "NAME=$NAME cmd").
 pin() { sed -n "s/^$1=\([A-Za-z0-9.]*\)\$/\1/p" scripts/bootstrap.sh | head -1; }
 setpin() { sed -i "s|^$1=[A-Za-z0-9.]*\$|$1=$2|" scripts/bootstrap.sh; }
@@ -56,7 +61,7 @@ else
 fi
 # The AppImage carries its own CLI (not in <prefix>/bin).
 [ -n "${AIRLOCK_CLI:-}" ] && AIRLOCK=$AIRLOCK_CLI
-[ -x "$AIRLOCK" ] || die "airlock binary not found at $AIRLOCK"
+[ "$MODE" = verify ] || [ -x "$AIRLOCK" ] || die "airlock binary not found at $AIRLOCK"
 
 # Kit: the new VM goes live only now, after it passed the regression suite.
 deploy() {
@@ -136,6 +141,21 @@ YV=${YARA_LATEST%% *}
 STABLE=$(curl -fsS -m 30 https://alpinelinux.org/releases.json | python3 -I -c 'import json, sys; print(json.load(sys.stdin)["latest_stable"].lstrip("v"))' || true)
 [ -n "$KV" ] && [ -n "$FCV" ] && [ -n "$AV" ] && [ -n "$YV" ] || die "could not read upstream versions"
 
+# --- verify: what airlock uses now and what it would update to ----------------
+# Every check, every time (not only when a version changed).
+same() { [ "$1" = "$(pin "$2")" ] && pin "$3"; }
+VERIFIED=1
+verify_kernel "$KV" "$(same "$KV" KERNEL_VERSION KERNEL_SHA256)" &&
+    verify_firecracker "$FCV" "$(same "$FCV" FC_VERSION FC_SHA256)" &&
+    verify_alpine "$AV" "$(same "$AV" ALPINE_VERSION ALPINE_SHA256)" &&
+    verify_rules "$(pin YARA_RULES_VERSION)" "$(pin YARA_RULES_SHA256)" "$YV" "${YARA_LATEST#* }" || VERIFIED=0
+if [ "$MODE" = verify ]; then
+    echo "   newest: kernel $KV, Firecracker $FCV, Alpine $AV, YARA-Forge $YV"
+    [ "$VERIFIED" = 1 ] || die "$VERIFY_ERR ($VERIFY_KIND)"
+    echo "ok all downloads verify"
+    exit 0
+fi
+
 PKGS=$(outdated_packages) || die "could not read Alpine's package index"
 NPKG=$(printf '%s' "$PKGS" | grep -c . || true)
 BUILT=$(sed -n 's/^built //p' "$INFO" 2>/dev/null || echo 0)
@@ -178,6 +198,10 @@ if [ "$MODE" = status ]; then
         echo "rules=$(pin YARA_RULES_VERSION) $YV"
         echo "image_age_days=$AGE"
         echo "packages=$NPKG"
+        if [ "$VERIFIED" = 1 ]; then echo "verify=ok"; else echo "verify=$VERIFY_KIND $VERIFY_ERR"; fi
+        # What an update would install: an update that failed is not retried
+        # automatically until this changes (or a day passed).
+        echo "target=$(printf '%s\n' "$KV $FCV $AV $YV ${KITV:-}" "$PKGS" | sha256sum | cut -c1-16)"
         [ "$VIEWER_NEW" = 0 ] || echo "viewer=${BUILT_KIT:-old} $KITV"
         # The renderers first: they are what a document attacks.
         printf '%s\n' "$PKGS" | grep . | sort -k1,1 | awk '{k = ($1 ~ /^(mupdf|libreoffice|quickjs|python3|py3-oletools|musl)/) ? 0 : 1; print k, $0}' |
@@ -206,32 +230,16 @@ case "$(pin ALPINE_VERSION)" in
     "$STABLE".*|"") ;;
     *) echo "   note: Alpine $STABLE is out; moving branch is a manual step (ALPINE_VERSION in scripts/bootstrap.sh)" ;;
 esac
+if [ "$VERIFIED" = 1 ]; then echo "   downloads: all verify"; else echo "   downloads: NOT verified: $VERIFY_ERR"; fi
 "$AIRLOCK" doctor 2>&1 | awk '/guest image (built|is)|image age/ {print; keep = /warn/; next} keep {print; keep = 0}' 
 [ "$MODE" = check ] && exit 0
 
-# --- verify new inputs before touching anything -------------------------------
-if [ "$KV" != "$(pin KERNEL_VERSION)" ]; then
-    echo "==> Verifying kernel $KV (kernel.org signed checksums)"
-    command -v gpg >/dev/null || die "gpg is needed to verify kernel releases"
-    G=build/gnupg && rm -rf $G && mkdir -m 700 -p $G
-    # Keys fetched by WKD from kernel.org into a private keyring.
-    GNUPGHOME=$G gpg -q --auto-key-locate wkd --locate-keys torvalds@kernel.org gregkh@kernel.org >/dev/null 2>&1 || die "could not fetch kernel.org signing keys"
-    curl -fsS -m 60 -o build/sha256sums.asc https://cdn.kernel.org/pub/linux/kernel/v6.x/sha256sums.asc
-    GNUPGHOME=$G gpg -q --verify build/sha256sums.asc 2>/dev/null || die "kernel.org checksum list: bad signature"
-    KSHA=$(awk -v f="linux-$KV.tar.xz" '$2 == f {print $1}' build/sha256sums.asc)
-    [ -n "$KSHA" ] || die "no signed checksum for linux-$KV.tar.xz"
-fi
-if [ "$FCV" != "$(pin FC_VERSION)" ]; then
-    echo "==> Firecracker $FCV (published checksum)"
-    FSHA=$(curl -fsSL -m 60 "https://github.com/firecracker-microvm/firecracker/releases/download/$FCV/firecracker-$FCV-x86_64.tgz.sha256.txt" | awk '{print $1}')
-    CSHA=$(curl -fsSL -m 60 "https://raw.githubusercontent.com/firecracker-microvm/firecracker/$FCV/resources/guest_configs/microvm-kernel-ci-x86_64-6.1.config" | sha256sum | awk '{print $1}')
-    [ ${#FSHA} = 64 ] || die "no checksum published for Firecracker $FCV"
-fi
-if [ "$AV" != "$(pin ALPINE_VERSION)" ]; then
-    echo "==> Alpine $AV (published checksum)"
-    ASHA=$(curl -fsS -m 30 "https://dl-cdn.alpinelinux.org/alpine/v$(echo "$AV" | cut -d. -f1,2)/releases/x86_64/latest-releases.yaml" |
-        awk -v f="alpine-minirootfs-$AV-x86_64.tar.gz" '$1 == "file:" {hit = ($2 == f)} hit && $1 == "sha256:" {print $2; exit}')
-    [ ${#ASHA} = 64 ] || die "no checksum published for Alpine $AV"
+# --- nothing is touched unless every download verified ------------------------
+if [ "$VERIFIED" != 1 ]; then
+    case $VERIFY_KIND in
+        changed) die "$VERIFY_ERR. Nothing was installed: a changed download is never used." ;;
+        *) die "could not verify the update: $VERIFY_ERR. Nothing was changed; airlock tries again later." ;;
+    esac
 fi
 
 # --- keep the working version, then build and test the new one ---------------
@@ -242,9 +250,9 @@ cp vendor/bin/vmlinux-airlock.stamp "$PREV/" 2>/dev/null || true
 cp --reflink=auto --sparse=always "$ROOTFS" "$PREV/rootfs.ext4"
 cp "$INFO" "$PREV/rootfs.info" 2>/dev/null || true
 
-[ -z "${KSHA:-}" ] || { setpin KERNEL_VERSION "$KV"; setpin KERNEL_SHA256 "$KSHA"; }
-[ -z "${FSHA:-}" ] || { setpin FC_VERSION "$FCV"; setpin FC_SHA256 "$FSHA"; setpin FC_CONFIG_SHA256 "$CSHA"; }
-[ -z "${ASHA:-}" ] || { setpin ALPINE_VERSION "$AV"; setpin ALPINE_SHA256 "$ASHA"; }
+[ "$KV" = "$(pin KERNEL_VERSION)" ] || { setpin KERNEL_VERSION "$KV"; setpin KERNEL_SHA256 "$KSHA"; }
+[ "$FCV" = "$(pin FC_VERSION)" ] || { setpin FC_VERSION "$FCV"; setpin FC_SHA256 "$FSHA"; setpin FC_CONFIG_SHA256 "$CSHA"; }
+[ "$AV" = "$(pin ALPINE_VERSION)" ] || { setpin ALPINE_VERSION "$AV"; setpin ALPINE_SHA256 "$ASHA"; }
 [ "$YV" = "$(pin YARA_RULES_VERSION)" ] || { setpin YARA_RULES_VERSION "$YV"; setpin YARA_RULES_SHA256 "${YARA_LATEST#* }"; }
 
 echo "==> Rebuilding and running the regression suite (log: $LOG)"

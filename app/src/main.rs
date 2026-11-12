@@ -1239,6 +1239,12 @@ struct UpdateStatus {
     packages: u32,
     image_age_days: u32,
     error: Option<String>,
+    /// Some download could not be verified: (kind, sentence). kind is
+    /// "unchecked" (network, key, format) or "changed" (does not match).
+    verify: Option<(String, String)>,
+    /// Identifies what an update would install (the app remembers a failed
+    /// update by it, so the same failure is not retried on every launch).
+    target: String,
 }
 
 fn parse_status(text: &str) -> UpdateStatus {
@@ -1254,6 +1260,11 @@ fn parse_status(text: &str) -> UpdateStatus {
             "available" => st.available = v == "1",
             "packages" => st.packages = v.parse().unwrap_or(0),
             "image_age_days" => st.image_age_days = v.parse().unwrap_or(0),
+            "target" => st.target = v.to_string(),
+            "verify" if v != "ok" => {
+                let (kind, msg) = v.split_once(' ').unwrap_or(("unchecked", v));
+                st.verify = Some((kind.to_string(), msg.to_string()));
+            }
             "kernel" => st.changes.extend(pair("Guest kernel")),
             "firecracker" => st.changes.extend(pair("Firecracker")),
             "alpine" => st.changes.extend(pair("Alpine base")),
@@ -1272,13 +1283,27 @@ fn parse_status(text: &str) -> UpdateStatus {
 }
 
 /// Checks for updates (network: kernel.org, GitHub, Alpine's mirror). The
-/// result is cached for a day unless `force`.
+/// result is cached for a day unless `force`. `offline`: never goes to the
+/// network (updates switched off): the last result of any age, or only the
+/// VM image's age when there is none.
 #[tauri::command]
-async fn update_status(force: bool) -> R<UpdateStatus> {
+async fn update_status(force: bool, offline: Option<bool>) -> R<UpdateStatus> {
     blocking(move || {
         let Some(tree) = source_tree() else { return Ok(UpdateStatus::default()) };
         let cache = tree.join("build/update-status");
         let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        if offline == Some(true) {
+            if let Ok(text) = std::fs::read_to_string(&cache) {
+                return Ok(parse_status(&text));
+            }
+            // A kit keeps the image info next to it; a source checkout in build/.
+            let built = [tree.join("../rootfs.info"), tree.join("build/rootfs.info")]
+                .iter()
+                .find_map(|p| std::fs::read_to_string(p).ok())
+                .and_then(|t| t.lines().find_map(|l| l.strip_prefix("built ").and_then(|v| v.trim().parse::<u64>().ok())));
+            let image_age_days = built.map(|b| (now.saturating_sub(b) / 86_400) as u32).unwrap_or(0);
+            return Ok(UpdateStatus { supported: true, image_age_days, ..Default::default() });
+        }
         if !force {
             if let Ok(text) = std::fs::read_to_string(&cache) {
                 let st = parse_status(&text);
@@ -1308,6 +1333,8 @@ struct UpdateResult {
     lines: Vec<String>,
     /// This app's own binary was replaced: restart to use the new one.
     restart: bool,
+    /// Failure: the script's own one-line reason ("error: ..."), if any.
+    reason: Option<String>,
 }
 
 /// Building the viewer (first setup, updates) runs at the lowest CPU and
@@ -1354,9 +1381,10 @@ async fn run_update(app: tauri::AppHandle, state: State<'_, AppState>) -> R<Upda
         });
         let ok = child.wait().map_err(err)?.success();
         let _ = std::fs::remove_file(tree.join("build/update-status"));
+        let reason = if ok { None } else { tail.iter().rev().find_map(|l| l.trim().strip_prefix("error: ")).map(str::to_string) };
         let lines = if ok { tail.iter().skip_while(|l| !l.starts_with("==> Updated")).cloned().collect() } else { tail };
         let restart = std::fs::read_link("/proc/self/exe").is_ok_and(|p| p.to_string_lossy().ends_with(" (deleted)"));
-        Ok(UpdateResult { ok, lines, restart })
+        Ok(UpdateResult { ok, lines, restart, reason })
     })
     .await;
     updating.store(false, Ordering::SeqCst);

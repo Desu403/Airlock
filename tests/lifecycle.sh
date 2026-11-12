@@ -7,7 +7,8 @@
 #   tests/lifecycle.sh [AppImage]      (about 20 minutes; needs a built AppImage)
 set -eu
 cd "$(dirname "$0")/.."
-IMG=$(realpath "${1:-dist/airlock-0.1.0-x86_64.AppImage}")
+# Default: the AppImage of the version in app/tauri.conf.json.
+IMG=$(realpath "${1:-dist/airlock-$(sed -n 's/^  "version": "\(.*\)",/\1/p' app/tauri.conf.json)-x86_64.AppImage}")
 H=${LIFECYCLE_HOME:-$PWD/build/lifecycle-home}
 rm -rf "$H"; mkdir -p "$H"
 export HOME=$H XDG_CONFIG_HOME=$H/.config XDG_DATA_HOME=$H/.local/share XDG_STATE_HOME=$H/.local/state XDG_CACHE_HOME=$H/.cache
@@ -52,6 +53,7 @@ if AIRLOCK_LIB=$LIB timeout 300 "$CLI" analyze testdata/evil.pdf --out "$T/an" -
 
 echo "== the daily update check (status) =="
 if ( cd "$LIB/kit" && AIRLOCK_CLI=$CLI sh scripts/update.sh --status > "$H/status.log" 2>&1 ); then ok "update check runs: $(grep -E '^available' "$H/status.log")"; else bad "update check failed: $(tail -2 "$H/status.log")"; fi
+if grep -q '^verify=ok$' "$H/status.log"; then ok "the installed kit verifies every download (signed kernel list, checksums)"; else bad "downloads not verified: $(grep '^verify=' "$H/status.log" || echo 'no verify line')"; fi
 mb2=$(size "$H/.local/lib/airlock")
 echo "     disk after the update check: ${mb2} MB"
 

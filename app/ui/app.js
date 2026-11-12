@@ -998,6 +998,25 @@ function setPref(key, value) {
   // Also on disk, for windows opened later (each is its own process).
   if (key.startsWith("airlock.")) invoke("ui_setting_set", { key, value: String(value) }).catch(() => {});
 }
+// How updates happen: "auto" (installed quietly; airlock only speaks up when
+// something needs the user, like a restart), "ask" (one notice per new
+// version, which can be skipped) or "off" (never checks by itself). Older
+// versions stored two checkboxes: they map onto the same three choices.
+function updateMode() {
+  const m = pref("airlock.updateMode", "");
+  if (m === "auto" || m === "ask" || m === "off") return m;
+  if (pref("airlock.autoUpdateCheck", "1") !== "1") return "off";
+  return pref("airlock.autoInstall", "1") === "1" ? "auto" : "ask";
+}
+// The last automatic update that did not go through: { target, reason, at }.
+// The same update is not retried on every launch: only when something
+// changed (target) or a day has passed, and the user hears about a given
+// failure once.
+function failedUpdate() {
+  try { return JSON.parse(pref("airlock.updateFailed", "null")); } catch { return null; }
+}
+const DAY = 86_400_000;
+
 // Settings saved by any window win over this window's web storage. Startup
 // steps that depend on a setting (Pixels only, sheet layout) wait for this.
 const settingsReady = invoke("ui_settings").then((all) => {
@@ -1127,12 +1146,29 @@ function changeSummary(st) {
   return list.join(", ") + (more > 0 ? ` and ${more} more` : "");
 }
 
-function showToast(st) {
-  notify("Security updates for airlock", `${changeSummary(st)}. Installing them takes about two minutes; you can keep reading.`, [
-    ["Update now", () => runUpdate()],
-    ["Details", showUpdates],
-    ["Later", () => { hideToast(); setPref("airlock.updateSnooze", String(Date.now() + 86_400_000)); }],
-  ]);
+// "Ask me first": one notice for everything that is new (a new app version
+// and/or security updates for the viewer). Skip = never ask about this one
+// again; the next new version is asked about as usual.
+function askToast(app, st) {
+  const later = () => { hideToast(); setPref("airlock.updateSnooze", String(Date.now() + DAY)); };
+  const skip = () => {
+    hideToast();
+    if (app) setPref("airlock.skipAppVersion", app.version);
+    if (st) setPref("airlock.skipTarget", st.target || "");
+  };
+  if (app && st) {
+    notify(`airlock ${app.version} and security updates`, `A new version of the app, and security updates for the viewer (${changeSummary(st)}). The app downloads in the background and a restart finishes it; the viewer's updates follow after the restart.`, [
+      ["Update", () => { hideToast(); setPref("airlock.updateApproved", "1"); installAppUpdate(null); }],
+      ["Later", later], ["Skip these", skip]]);
+  } else if (app) {
+    notify(`airlock ${app.version} is available`, "A new version of the app. It downloads in the background, its signature is checked, and a restart finishes it.", [
+      ["Update", () => { hideToast(); installAppUpdate(null); }],
+      ["Later", later], ["Skip this version", skip]]);
+  } else {
+    notify("Security updates for airlock", `${changeSummary(st)}. Installing them takes a few minutes; you can keep reading.`, [
+      ["Update now", () => runUpdate()],
+      ["Later", later], ["Skip these", skip]]);
+  }
 }
 
 function hideToast() { $("toast").hidden = true; }
@@ -1167,13 +1203,27 @@ function renderUpdates(body) {
     for (const c of st.changes) ul.append(el("li", "", c));
     if (st.packages > st.changes.length) ul.append(el("li", "", `… ${st.packages} packages in total`));
     nodes.push(ul);
-  } else nodes.push(el("p", "", "Everything is up to date."));
+  } else if (st.checked) nodes.push(el("p", "", "Everything is up to date."));
+  else nodes.push(el("p", "", "Not checked yet: use Check now."));
   const when = st.checked ? new Date(st.checked * 1000).toLocaleString() : "never";
   nodes.push(el("p", "note", `Last checked: ${when} · VM image built ${st.image_age_days} day(s) ago.`));
+  if (st.verify) {
+    const [kind, msg] = st.verify;
+    nodes.push(el("p", "note", kind === "changed"
+      ? `A download did not match its signature or checksum (${msg}). airlock will not install it and keeps the current version.`
+      : `The updates can't be verified right now (${msg}). airlock keeps the current version and checks again tomorrow; a newer airlock may be needed.`));
+  }
+  const failed = failedUpdate();
+  if (failed && st.available && !updates.running) {
+    nodes.push(el("p", "note", `The automatic update on ${new Date(failed.at).toLocaleString()} did not go through${failed.reason ? `: ${failed.reason}` : ""}. Nothing was changed. airlock tries again tomorrow, or sooner when something new arrives.`));
+  }
+  if (updateMode() === "off" && st.image_age_days > 60) {
+    nodes.push(el("p", "note", `Updates are switched off and the viewer's security updates are ${st.image_age_days} days old.`));
+  }
 
   const row = el("div", "row");
   const check = el("button", "", "Check now");
-  const upToDate = !st.error && !st.available && !updates.running;
+  const upToDate = !st.error && !st.available && !updates.running && Boolean(st.checked);
   const go = el("button", "primary", updates.running ? "Updating…" : upToDate ? "Up to date ✓" : "Update now");
   go.disabled = updates.running || upToDate;
   check.disabled = updates.running;
@@ -1192,19 +1242,29 @@ function renderUpdates(body) {
   }
   nodes.push(row, el("p", "note", "Downloads are verified (kernel.org signatures, published checksums). The full test suite must pass before the new version is used; otherwise the current one stays."));
 
-  const toggle = (key, text, onChange) => {
-    const label = el("label", "check");
-    const box = el("input");
-    box.type = "checkbox";
-    box.checked = pref(key, "1") === "1";
-    box.onchange = () => { setPref(key, box.checked ? "1" : "0"); onChange?.(box.checked); };
-    label.append(box, document.createTextNode(text));
-    return [label, box];
+  nodes.push(el("h3", "set-head", "When there are updates"));
+  const mode = updateMode();
+  const choice = (value, text, note) => {
+    const label = el("label", "check choice");
+    const radio = el("input");
+    radio.type = "radio";
+    radio.name = "update-mode";
+    radio.checked = mode === value;
+    radio.onchange = () => {
+      setPref("airlock.updateMode", value);
+      // A new choice starts fresh: nothing skipped or postponed.
+      for (const k of ["airlock.updateSnooze", "airlock.skipAppVersion", "airlock.skipTarget"]) setPref(k, "");
+      renderUpdates(body);
+    };
+    const t = el("span", "");
+    t.append(el("strong", "", text), el("br"), el("span", "note", note));
+    label.append(radio, t);
+    return label;
   };
-  const [checkLabel] = toggle("airlock.autoUpdateCheck", "Check for updates automatically (once a day: kernel.org, GitHub, Alpine)", () => renderUpdates(body));
-  const [installLabel, installBox] = toggle("airlock.autoInstall", "Install security updates automatically (in the background; you are told afterwards)");
-  installBox.disabled = pref("airlock.autoUpdateCheck", "1") !== "1";
-  nodes.push(checkLabel, installLabel);
+  nodes.push(
+    choice("auto", "Install them automatically (recommended)", "Checked once a day and installed in the background. airlock only tells you when it needs something from you, like a restart."),
+    choice("ask", "Ask me first", "One notice per new version, with Update, Later or Skip. A skipped version is not offered again."),
+    choice("off", "Don't check", "airlock never contacts update servers on its own, and the malware lists are not refreshed either. Use Check now whenever you like."));
 
   if (updates.forge) {
     FORGE.hidden = false;
@@ -1229,6 +1289,12 @@ function showUpdates() {
   hideToast();
   const body = openPanel("Updates");
   renderUpdates(body);
+  if (!updates.status) {
+    invoke("update_status", { force: false, offline: true }).then((st) => {
+      if (!updates.status) noteStatus(st);
+      if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates(body);
+    }).catch(() => {});
+  }
   if (!appUpd.status && !appUpd.running) checkAppUpdate().then(() => { if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates(body); });
 }
 
@@ -1249,8 +1315,11 @@ async function runUpdate(body, quiet = false) {
   }
   status("Updating airlock's VM in the background…");
   let ok = false;
+  let reason = "";
+  const target = updates.status?.target || "";
   try {
     const r = await invoke("run_update");
+    reason = r.reason || "";
     // The script's summary minus its command-line hints.
     for (const l of r.lines) {
       const t = l.trim();
@@ -1262,18 +1331,25 @@ async function runUpdate(body, quiet = false) {
     status(r.ok ? "airlock updated" : "Update failed — nothing was changed", !r.ok);
     try { await checkUpdates(true); } catch {}
   } catch (e) {
+    reason = String(e);
     forge.finish(false, `Update failed: ${e}`);
     status(`Update failed: ${e}`, true);
   } finally {
     clearInterval(tick);
     updates.running = false;
-    if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates($("panel-body"));
   }
-  if (quiet) {
-    if (ok) notify("airlock was updated", "Security updates were installed and all checks passed. Documents you open now use the updated VM.", [
-      ...(updates.restart ? [["Restart airlock", () => invoke("restart_app")]] : []),
-      ["Details", showUpdates], ["OK", hideToast]]);
-    else notify("Automatic update failed", "Nothing was changed: airlock keeps using the current version. Details are in the Updates panel.", [["Details", showUpdates], ["OK", hideToast]]);
+  const before = failedUpdate();
+  if (ok) setPref("airlock.updateFailed", "");
+  else setPref("airlock.updateFailed", JSON.stringify({ target, reason, at: Date.now() }));
+  if ($("panel-title").textContent === "Updates" && !$("panel").hidden) renderUpdates($("panel-body"));
+  if (!quiet) return;
+  // Automatic: success needs nothing from the user unless airlock itself
+  // must restart; a failure is told once, not again on every launch.
+  if (ok && updates.restart) {
+    notify("airlock was updated", "Security updates were installed and all checks passed. Restart airlock to finish.", [
+      ["Restart airlock", () => invoke("restart_app")], ["Later", hideToast]]);
+  } else if (!ok && !(before && before.reason === reason)) {
+    notify("An automatic update didn't go through", "Nothing was changed: airlock keeps using the current version and tries again later. You don't need to do anything.", [["Details", showUpdates], ["OK", hideToast]]);
   }
 }
 
@@ -1283,30 +1359,48 @@ window.__TAURI__.event.listen("update-progress", (e) => { if (updates.forge) for
 
 $("m-updates").onclick = () => { toggleAppMenu(false); showUpdates(); };
 
+const launchedAt = Date.now();
 async function autoCheckUpdates() {
-  if (pref("airlock.autoUpdateCheck", "1") !== "1") return;
+  const mode = updateMode();
+  if (mode === "off") return;
   // Test runs (a demo script drives the app) never start updates.
   if (await invoke("demo_script").catch(() => null)) return;
-  if (navigator.userAgent.includes("Windows")) runDataRefresh(false);
-  // A new version of the app: offered, never installed without a click.
-  checkAppUpdate().then((a) => {
-    if (a && a.available && a.installable && Date.now() > Number(pref("airlock.appUpdateSnooze", "0")))
-      notify(`airlock ${a.version} is available`, "A new version of the app. It downloads in the background, its signature is checked, and a restart finishes it.", [
-        ["Update", () => { hideToast(); installAppUpdate(null); }],
-        ["Later", () => { setPref("airlock.appUpdateSnooze", String(Date.now() + 86400000)); hideToast(); }]]);
-  });
-  try {
-    const st = await checkUpdates(false);
-    if (!st.available) return;
-    if (pref("airlock.autoInstall", "1") === "1") {
-      // Ask again right before installing: another window, or an update in
-      // the meantime, may already have brought everything up to date.
-      const fresh = await checkUpdates(true);
-      if (!fresh.available) return;
-      notify("Installing security updates", `${changeSummary(st)}. airlock is updating in the background; you can keep reading.`, [["Details", showUpdates], ["Hide", hideToast]]);
-      runUpdate(null, true);
-    } else if (Date.now() > Number(pref("airlock.updateSnooze", "0"))) showToast(st);
-  } catch {}
+  const windows = navigator.userAgent.includes("Windows");
+  if (windows) runDataRefresh(false);
+  const [a, st] = await Promise.all([checkAppUpdate(), checkUpdates(false).catch(() => null)]);
+  const appNew = Boolean(a && a.available && a.installable);
+  const vmNew = Boolean(st && st.supported && st.available);
+  const approved = pref("airlock.updateApproved", "") === "1";
+
+  if (mode === "auto" || approved) {
+    // A new app first: it may bring a newer viewer kit (or a fix for the
+    // update itself), so the viewer is updated after the restart. On Windows
+    // installing closes airlock: that one is offered, not done unasked.
+    if (appNew) {
+      if (!windows) installAppUpdate(null);
+      else if (pref("airlock.skipAppVersion", "") !== a.version && Date.now() > Number(pref("airlock.updateSnooze", "0"))) askToast(a, null);
+      return;
+    }
+    if (approved) setPref("airlock.updateApproved", "");
+    if (!vmNew || st.verify) return; // nothing new, or it can't be verified now (the panel says why)
+    const failed = failedUpdate();
+    if (failed && failed.target === st.target && Date.now() - failed.at < DAY) return;
+    // Not while the user is busy opening their first document: a minute in.
+    const wait = launchedAt + 60_000 - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    // Ask again right before installing: another window, or an update in
+    // the meantime, may already have brought everything up to date.
+    const fresh = await checkUpdates(true).catch(() => null);
+    if (!fresh || !fresh.available || fresh.verify) return;
+    runUpdate(null, true);
+    return;
+  }
+
+  // "Ask me first": one notice, unless postponed or skipped.
+  if (Date.now() < Number(pref("airlock.updateSnooze", "0"))) return;
+  const askApp = appNew && pref("airlock.skipAppVersion", "") !== a.version ? a : null;
+  const askVm = vmNew && !st.verify && !(st.target && pref("airlock.skipTarget", "") === st.target) ? st : null;
+  if (askApp || askVm) askToast(askApp, askVm);
 }
 setTimeout(autoCheckUpdates, 3000);
 
@@ -1377,7 +1471,7 @@ async function runDemo() {
     if (cmd === "restart") { await new Promise((r) => setTimeout(r, Number(arg) || 0)); await invoke("restart_app"); }
     if (cmd === "updates") { await checkUpdates(arg === "force"); showUpdates(); }
     if (cmd === "autotoast") notify("airlock was updated", "Security updates were installed and all checks passed. Documents you open now use the updated VM.", [["Restart airlock", () => {}], ["Details", showUpdates], ["OK", hideToast]]);
-    if (cmd === "toast") showToast({ changes: ["mupdf-tools 1.27.2-r0 → 1.27.3-r0", "Guest kernel 6.1.190 → 6.1.191"], packages: 14 });
+    if (cmd === "toast") askToast(null, { changes: ["mupdf-tools 1.27.2-r0 → 1.27.3-r0", "Guest kernel 6.1.190 → 6.1.191"], packages: 14, target: "demo" });
   }
 }
 

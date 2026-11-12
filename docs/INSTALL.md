@@ -93,18 +93,33 @@ Firecracker's releases) with no source checkout and no compilers: the build
 runs in a throwaway Alpine build root (`~/.local/lib/airlock/kit/scripts/update.sh`;
 the kit keeps ~2 GB: a build cache and the previous version for rollback).
 
-The desktop app does the same from its **Updates** button: once a day it
-checks kernel.org, GitHub and Alpine's mirror (this can be switched off in
-the Updates panel), pops up a notice when security fixes are out (e.g. a new
-MuPDF) and, unless switched off, installs them in the background and tells
-you afterwards.
+The desktop app does the same from its **Updates** panel, where you pick
+how updates happen:
 
-New kernels are verified against kernel.org's GPG-signed checksums,
+- **Install them automatically** (the default): checked once a day and
+  installed in the background. airlock only speaks up when it needs
+  something from you, like a restart. An update that fails is reported
+  once and retried the next day (or sooner when something new is out),
+  not on every launch.
+- **Ask me first**: one notice per new version, with Update, Later or
+  Skip. A skipped version is not offered again.
+- **Don't check**: airlock never contacts update servers on its own (the
+  malware lists are not refreshed either). Check now still works.
+
+Every download is verified before anything is built, on every daily check
+(not only when a version changes): kernels against kernel.org's signed
+checksum list (signed by kernel.org's checksum autosigner; the key ships
+with airlock in `scripts/keys/` and only its fingerprint is accepted),
 Firecracker, Alpine and the YARA-Forge rules against their published
-checksums. The working
-version is kept aside and the full regression suite must pass before the new
-one is used; otherwise the old one is restored. An installed copy is
-updated too.
+checksums. A download that does not match is never used; one that can't be
+checked right now (network, a changed key) leaves the current version in
+place. The working version is kept aside and the full regression suite
+must pass before the new one is used; otherwise the old one is restored.
+An installed copy is updated too.
+
+`scripts/update.sh --verify` runs only the download checks (no airlock
+binary needed); the repository runs it daily on GitHub Actions, so a change
+upstream is noticed before an update needs it.
 
 ## Usage
 

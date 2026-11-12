@@ -1,0 +1,28 @@
+# Daily: every download airlock's updater depends on (kernel.org's signed
+# checksums, Firecracker, Alpine, YARA-Forge) still verifies the way the
+# updater checks it. A failure here means users' updates would fail too:
+# GitHub e-mails the repository owner, and it can be fixed before then.
+name: upstream canary
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+  push:
+    paths:
+      - scripts/update.sh
+      - scripts/verify.sh
+      - scripts/keys/**
+      - tests/update-verify.sh
+      - .github/workflows/upstream-canary.yml
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Offline checks (signatures, pinned key, tampering)
+        run: sh tests/update-verify.sh
+      - name: Live upstream (what airlock uses and would update to)
+        run: sh scripts/update.sh --verify

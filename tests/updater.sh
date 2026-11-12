@@ -17,9 +17,10 @@ rm -rf "$T"
 mkdir -p "$T/server" "$T/home"
 fail() { echo "FAIL $*"; exit 1; }
 
-# The old version: 0.1.0, asking the local server instead of GitHub.
+# The old version: 0.1.0 (set here: the real version is newer than the
+# test's "new" one), asking the local server instead of GitHub.
 cat > "$T/old.json" <<EOF
-{"plugins":{"updater":{"endpoints":["http://127.0.0.1:$PORT/latest.json"],"dangerousInsecureTransportProtocol":true}}}
+{"version":"0.1.0","plugins":{"updater":{"endpoints":["http://127.0.0.1:$PORT/latest.json"],"dangerousInsecureTransportProtocol":true}}}
 EOF
 AIRLOCK_VERSION=0.1.0-updatertest AIRLOCK_EXTRA_CONFIG=$T/old.json scripts/appimage.sh > "$T/build-old.log" 2>&1 || fail "old build (see $T/build-old.log)"
 cp dist/airlock-0.1.0-updatertest-x86_64.AppImage "$T/airlock.AppImage"

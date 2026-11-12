@@ -21,6 +21,13 @@ for crate in $CRATES; do
     fi
 done
 
+# The update path's download checks (signatures, pinned keys, checksums).
+if sh tests/update-verify.sh >"$OUT/update-verify.log" 2>&1; then
+    echo "ok   update download checks ($(grep -c '^ok ' "$OUT/update-verify.log") passed)"
+else
+    echo "FAIL update download checks (see $OUT/update-verify.log)"; fail=$((fail+1))
+fi
+
 check() { # file, expected verdict, [required substring... | @norender]
     f=$1; want=$2; shift 2
     render=1

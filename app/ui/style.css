@@ -274,6 +274,10 @@ details.notes li span { color: var(--muted); }
 .progress li { padding: 3px 0; color: var(--muted); }
 .progress li:last-child { color: var(--text); font-weight: 600; }
 label.check { display: flex; gap: 8px; align-items: center; font-size: 13px; color: var(--muted); margin-top: 14px; }
+label.check.choice { align-items: flex-start; margin-top: 10px; }
+label.check.choice input { margin-top: 3px; accent-color: var(--accent); }
+label.check.choice strong { color: var(--text); font-weight: 600; }
+label.check.choice .note { margin: 0; }
 
 /* ---- save menu ---- */
 .menu-wrap { position: relative; }
